@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio Dashboard</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+:root{
+  --bg:#0d0f14;--surface:#151821;--s2:#1e2330;--border:#2a3040;
+  --text:#e8ecf5;--muted:#6b7a99;
+  --us:#3d7fff;--ar:#00d4aa;--ars:#00d4aa;--usd:#f59e0b;
+  --green:#22c55e;--red:#ef4444;--purple:#a78bfa;
+  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;font-size:13px;}
+header{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface);}
+header h1{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:.08em;}
+header span{font-family:var(--mono);font-size:11px;color:var(--muted);}
+.tabs{display:flex;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border);}
+.tab{padding:10px 18px;cursor:pointer;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.06em;color:var(--muted);border-bottom:2px solid transparent;transition:all .15s;text-transform:uppercase;}
+.tab:hover{color:var(--text);}
+.tab.act-audit{color:var(--purple);border-bottom-color:var(--purple);}
+.tab.act-cash{color:var(--usd);border-bottom-color:var(--usd);}
+.panel{display:none;padding:18px 24px;}
+.panel.active{display:block;}
+/* ── FILTER BAR ── */
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap;}
+.fi{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-family:var(--mono);font-size:11px;outline:none;}
+.fi:focus{border-color:var(--muted);}
+.fi::placeholder{color:var(--muted);}
+.fb{padding:5px 12px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;}
+.fb:hover,.fb.on{border-color:var(--text);color:var(--text);}
+/* ── CASH CARDS ── */
+.cash-strip{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.cash-card{flex:1;min-width:220px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:14px 18px;position:relative;overflow:hidden;}
+.cash-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+.cash-card.cc-us::before{background:var(--us);}
+.cash-card.cc-ars::before{background:var(--ar);}
+.cash-card.cc-ar-usd::before{background:var(--usd);}
+.cash-card-label{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;}
+.cash-card-amount{font-family:var(--mono);font-size:22px;font-weight:600;letter-spacing:-.02em;margin-bottom:10px;white-space:nowrap;}
+.cash-card-amount.cc-us{color:var(--us);}
+.cash-card-amount.cc-ars{color:var(--ar);}
+.cash-card-amount.cc-ar-usd{color:var(--usd);}
+.cash-card-amount.negative{color:var(--red);}
+.cash-log{border-top:1px solid var(--border);padding-top:8px;margin-top:2px;}
+.cash-log-title{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px;}
+.cash-log-row{display:flex;justify-content:space-between;align-items:baseline;padding:2px 0;font-family:var(--mono);font-size:10px;border-bottom:1px solid rgba(42,48,64,.3);}
+.cash-log-row:last-child{border-bottom:none;}
+.cash-log-left{display:flex;gap:6px;align-items:baseline;overflow:hidden;}
+.cash-log-date{color:var(--muted);font-size:9px;white-space:nowrap;flex-shrink:0;}
+.cash-log-desc{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;}
+.cash-log-amt{white-space:nowrap;flex-shrink:0;padding-left:8px;}
+.cash-log-amt.pos{color:var(--green);}
+.cash-log-amt.neg{color:var(--red);}
+
+/* ── PORTFOLIO GRID ── */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;cursor:pointer;transition:border-color .15s;}
+.card:hover{border-color:var(--muted);}
+.card.open-us{border-left:3px solid var(--us);}
+.card.open-ar{border-left:3px solid var(--ar);}
+.card.expanded{border-color:var(--muted);}
+.ch{padding:10px 14px;display:flex;justify-content:space-between;align-items:flex-start;}
+.tn{font-family:var(--mono);font-size:13px;font-weight:600;}
+.ts{font-size:10px;color:var(--muted);margin-top:2px;font-family:var(--mono);}
+.badge{padding:2px 7px;border-radius:3px;font-family:var(--mono);font-size:10px;font-weight:600;white-space:nowrap;}
+.bopen{background:rgba(34,197,94,.15);color:var(--green);}
+.bclosed{background:rgba(107,122,153,.12);color:var(--muted);}
+.cs{padding:0 14px 10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+.si label{display:block;font-size:9px;color:var(--muted);margin-bottom:1px;text-transform:uppercase;letter-spacing:.04em;}
+.si value{font-family:var(--mono);font-size:11px;}
+/* expanded txn */
+.txn-wrap{display:none;border-top:1px solid var(--border);}
+.txn-wrap.show{display:block;}
+.txn-scroll{max-height:240px;overflow-y:auto;}
+table{width:100%;border-collapse:collapse;}
+thead th{position:sticky;top:0;background:var(--s2);padding:5px 8px;text-align:left;font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);white-space:nowrap;}
+tbody td{padding:4px 8px;font-family:var(--mono);font-size:10px;border-bottom:1px solid rgba(42,48,64,.4);}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover td{background:var(--s2);}
+.num{text-align:right;}
+.oc{color:var(--green)}.ov{color:var(--red)}.od{color:var(--usd)}.oo{color:var(--muted)}
+.mp{color:var(--green)}.mn{color:var(--red)}
+.acct-tag{font-size:9px;color:var(--muted);margin-left:4px;}
+/* ── AUDIT ── */
+#panel-audit{padding:0;}
+.atb{display:flex;gap:8px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:20;}
+.atb .fi{width:240px;}
+.a-count{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;}
+.audit-wrap{overflow:auto;height:calc(100vh - 128px);}
+#audit-tbl{min-width:1150px;}
+#audit-tbl thead th{cursor:pointer;user-select:none;background:var(--surface);padding:7px 10px;font-size:10px;}
+#audit-tbl thead th:hover{color:var(--text);}
+.sa::after{content:' ▲';font-size:8px;}.sd::after{content:' ▼';font-size:8px;}
+#audit-tbl tbody td{padding:5px 10px;font-size:11px;}
+.gh td{background:var(--s2)!important;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;padding:6px 14px;border-bottom:1px solid var(--border);cursor:pointer;}
+.gh td span.arrow{margin-right:6px;opacity:.5;}
+/* pills */
+.op-p{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:500;white-space:nowrap;}
+.op-c{background:rgba(34,197,94,.15);color:var(--green);}
+.op-v{background:rgba(239,68,68,.15);color:var(--red);}
+.op-d{background:rgba(245,158,11,.15);color:var(--usd);}
+.op-o{background:rgba(107,122,153,.12);color:var(--muted);}
+.ac-p{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:500;}
+.ac-us{background:rgba(61,127,255,.15);color:var(--us);}
+.ac-ar{background:rgba(0,212,170,.12);color:var(--ar);}
+.ac-ud{background:rgba(245,158,11,.12);color:var(--usd);}
+.no-r{padding:32px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px;}
+::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+/* ── PORTFOLIO TAB ── */
+.tab.act-portfolio{color:var(--green);border-bottom-color:var(--green);}
+/* portfolio table */
+#portfolio-tbl thead th{
+  position:sticky;top:0;background:var(--surface);
+  padding:8px 12px;font-family:var(--mono);font-size:10px;font-weight:600;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+  border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap;
+}
+#portfolio-tbl thead th:hover{color:var(--text);}
+#portfolio-tbl tbody td{
+  padding:9px 12px;font-family:var(--mono);font-size:12px;
+  border-bottom:1px solid rgba(42,48,64,.4);vertical-align:middle;
+}
+#portfolio-tbl tbody tr:hover td{background:var(--s2);}
+#portfolio-tbl tbody tr.row-cash td{background:rgba(245,158,11,.04);border-top:1px solid rgba(245,158,11,.18);}
+#portfolio-tbl tbody tr.row-cash td:first-child{color:var(--usd);font-weight:600;}
+#portfolio-tbl tfoot td{
+  padding:10px 12px;font-family:var(--mono);font-size:11px;font-weight:600;
+  border-top:2px solid var(--border);background:var(--s2);
+}
+#portfolio-tbl tfoot tr.total-ars td:first-child{color:var(--ar);}
+#portfolio-tbl tfoot tr.total-usd td:first-child{color:var(--usd);}
+</style>
+</head>
+<body>
+<header>
+  <h1>PORTFOLIO TRACKER — MOVIMIENTOS HISTÓRICOS</h1>
+  <span>18/02/2015 → 20/03/2026 · 1,179 operaciones · clasificado por posición abierta</span>
+</header>
+<div class="tabs">
+  <div class="tab act-portfolio" onclick="switchTab(this,'portfolio')">📊 Portfolio</div>
+  <div class="tab" onclick="switchTab(this,'audit')">📋 Transacciones</div>
+  <div class="tab" onclick="switchTab(this,'cash')">💵 Saldo Cash</div>
+  <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+    <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
+    <button class="tab" onclick="showClearConfirm()" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--muted);letter-spacing:.04em;" title="Borrar todos los datos">🗑 Limpiar datos</button>
+  </div>
+</div>
+
+<div id="panel-portfolio" class="panel active">
+  <!-- Toggle AR / EEUU -->
+  <div style="display:flex;align-items:center;gap:10px;padding:14px 0 10px;flex-wrap:wrap;">
+    <div id="portfolio-toggle" style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:5px;overflow:hidden;">
+      <button id="ptog-ar"  onclick="switchPortfolio('ar')"   style="padding:6px 20px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;border:none;cursor:pointer;transition:all .15s;background:var(--ar);color:var(--bg);">🇦🇷 Argentina</button>
+      <button id="ptog-us"  onclick="switchPortfolio('us')"   style="padding:6px 20px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;border:none;cursor:pointer;transition:all .15s;background:transparent;color:var(--muted);">🇺🇸 EEUU (USD)</button>
+    </div>
+    <input class="fi" id="portfolio-search" style="width:180px" type="text" placeholder="Buscar ticker..." oninput="filterPortfolioTable(this.value)">
+    <button class="fb" onclick="fetchLatestPrices()" style="color:var(--green);border-color:var(--green);">🔄 Actualizar precios</button>
+    <span id="price-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+    <span id="options-disclaimer-inline" style="display:none;padding:4px 10px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.25);border-radius:4px;font-family:var(--mono);font-size:10px;color:rgba(251,191,36,.85);"></span>
+  </div>
+
+  <!-- Portfolio table -->
+  <div style="overflow-x:auto;">
+    <table id="portfolio-tbl" style="width:100%;border-collapse:collapse;min-width:700px;">
+      <thead>
+        <tr>
+          <th onclick="pSort('ticker')"   style="text-align:left;"   id="pth-ticker">Instrumento</th>
+          <th onclick="pSort('net')"      style="text-align:right;"  id="pth-net">Cantidad</th>
+          <th onclick="pSort('avg')"      style="text-align:right;"  id="pth-avg">Precio Prom. Compra</th>
+          <th                             style="text-align:right;"              >Precio Actual</th>
+          <th                             style="text-align:right;"              >Gan./Pérd.</th>
+          <th                             style="text-align:right;"              >Valor Tenencia</th>
+        </tr>
+      </thead>
+      <tbody id="portfolio-tbody"></tbody>
+      <tfoot id="portfolio-tfoot"></tfoot>
+    </table>
+  </div>
+</div>
+
+<div id="panel-audit" class="panel">
+  <div class="atb">
+    <input class="fi" type="text" placeholder="🔍  Ticker, operación, cuenta..." oninput="aFilter()">
+    <select class="fi" id="aCuenta" onchange="aFilter()">
+      <option value="">Todas las cuentas</option>
+      <option>EEUU (USD)</option><option>Argentina (ARS)</option><option>Argentina (USD)</option>
+    </select>
+    <select class="fi" id="aOp" onchange="aFilter()">
+      <option value="">Todas las operaciones</option>
+      <option>Compra</option><option>Venta</option>
+      <option>Pago de Dividendos</option><option>Pago de Renta</option>
+      <option>Pago de Amortización</option><option>Suscripción FCI</option>
+      <option>Rescate FCI</option><option>Caución</option>
+      <option>Suscripción Primaria</option><option>Otras</option>
+    </select>
+    <select class="fi" id="aYear" onchange="aFilter()">
+      <option value="">Todos los años</option>
+    </select>
+    <select class="fi" id="aGroup" onchange="aRender()">
+      <option value="">Sin agrupar</option>
+      <option value="ticker">Por instrumento</option>
+      <option value="cuenta">Por cuenta</option>
+      <option value="operacion">Por tipo de operación</option>
+      <option value="year">Por año</option>
+    </select>
+    <button class="fb" onclick="aClear()">✕ Limpiar</button>
+    <span style="font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap"><span data-daterange><span data-daterange>18/02/2015 → 13/03/2026</span></span></span>
+    <span class="a-count" id="aCount"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="audit-tbl">
+      <thead><tr>
+        <th id="th-fecha" onclick="aSort('fecha')">Fecha</th>
+        <th id="th-cuenta" onclick="aSort('cuenta')">Cuenta</th>
+        <th id="th-ticker" onclick="aSort('ticker')">Instrumento</th>
+        <th id="th-operacion" onclick="aSort('operacion')">Operación</th>
+        <th id="th-cantidad" onclick="aSort('cantidad')" class="num">Cantidad</th>
+        <th id="th-precio" onclick="aSort('precio')" class="num">Precio</th>
+        <th id="th-monto" onclick="aSort('monto')" class="num">Monto</th>
+        <th id="th-comision" onclick="aSort('comision')" class="num">Comisión</th>
+        <th id="th-iva" onclick="aSort('iva')" class="num">IVA</th>
+        <th id="th-saldo_cash" onclick="aSort('saldo_cash')" class="num">Saldo cash</th>
+        <th class="num">Nro. Boleto</th>
+      </tr></thead>
+      <tbody id="aTbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="panel-cash" class="panel" style="padding:0;">
+  <div class="atb">
+    <select class="fi" id="cYear" onchange="cFilter()"><option value="">Todos los años</option></select>
+    <select class="fi" id="cMonth" onchange="cFilter()">
+      <option value="">Todos los meses</option>
+      <option value="01">Enero</option><option value="02">Febrero</option><option value="03">Marzo</option>
+      <option value="04">Abril</option><option value="05">Mayo</option><option value="06">Junio</option>
+      <option value="07">Julio</option><option value="08">Agosto</option><option value="09">Septiembre</option>
+      <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+    </select>
+    <input class="fi" id="cDay" type="text" placeholder="Día (1-31)" style="width:100px" oninput="cFilter()">
+    <span class="a-count" id="cCount"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="cash-tbl" style="min-width:600px;">
+      <thead><tr>
+        <th onclick="cSort('fecha')" style="cursor:pointer;user-select:none;">Fecha</th>
+        <th onclick="cSort('ars')" class="num" style="cursor:pointer;user-select:none;color:var(--ar);">Argentina ARS</th>
+        <th onclick="cSort('ar_usd')" class="num" style="cursor:pointer;user-select:none;color:var(--usd);">Argentina USD</th>
+        <th onclick="cSort('us_usd')" class="num" style="cursor:pointer;user-select:none;color:var(--us);">EEUU USD</th>
+      </tr></thead>
+      <tbody id="cTbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ══════ DATA ══════
+const AUDIT=[];
+const US=[];
+const AR=[];
+let _cashBalances = null;   // {account: balance} — set in processAndRefresh
+let _optionsExcluded = 0;   // count of excluded option contracts
+
+// ══════ UTILS ══════
+const N=(n,d=2)=>n!=null&&!isNaN(n)?new Intl.NumberFormat('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d}).format(n):'—';
+const opC=op=>op==='Compra'||op==='Compra de Dólares'?'oc':op==='Venta'||op==='Venta de Dólares'?'ov':op&&op.includes('Transferencia de Titulos')?'od':['Pago de Dividendos','Pago de Renta','Pago de Amortización','Liquidación de Caución','Remuneración de Saldos Líquidos'].includes(op)?'od':'oo';
+const opP=op=>op==='Compra'||op==='Compra de Dólares'?'op-c':op==='Venta'||op==='Venta de Dólares'?'op-v':['Pago de Dividendos','Pago de Renta','Pago de Amortización','Liquidación de Caución','Remuneración de Saldos Líquidos'].includes(op)?'op-d':'op-o';
+const acP=a=>a.includes('EEUU')?'ac-us':a.includes('ARS')?'ac-ar':'ac-ud';
+// ══════ AUDIT ══════
+function rebuildYearDropdown() {
+  const yrs=[...new Set(AUDIT.map(r=>r.fecha.slice(0,4)).filter(Boolean))].sort().reverse();
+  const s=document.getElementById('aYear');
+  const cur=s.value;
+  // Remove all options except the first (Todos)
+  while(s.options.length>1) s.remove(1);
+  yrs.forEach(y=>{const o=document.createElement('option');o.value=o.textContent=y;s.appendChild(o);});
+  if(cur) s.value=cur;
+}
+
+// ══════ PORTFOLIO CARDS ══════
+function txnRows(txns){
+  return txns.map(t=>{
+    const op=t.op,c=t.c||0,p=t.p||0,m=t.m||0,b=t.b||0,a=t.a||0;
+    const rawTag=t.raw&&t.raw!==t.op?`<span class="acct-tag">(${t.raw})</span>`:'';
+    return`<tr>
+      <td>${t.f}</td>
+      <td class="${opC(op)}">${op}${rawTag}</td>
+      <td class="num">${c>0?N(c,0):'—'}</td>
+      <td class="num">${p>0?N(p,p<200?4:0):'—'}</td>
+      <td class="num ${m>=0?'mp':'mn'}">${N(m,2)}</td>
+      <td class="num">${N(b,0)}</td>
+      <td class="num">${a>0?N(a,2):'—'}</td>
+      <td style="color:var(--muted);font-size:9px">${t.acct||''}</td>
+    </tr>`;
+  }).join('');
+}
+
+function buildCard(d,acct){
+  const isOpen=d.net>0;
+  const cid=acct+'-'+d.ticker.replace(/[^a-z0-9]/gi,'_');
+  const borderCls=isOpen?(acct==='us'?'open-us':'open-ar'):'';
+  const splitInfo=d.split_note?` · <span style="color:var(--usd);font-size:9px">⇄ ${d.split_note}</span>`:'';
+  const subtitle=`${d.n} op · ${d.first} → ${d.last}`+splitInfo;
+  const stats=`
+    <div class="si"><label>Comprado</label><value>${N(d.bought,0)}</value></div>
+    <div class="si"><label>Vendido</label><value>${N(d.sold,0)}</value></div>
+    <div class="si"><label>Posición neta</label><value>${N(d.net,0)}</value></div>
+    <div class="si"><label>Avg. compra</label><value>${d.avg>0?N(d.avg,d.avg<200?4:0):'—'}</value></div>
+    ${d.xfer_in>0?`<div class="si"><label>Transferido in</label><value style="color:var(--purple)">${N(d.xfer_in,0)}</value></div>`:''}
+    <div class="si"><label>Cuentas</label><value style="font-size:9px">${d.accounts.map(a=>a.replace('Argentina (','AR ').replace('EEUU (','US ').replace(')','').replace(' (USD','·USD').replace(' (ARS','·ARS')).join(', ')}</value></div>
+    <div class="si"><label>Estado</label><value class="${isOpen?'mp':'oo'}">${isOpen?'● Abierta':'○ Cerrada'}</value></div>`;
+  return`<div class="card ${borderCls}" data-ticker="${d.ticker}" data-open="${isOpen}" onclick="toggleCard(this,'${cid}')">
+    <div class="ch">
+      <div><div class="tn">${d.ticker}</div><div class="ts">${subtitle}</div></div>
+      <span class="badge ${isOpen?'bopen':'bclosed'}">${isOpen?'● '+N(d.net,0):'○ Cerrada'}</span>
+    </div>
+    <div class="cs">${stats}</div>
+    <div class="txn-wrap" id="${cid}">
+      <div class="txn-scroll">
+        <table><thead><tr>
+          <th>Fecha</th><th>Operación</th>
+          <th class="num">Cant.</th><th class="num">Precio</th><th class="num">Monto</th>
+          <th class="num">Balance</th><th class="num">Avg.</th><th>Cuenta</th>
+        </tr></thead>
+        <tbody>${txnRows(d.txns)}</tbody></table>
+      </div>
+    </div>
+  </div>`;
+}
+
+
+// ══════ AUDIT ══════
+let aData=[...AUDIT];
+let aSort_col='fecha',aSort_dir=-1; // desc by default
+const gCollapsed={};
+const OTHER_OPS=new Set(['Caución','Compra de Dólares','Crédito','Suscripción FCI','Rescate FCI',
+  'Suscripción Primaria','Transferencia de Titulos IN -','Depósito por transferencia interna',
+  'Extracción por Transferencia interna','Débito - Producto','Venta de Dólares',
+  'Depósito de Fondos - Transferencia electrónica - BANCO COMAFI SA',
+  'Depósito de Fondos - Transferencia electrónica - BANCO SUPERVIELLE S.A.',
+  'Depósito de Fondos - Transferencia electrónica - Banco Industrial',
+  'Extracción de Fondos - Transferencia Electrónica - BANCO DE LA NACION ARGENTINA',
+  'Extracción de Fondos - Transferencia Electrónica - BANCO DE LA PROVINCIA DEL NEUQUEN',
+  'Extracción de Fondos - Transferencia Electrónica - BBVA BANCO FRANCES S.A.',
+  'Extracción de Fondos - Transferencia Electrónica - Industrial and Commercial Bank of China',
+  'Liquidación de Caución','Remuneración de Saldos Líquidos']);
+
+function aFilter(){
+  const q=(document.querySelector('.atb .fi').value||'').toLowerCase();
+  const cuenta=document.getElementById('aCuenta').value;
+  const op=document.getElementById('aOp').value;
+  const year=document.getElementById('aYear').value;
+  aData=AUDIT.filter(r=>{
+    if(cuenta&&r.cuenta!==cuenta) return false;
+    if(op==='Otras'){if(!OTHER_OPS.has(r.operacion)) return false;}
+    else if(op&&r.operacion!==op) return false;
+    if(year&&r.year!==year) return false;
+    if(q){const hay=r.ticker+' '+r.ticker_raw+' '+r.operacion+' '+r.cuenta+' '+r.nro_boleto;if(!hay.toLowerCase().includes(q)) return false;}
+    return true;
+  });
+  aSortApply();
+}
+
+function aSort(col){
+  if(col===aSort_col) aSort_dir*=-1; else{aSort_col=col;aSort_dir=col==='fecha'?-1:1;}
+  aSortApply();
+}
+function aSortApply(){
+  document.querySelectorAll('#audit-tbl thead th').forEach(th=>{
+    th.classList.remove('sa','sd');
+    if(th.id==='th-'+aSort_col) th.classList.add(aSort_dir===1?'sa':'sd');
+  });
+  aData.sort((a,b)=>{
+    let va=a[aSort_col],vb=b[aSort_col];
+    let cmp = typeof va==='string' ? va.localeCompare(vb)*aSort_dir : ((+va||0)-(+vb||0))*aSort_dir;
+    // Tiebreaker: when sorting by fecha, secondary sort is nro_mov descending
+    if(cmp === 0 && aSort_col === 'fecha') {
+      cmp = (+b.nro_mov||0) - (+a.nro_mov||0);
+    }
+    return cmp;
+  });
+  aRender();
+}
+
+function aRender(){
+  const group=document.getElementById('aGroup').value;
+  const tbody=document.getElementById('aTbody');
+  document.getElementById('aCount').textContent=`${aData.length} / ${AUDIT.length} filas`;
+  let html='';
+  if(!group){
+    html=aData.map(aRow).join('');
+  } else {
+    const grouped={};
+    aData.forEach(r=>{
+      const k=group==='year'?r.year:r[group]||'—';
+      (grouped[k]||(grouped[k]=[])).push(r);
+    });
+    Object.entries(grouped).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([key,rows])=>{
+      const coll=gCollapsed[key];
+      const totM=rows.reduce((s,r)=>s+r.monto,0);
+      const totC=rows.reduce((s,r)=>s+r.comision,0);
+      const kEsc=key.replace(/'/g,"\'");
+      html+=`<tr class="gh" onclick="toggleG('${kEsc}')"><td colspan="10">
+        <span class="arrow">${coll?'▶':'▼'}</span>
+        ${key} &nbsp;·&nbsp; ${rows.length} op.
+        &emsp; monto: <span style="color:${totM>=0?'var(--green)':'var(--red)'}">${N(totM,2)}</span>
+        &nbsp;· comis: ${N(totC,2)}
+      </td></tr>`;
+      if(!coll) html+=rows.map(aRow).join('');
+    });
+  }
+  tbody.innerHTML=html||'<tr><td colspan="10" class="no-r">Sin resultados.</td></tr>';
+}
+
+function aRow(r){
+  const raw=r.ticker_raw&&r.ticker_raw!==r.ticker?` <span style="color:var(--muted);font-size:9px">(${r.ticker_raw})</span>`:'';
+  // Saldo: show for cash-affecting rows, format based on account currency
+  let saldoCell = '<td class="num" style="color:var(--muted)">—</td>';
+  if(r.saldo_cash !== null && r.saldo_cash !== undefined) {
+    const isCashRow = r.saldo_cash !== null && r.saldo_cash !== undefined;
+    if(isCashRow) {
+      const isARS = r.cuenta === 'Argentina (ARS)';
+      const sym = isARS ? '$ ' : 'U$S ';
+      const abs = Math.abs(r.saldo_cash);
+      const fmt = isARS
+        ? new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(abs)
+        : new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(abs);
+      const str = (r.saldo_cash < 0 ? '-' : '') + sym + fmt;
+      const cls = r.saldo_cash >= 0 ? 'mp' : 'mn';
+      saldoCell = `<td class="num ${cls}" style="font-weight:500">${str}</td>`;
+    }
+  }
+  return`<tr>
+    <td>${r.fecha||'—'}</td>
+    <td><span class="ac-p ${acP(r.cuenta)}">${r.cuenta}</span></td>
+    <td><b>${r.ticker}</b>${raw}</td>
+    <td><span class="op-p ${opP(r.operacion)}">${r.operacion}</span></td>
+    <td class="num">${r.cantidad>0?N(r.cantidad,0):'—'}</td>
+    <td class="num">${r.precio>0?N(r.precio,r.precio<200?4:2):'—'}</td>
+    <td class="num ${r.monto>=0?'mp':'mn'}">${N(r.monto,2)}</td>
+    <td class="num">${r.comision>0?N(r.comision,2):'—'}</td>
+    <td class="num">${r.iva>0?N(r.iva,2):'—'}</td>
+    ${saldoCell}
+    <td class="num" style="color:var(--muted)">${r.nro_boleto&&r.nro_boleto!=='0'?r.nro_boleto:'—'}</td>
+  </tr>`;
+}
+
+function toggleG(key){gCollapsed[key]=!gCollapsed[key];aRender();}
+function aClear(){
+  document.querySelector('.atb .fi').value='';
+  ['aCuenta','aOp','aYear','aGroup'].forEach(id=>document.getElementById(id).value='');
+  Object.keys(gCollapsed).forEach(k=>delete gCollapsed[k]);
+  aFilter();
+}
+
+// ══════ SUPABASE PRICES ══════
+const SUPABASE_URL = 'https://ghxisfkgwfqqxndfpmgp.supabase.co';
+const SUPABASE_ANON = 'sb_publishable_s5hodNiLD-8_OwX8NWHfRw_S1uylN2Y';
+
+let _prices = {};        // { ticker: close }  — latest EOD price per ticker
+let _pricesDate = null;  // date string of the prices loaded
+let _pricesLoading = false;
+
+async function fetchLatestPrices() {
+  if(_pricesLoading) return;
+  _pricesLoading = true;
+  setPriceStatus('Actualizando precios...', 'var(--muted)');
+  try {
+    // Get the latest date available in prices table
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/prices?select=ticker,date,close&order=date.desc&limit=1000`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+    );
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows = await r.json();
+    if(!rows.length) { setPriceStatus('Sin precios en base', 'var(--muted)'); return; }
+
+    // Find the most recent date
+    const latestDate = rows.reduce((max, r) => r.date > max ? r.date : max, '');
+
+    // Keep only rows from the latest date
+    const latest = rows.filter(r => r.date === latestDate);
+    _prices = {};
+    latest.forEach(r => { _prices[r.ticker] = r.close; });
+    _pricesDate = latestDate;
+
+    const fmt = d => d ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : '';
+    setPriceStatus(`Precios al ${fmt(latestDate)}`, 'var(--green)');
+    renderPortfolioTable();
+  } catch(e) {
+    setPriceStatus(`Error: ${e.message}`, 'var(--red)');
+    console.error('fetchLatestPrices:', e);
+  } finally {
+    _pricesLoading = false;
+  }
+}
+
+function setPriceStatus(msg, color) {
+  const el = document.getElementById('price-status');
+  if(el) { el.textContent = msg; el.style.color = color; }
+}
+
+// ══════ TAB SWITCH ══════
+function switchTab(el,key){
+  document.querySelectorAll('.tab').forEach(t=>t.className='tab');
+  el.classList.add('act-'+key);
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('panel-'+key).classList.add('active');
+}
+
+// ══════ PORTFOLIO TABLE ══════
+let _portfolioView = 'ar'; // 'ar' | 'us'
+let _pSort_col = 'net', _pSort_dir = -1;
+
+function switchPortfolio(view) {
+  _portfolioView = view;
+  document.getElementById('ptog-ar').style.background  = view==='ar' ? 'var(--ar)'  : 'transparent';
+  document.getElementById('ptog-ar').style.color       = view==='ar' ? 'var(--bg)'  : 'var(--muted)';
+  document.getElementById('ptog-us').style.background  = view==='us' ? 'var(--us)'  : 'transparent';
+  document.getElementById('ptog-us').style.color       = view==='us' ? 'var(--bg)'  : 'var(--muted)';
+  document.getElementById('portfolio-search').value = '';
+  renderPortfolioTable();
+}
+
+function pSort(col) {
+  if(col === _pSort_col) _pSort_dir *= -1;
+  else { _pSort_col = col; _pSort_dir = -1; }
+  renderPortfolioTable();
+}
+
+function filterPortfolioTable(q) {
+  const rows = document.querySelectorAll('#portfolio-tbody tr:not(.row-cash)');
+  q = q.toLowerCase();
+  rows.forEach(r => {
+    const ticker = (r.dataset.ticker||'').toLowerCase();
+    r.style.display = ticker.includes(q) ? '' : 'none';
+  });
+}
+
+function renderPortfolioTable() {
+  const isAr = _portfolioView === 'ar';
+  const data  = isAr ? AR : US;
+
+  // Sort headers
+  document.querySelectorAll('#portfolio-tbl thead th').forEach(th => {
+    th.classList.remove('sa','sd');
+    const col = th.id ? th.id.replace('pth-','') : null;
+    if(col && col === _pSort_col) th.classList.add(_pSort_dir===1?'sa':'sd');
+  });
+
+  // Only open positions (net > 0)
+  const open = [...data].filter(d => d.net > 0);
+  open.sort((a,b) => {
+    const va = a[_pSort_col], vb = b[_pSort_col];
+    if(typeof va === 'string') return va.localeCompare(vb) * _pSort_dir;
+    return ((+va||0) - (+vb||0)) * _pSort_dir;
+  });
+
+  const fmt2  = n => N(n, 2);
+  const fmt0  = n => N(n, 0);
+  const fmtP  = (n, avg) => avg < 200 ? N(n, 4) : N(n, 2);
+
+  const tbody = document.getElementById('portfolio-tbody');
+  tbody.innerHTML = open.map(d => {
+    const avgFmt = d.avg > 0 ? fmtP(d.avg, d.avg) : '—';
+    const netFmt = isAr ? fmt0(d.net) : fmt2(d.net);
+
+    // Price lookup — only EEUU tickers have prices for now
+    const currentPrice = isAr ? null : (_prices[d.ticker] ?? null);
+    const priceFmt = currentPrice !== null ? fmtP(currentPrice, currentPrice) : '—';
+
+    // P&L and value
+    let plCell = '<td class="num" style="color:var(--muted)">—</td>';
+    let valCell = '<td class="num" style="color:var(--muted)">—</td>';
+    if(currentPrice !== null && d.net > 0) {
+      const valor = currentPrice * d.net;
+      const pl    = d.avg > 0 ? (currentPrice - d.avg) * d.net : null;
+      const plPct = d.avg > 0 ? ((currentPrice / d.avg) - 1) * 100 : null;
+      valCell = `<td class="num mp">${'U$S ' + N(valor, 2)}</td>`;
+      if(pl !== null) {
+        const cls = pl >= 0 ? 'mp' : 'mn';
+        const sign = pl >= 0 ? '+' : '';
+        plCell = `<td class="num ${cls}">${sign}U$S ${N(Math.abs(pl),2)} <span style="font-size:9px;opacity:.7">(${sign}${N(plPct,1)}%)</span></td>`;
+      }
+    }
+
+    return `<tr data-ticker="${d.ticker}">
+      <td><b style="font-size:13px">${d.ticker}</b></td>
+      <td class="num">${netFmt}</td>
+      <td class="num">${avgFmt}</td>
+      <td class="num" style="${currentPrice!==null?'color:var(--text)':'color:var(--muted)'}">${priceFmt}</td>
+      ${plCell}
+      ${valCell}
+    </tr>`;
+  }).join('');
+
+  // Cash rows — from global cash balances
+  let cashRows = '';
+  if(isAr) {
+    // Argentina: two rows — ARS and USD
+    const bARS = _cashBalances?.['Argentina (ARS)'] ?? null;
+    const bUSD = _cashBalances?.['Argentina (USD)'] ?? null;
+    if(bARS !== null) cashRows += `<tr class="row-cash">
+      <td>💵 Caja ARS</td>
+      <td class="num" colspan="4"></td>
+      <td class="num ${bARS>=0?'mp':'mn'}">${(bARS<0?'-':'') + '$ ' + N(Math.abs(bARS),2)}</td>
+    </tr>`;
+    if(bUSD !== null) cashRows += `<tr class="row-cash">
+      <td>💵 Caja USD</td>
+      <td class="num" colspan="4"></td>
+      <td class="num ${bUSD>=0?'mp':'mn'}">${(bUSD<0?'-':'') + 'U$S ' + N(Math.abs(bUSD),2)}</td>
+    </tr>`;
+  } else {
+    // EEUU: one USD row
+    const bUS = _cashBalances?.['EEUU (USD)'] ?? null;
+    if(bUS !== null) cashRows += `<tr class="row-cash">
+      <td>💵 Caja USD</td>
+      <td class="num" colspan="4"></td>
+      <td class="num ${bUS>=0?'mp':'mn'}">${(bUS<0?'-':'') + 'U$S ' + N(Math.abs(bUS),2)}</td>
+    </tr>`;
+  }
+  tbody.innerHTML += cashRows;
+
+  // Footer totals
+  const tfoot = document.getElementById('portfolio-tfoot');
+  if(isAr) {
+    tfoot.innerHTML = `
+      <tr class="total-ars">
+        <td colspan="5">TOTAL ARGENTINA (ARS)</td>
+        <td class="num" style="color:var(--muted)">— (precios BYMA pendiente)</td>
+      </tr>
+      <tr class="total-usd">
+        <td colspan="5">TOTAL ARGENTINA (USD)</td>
+        <td class="num" style="color:var(--muted)">— (tipo de cambio pendiente)</td>
+      </tr>`;
+  } else {
+    // Sum up values for EEUU positions with known prices
+    const totalVal = open.reduce((sum, d) => {
+      const p = _prices[d.ticker] ?? null;
+      return p !== null ? sum + p * d.net : sum;
+    }, 0);
+    const bUS = _cashBalances?.['EEUU (USD)'] ?? 0;
+    const hasAnyPrice = open.some(d => _prices[d.ticker] !== undefined);
+    const grandTotal = totalVal + bUS;
+    tfoot.innerHTML = hasAnyPrice
+      ? `<tr>
+          <td colspan="4" style="color:var(--us)">TOTAL EEUU (USD) <span style="font-size:9px;color:var(--muted)">(posiciones valorizadas + caja)</span></td>
+          <td class="num"></td>
+          <td class="num mp" style="font-size:14px">U$S ${N(grandTotal, 2)}</td>
+        </tr>`
+      : `<tr>
+          <td colspan="5" style="color:var(--us)">TOTAL EEUU (USD)</td>
+          <td class="num" style="color:var(--muted)">— (presioná 🔄 para cargar precios)</td>
+        </tr>`;
+  }
+
+  // Options disclaimer
+  const disc = document.getElementById('options-disclaimer-inline');
+  if(disc) {
+    const cnt = _optionsExcluded || 0;
+    if(isAr && cnt > 0) {
+      disc.textContent = `⚠️ ${cnt} contrato${cnt>1?'s':''} de opciones excluido${cnt>1?'s':''}`;
+      disc.style.display = 'inline-block';
+    } else {
+      disc.style.display = 'none';
+    }
+  }
+}
+
+
+// ══════════════════════════════════════════════════════
+//  IMPORT PROCESSING (runs in browser when user uploads)
+// ══════════════════════════════════════════════════════
+
+const INSTRUMENT_GROUPS = {
+  AL30:['AL30','AL30D','AL30C'], AY24:['AY24','AY24D','AY24C'],
+  GD30:['GD30','GD30D'], AO20:['AO20','AO20D'],
+  MELI:['MELI','MELID'], VIST:['VIST','VISTD'],
+  SPY:['SPY','SPYD'], PARY:['PARY','PARYD'],
+};
+const TICKER_TO_GROUP = {};
+for(const [g,ts] of Object.entries(INSTRUMENT_GROUPS)) ts.forEach(t=>TICKER_TO_GROUP[t]=g);
+
+const IMPLICIT_CLOSED = new Set(['I15G8-1505','I15G8-1906']);
+
+// Options detection: Balanz option tickers follow the pattern
+// [UNDERLYING][C/P][STRIKE_DECIMAL][MONTH_CODE]
+// e.g. TPPC15.0AB, GFGV17.0OC, ALUC2.05OC, TECC20.6AB
+// Two patterns identify them:
+// 1. Contains a decimal number in the middle: letters + digits.digits + letters
+// 2. Known option underlying prefixes: TPPC, TPPV, ALUC, ALUP, GFGV, TECC, PBRC, EDNC
+const OPTION_DECIMAL_RE = /^[A-Za-z]{2,6}\d+\.\d+[A-Za-z]{1,2}$/;
+const OPTION_PREFIX_RE  = /^(TPPC|TPPV|ALUC|ALUP|GFGV|TECC|PBRC|EDNC|EDNA|EDND)/;
+function isOption(ticker) {
+  return OPTION_DECIMAL_RE.test(ticker) || OPTION_PREFIX_RE.test(ticker);
+}
+const ACCOUNT_PRIORITY = {'EEUU (USD)':0,'Argentina (USD)':1,'Argentina (ARS)':2};
+const ACCOUNT_MAP = {
+  'Inversion Estados Unidos Dolares':'EEUU (USD)',
+  'Inversion Argentina Pesos':'Argentina (ARS)',
+  'Inversion Argentina Dolares':'Argentina (USD)',
+};
+const BUY_OPS  = ['Compra','Suscripción Primaria','Suscripción FCI'];
+const SELL_OPS = ['Venta','Rescate FCI'];
+const XFER_IN  = 'Transferencia de Titulos IN -';
+
+// Column indices in Balanz export
+const COL = {nro_mov:0, nro_boleto:1, tipo_mov:2, fecha:3, fecha_liq:4,
+             estado:5, cantidad:6, precio:7, comision:8, iva:9,
+             otros_imp:10, monto:11, tipo_cuenta:13};
+
+function numArg(s) {
+  if(s===null||s===undefined) return 0;
+  if(typeof s === 'number') return s; // raw:true gives actual numbers
+  const str = String(s).trim();
+  // Handle Argentine format: 1.234,56 -> 1234.56
+  if(/^-?[\d.]+,\d+$/.test(str)) return parseFloat(str.replace(/\./g,'').replace(',','.')) || 0;
+  return parseFloat(str) || 0;
+}
+function parseDate(s) {
+  if(s===null||s===undefined||s==='') return '';
+
+  // Excel serial number — most reliable, no timezone issues
+  // Excel epoch: days since 1899-12-30 (accounting for Lotus 1-2-3 leap year bug)
+  if(typeof s === 'number') {
+    if(s < 36526 || s > 54789) return ''; // outside 2000-2050 range
+    // Use XLSX.SSF.parse_date_code if available, otherwise manual calculation
+    try {
+      const d = XLSX.SSF.parse_date_code(s);
+      if(d && d.y >= 2000 && d.y <= 2100) {
+        return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+      }
+    } catch(e) {}
+    // Manual fallback: Excel serial to date
+    const epoch = new Date(1899, 11, 30); // Dec 30, 1899
+    const ms = epoch.getTime() + s * 86400000;
+    const dt = new Date(ms);
+    const y = dt.getFullYear(), mo = dt.getMonth()+1, d = dt.getDate();
+    if(y >= 2000 && y <= 2100) return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    return '';
+  }
+
+  // JS Date object (shouldn't arrive here with raw:true but handle anyway)
+  if(s instanceof Date) {
+    if(isNaN(s.getTime())) return '';
+    const y = s.getFullYear(), mo = s.getMonth()+1, d = s.getDate();
+    if(y < 2000 || y > 2100) return '';
+    return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+
+  s = String(s).trim();
+  if(!s) return '';
+
+  // Already YYYY-MM-DD
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const y = parseInt(s.slice(0,4));
+    return (y >= 2000 && y <= 2100) ? s : '';
+  }
+
+  // dd/mm/yyyy or dd/mm/yy — Balanz format, always dd first
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if(m) {
+    let [,dd,mo,y] = m;
+    if(y.length===2) y = parseInt(y) < 50 ? '20'+y : '19'+y;
+    const yr = parseInt(y);
+    if(yr < 2000 || yr > 2100) return '';
+    return `${y}-${mo.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+  }
+
+  return '';
+}
+function extractTicker(tipoMov) {
+  if(!tipoMov) return '';
+  const m = String(tipoMov).match(/\(([^)]+)\)/);
+  return m ? m[1].trim() : String(tipoMov).trim();
+}
+function extractOp(tipoMov) {
+  if(!tipoMov) return '';
+  return String(tipoMov).split('(')[0].trim();
+}
+
+// Parse rows from SheetJS workbook
+function parseBalanzRows(workbook) {
+  const XLSX = window.XLSX;
+  const rows = [];
+  for(const sheetName of workbook.SheetNames) {
+    const ws = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    
+    // Find header row (has 'Nro' in first cell)
+    let headerIdx = -1;
+    for(let i=0; i<data.length; i++) {
+      if(data[i][0] && String(data[i][0]).includes('Mov')) { headerIdx=i; break; }
+    }
+    if(headerIdx<0) continue;
+    
+    for(let i=headerIdx+1; i<data.length; i++) {
+      const row = data[i];
+      if(!row[COL.tipo_mov]) continue; // skip empty rows; nro_mov can legitimately be 0
+      if(String(row[COL.estado]||'').trim() === 'Cancelada') continue; // skip cancelled transactions
+      const tipoCuenta = String(row[COL.tipo_cuenta]||'').trim();
+      const cuenta = ACCOUNT_MAP[tipoCuenta] || tipoCuenta;
+      const fecha = parseDate(row[COL.fecha]);
+      if(!fecha) continue;
+      const tipoMov = String(row[COL.tipo_mov]||'');
+      rows.push({
+        fecha, cuenta,
+        fecha_liq: parseDate(row[COL.fecha_liq]),
+        ticker:    extractTicker(tipoMov),
+        operacion: extractOp(tipoMov),
+        cantidad:  numArg(row[COL.cantidad]),
+        precio:    numArg(row[COL.precio]),
+        monto:     numArg(row[COL.monto]),
+        comision:  numArg(row[COL.comision]),
+        iva:       numArg(row[COL.iva]),
+        otros_imp: numArg(row[COL.otros_imp]),
+        nro_boleto: String(row[COL.nro_boleto]||'0'),
+        nro_mov:    String(row[COL.nro_mov]||'0'),
+        estado:     String(row[COL.estado]||''),
+      });
+    }
+  }
+  return rows;
+}
+
+function primaryKey(t) {
+  if(t.nro_mov && t.nro_mov !== '0')
+    return `mov|${t.fecha}|${t.cuenta}|${t.nro_mov}`;
+  return `fb|${t.fecha}|${t.cuenta}|${t.ticker}|${t.operacion}|${Math.round(t.cantidad*100)}`;
+}
+
+function mergeTransactions(historical, incoming) {
+  const existingKeys = new Set(historical.map(primaryKey));
+  let added = 0;
+  for(const t of incoming) {
+    const k = primaryKey(t);
+    if(!existingKeys.has(k)) { historical.push(t); existingKeys.add(k); added++; }
+  }
+  historical.sort((a,b) => b.fecha.localeCompare(a.fecha));
+  return {merged: historical, added};
+}
+
+function deduplicateMEP(txns) {
+  // Only deduplicate when the SAME operation appears across DIFFERENT accounts
+  // (classic MEP pattern: AL30 sold in ARS account + AL30D bought in USD account).
+  // Two identical ops in the SAME account are genuine independent transactions.
+  const groups = {};
+  txns.forEach((t,i) => {
+    if(['Compra','Venta'].includes(t.operacion) && t.cantidad > 0) {
+      const k = `${t.fecha}|${t.ticker}|${t.operacion}|${Math.round(t.cantidad)}`;
+      if(!groups[k]) groups[k] = [];
+      groups[k].push({i, t});
+    }
+  });
+  const drop = new Set();
+  for(const rows of Object.values(groups)) {
+    if(rows.length <= 1) continue;
+    // Check if there are entries from more than one distinct account
+    const accounts = new Set(rows.map(r => r.t.cuenta));
+    if(accounts.size <= 1) continue; // all same account → genuine distinct ops, keep all
+    // Cross-account duplicates: keep the one with highest account priority, drop the rest
+    rows.sort((a,b) => (ACCOUNT_PRIORITY[a.t.cuenta]??9) - (ACCOUNT_PRIORITY[b.t.cuenta]??9));
+    rows.slice(1).forEach(r => drop.add(r.i));
+  }
+  return txns.filter((_,i) => !drop.has(i));
+}
+
+function canonicalizeTickers(txns) {
+  return txns.map(t => ({
+    ...t, ticker_raw: t.ticker,
+    ticker: TICKER_TO_GROUP[t.ticker] || t.ticker
+  }));
+}
+
+// Detect instruments that should be treated as closed:
+// 1. Stale position: last operation is before STALE_CUTOFF_YEAR — the export history
+//    doesn't go back far enough to capture the closing trades.
+// 2. Fully amortized: has buys, no sells, has Pago de Amortización with cash >= 80% of cost.
+const STALE_CUTOFF_YEAR = 2020;
+
+function isEffectivelyClosed(ticker, ops) {
+  if(IMPLICIT_CLOSED.has(ticker)) return true;
+  if(!ops.length) return false;
+
+  // Case 1: stale position — last op is old, closed before history starts
+  const years = ops.map(t => { const y=(t.fecha||'').slice(0,4); return y?parseInt(y):0; }).filter(y=>y>0);
+  if(years.length && Math.max(...years) < STALE_CUTOFF_YEAR) return true;
+
+  // Case 2: fully amortized (Pago de Amortización with cantidad=0)
+  const hasBuy   = ops.some(t => BUY_OPS.includes(t.operacion) && t.cantidad > 0);
+  const hasSell  = ops.some(t => SELL_OPS.includes(t.operacion) && t.cantidad > 0);
+  const hasAmort = ops.some(t => t.operacion === 'Pago de Amortización');
+  if(hasBuy && !hasSell && hasAmort) {
+    const buyCost   = ops.filter(t => BUY_OPS.includes(t.operacion) && t.cantidad > 0)
+                        .reduce((s,t) => s + Math.abs(t.monto || 0), 0);
+    const amortCash = ops.filter(t => t.operacion === 'Pago de Amortización' && (t.monto||0) > 0)
+                        .reduce((s,t) => s + t.monto, 0);
+    if(buyCost > 0 && amortCash >= buyCost * 0.8) return true;
+  }
+
+  return false;
+}
+
+function netForAcct(ticker, acctFilter, clean) {
+  if(IMPLICIT_CLOSED.has(ticker)) return 0;
+  const allOps = clean.filter(t => t.ticker === ticker);
+  if(isEffectivelyClosed(ticker, allOps)) return 0;
+  let bal = 0;
+  for(const t of allOps) {
+    if(!t.cuenta.includes(acctFilter)) continue;
+    const {operacion:op, cantidad:qty} = t;
+    if(BUY_OPS.includes(op) && qty>0)              bal += qty;
+    else if(SELL_OPS.includes(op) && qty>0)        bal -= qty;
+    else if(op==='Pago de Amortización' && qty<0)  bal += qty;
+    else if(op===XFER_IN && qty>0)                 bal += qty;
+  }
+  return bal;
+}
+
+function buildInstrument(ticker, clean) {
+  const ops = clean.filter(t=>t.ticker===ticker).sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  if(IMPLICIT_CLOSED.has(ticker) || isEffectivelyClosed(ticker, ops)) {
+    return {ticker, net:0, bought:0, sold:0, amort:0, xfer_in:0, avg:0,
+            first:ops[0]?.fecha||'', last:ops.at(-1)?.fecha||'', n:ops.length,
+            accounts:[...new Set(ops.map(t=>t.cuenta))], txns:ops.map(t=>({...t,balance:0,avg_compra:0}))};
+  }
+  let balance=0, cost=0;
+  const txns = ops.map(t => {
+    const {operacion:op, cantidad:qty, precio} = t;
+    if(BUY_OPS.includes(op) && qty>0)              { balance+=qty; cost+=qty*precio; }
+    else if(SELL_OPS.includes(op) && qty>0)        { balance-=qty; }
+    else if(op==='Pago de Amortización' && qty<0)  { balance+=qty; }
+    else if(op===XFER_IN && qty>0)                 { balance+=qty; }
+    const avg = balance>0 ? cost/balance : 0;
+    return {...t, balance:Math.round(balance*100)/100, avg_compra:Math.round(avg*10000)/10000};
+  });
+  const bought   = ops.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  const sold     = ops.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  const amort    = ops.filter(t=>t.operacion==='Pago de Amortización'&&t.cantidad<0).reduce((s,t)=>s+Math.abs(t.cantidad),0);
+  const xfer_in  = ops.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  const bc       = ops.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0&&t.precio>0).reduce((s,t)=>s+t.cantidad*t.precio,0);
+  const avg      = bought>0 ? bc/bought : 0;
+  const dates    = ops.map(t=>t.fecha).filter(Boolean);
+  return {ticker, net:Math.round(balance*100)/100, bought, sold, amort, xfer_in, avg,
+          first: dates.length?dates[0]:'', last: dates.length?dates.at(-1):'',
+          n:ops.length, accounts:[...new Set(ops.map(t=>t.cuenta))], txns};
+}
+
+function makeCard(d, netOverride, txnsFilter, splitNote) {
+  let txns = d.txns;
+  if(txnsFilter) txns = txns.filter(t=>t.cuenta.includes(txnsFilter));
+  const net = netOverride ?? d.net;
+  const buyT = txns.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0);
+  const totalBought = buyT.reduce((s,t)=>s+t.cantidad,0);
+  const buyCost = buyT.filter(t=>t.precio>0).reduce((s,t)=>s+t.cantidad*t.precio,0);
+  const avg = totalBought>0 ? buyCost/totalBought : d.avg;
+  const totalSold = txns.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  const xfer = txns.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  const sortedTxns = [...txns].sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  return {
+    ticker:d.ticker, net, net_total:d.net, bought:totalBought, sold:totalSold,
+    amort:d.amort||0, xfer_in:xfer, avg, first:d.first, last:d.last,
+    n:txns.length, accounts:d.accounts, split_note:splitNote||null,
+    txns: sortedTxns.map(t=>({
+      f:t.fecha, op:t.operacion, c:t.cantidad, p:t.precio, m:t.monto,
+      b:t.balance||0, a:t.avg_compra||0, acct:t.cuenta, raw:t.ticker_raw||d.ticker
+    }))
+  };
+}
+
+// ══════ CASH BALANCE ══════
+// Operations that don't move cash (pure quantity transfers)
+const CASH_SKIP_OPS = new Set([
+  'Transferencia de Titulos IN -',
+  'Depósito por transferencia interna',
+  'Extracción por Transferencia interna',
+]);
+
+// Cauciones en Dólares: the broker debits USD on placement and credits ARS on liquidation.
+// Neither movement reflects real cash flow (the USD is just immobilized internally).
+// We identify them by nro_mov: any row sharing a nro_mov with a "Caución en Dólares Arg."
+// operation should be excluded from cash calculations.
+function buildUsdCaucionMovs(rawTxns) {
+  const movs = new Set();
+  for(const t of rawTxns) {
+    if(t.operacion === 'Caución' && t.ticker === 'Caución en Dólares Arg.' && t.nro_mov && t.nro_mov !== '0') {
+      movs.add(t.nro_mov);
+    }
+  }
+  return movs;
+}
+
+function isCashSkip(t, usdCaucionMovs) {
+  if(CASH_SKIP_OPS.has(t.operacion)) return true;
+  // Skip Caución en Dólares (both the debit and the ARS liquidation)
+  if(usdCaucionMovs && usdCaucionMovs.has(t.nro_mov)) return true;
+  return false;
+}
+
+function buildCash(rawTxns, usdCaucionMovs) {
+  const balances  = {'EEUU (USD)':0, 'Argentina (ARS)':0, 'Argentina (USD)':0};
+  const movements = {'EEUU (USD)':[], 'Argentina (ARS)':[], 'Argentina (USD)':[]};
+
+  for(const t of rawTxns) {
+    if(isCashSkip(t, usdCaucionMovs)) continue;
+    const acct = t.cuenta;
+    if(!(acct in balances)) continue;
+    const m = t.monto || 0;
+    if(m === 0) continue;
+    balances[acct] += m;
+    movements[acct].push({fecha:t.fecha, op:t.operacion, ticker:t.ticker||'', monto:m});
+  }
+
+  // Sort movements by date desc, keep last 6
+  for(const acct of Object.keys(movements)) {
+    movements[acct].sort((a,b) => b.fecha.localeCompare(a.fecha));
+    movements[acct] = movements[acct].slice(0,6);
+  }
+  return {balances, movements};
+}
+
+function renderCashStrip(containerId, accounts) {
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(!accounts || accounts.length === 0) { el.innerHTML = ''; return; }
+
+  const colorMap = {
+    'EEUU (USD)':    {cls:'cc-us',    label:'EEUU · USD',         sym:'USD'},
+    'Argentina (ARS)':{cls:'cc-ars',  label:'Argentina · ARS',    sym:'ARS'},
+    'Argentina (USD)':{cls:'cc-ar-usd',label:'Argentina · USD',   sym:'USD'},
+  };
+
+  const fmtAmt = (n, sym) => {
+    const abs = Math.abs(n);
+    const s = sym === 'ARS'
+      ? new Intl.NumberFormat('es-AR', {minimumFractionDigits:0, maximumFractionDigits:0}).format(abs)
+      : new Intl.NumberFormat('es-AR', {minimumFractionDigits:2, maximumFractionDigits:2}).format(abs);
+    return (n < 0 ? '-' : '') + (sym==='ARS' ? '$' : 'U$S ') + s;
+  };
+  const fmtShort = (n, sym) => {
+    const abs = Math.abs(n);
+    const s = sym === 'ARS'
+      ? new Intl.NumberFormat('es-AR', {minimumFractionDigits:0, maximumFractionDigits:0}).format(abs)
+      : new Intl.NumberFormat('es-AR', {minimumFractionDigits:2, maximumFractionDigits:2}).format(abs);
+    return (n < 0 ? '−' : '+') + (sym==='ARS' ? '$' : 'U$S ') + s;
+  };
+  const fmtDate = d => d && d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}` : '';
+  const fmtDesc = (op, ticker) => {
+    const t = ticker && ticker.length > 0 && !['Crédito','Caución en Pesos Arg.','Caución en Dólares Arg.','Remuneración de Saldos Líquidos'].includes(ticker) ? ` ${ticker}` : '';
+    // Shorten long op names
+    const shortOp = op
+      .replace('Depósito de Fondos - Transferencia electrónica - ','Depósito · ')
+      .replace('Extracción de Fondos - Transferencia Electrónica - ','Retiro · ')
+      .replace('Liquidación de Caución','Liq. Caución')
+      .replace('Remuneración de Saldos Líquidos','Rem. Saldos')
+      .replace('Pago de Amortización','P. Amort.')
+      .replace('Pago de Dividendos','Dividendo')
+      .replace('Pago de Renta','P. Renta')
+      .replace('Suscripción FCI','Susc. FCI')
+      .replace('Rescate FCI','Rescate FCI')
+      .replace('Suscripción Primaria','Susc. Prim.');
+    return shortOp + t;
+  };
+
+  el.innerHTML = accounts.map(({acct, balance, movs}) => {
+    const c = colorMap[acct] || {cls:'cc-us', label:acct, sym:'USD'};
+    const amtStr = fmtAmt(balance, c.sym);
+    const neg = balance < 0;
+    const logRows = movs.map(mv => `
+      <div class="cash-log-row">
+        <div class="cash-log-left">
+          <span class="cash-log-date">${fmtDate(mv.fecha)}</span>
+          <span class="cash-log-desc" title="${mv.op} ${mv.ticker}">${fmtDesc(mv.op, mv.ticker)}</span>
+        </div>
+        <span class="cash-log-amt ${mv.monto>=0?'pos':'neg'}">${fmtShort(mv.monto, c.sym)}</span>
+      </div>`).join('');
+    return `<div class="cash-card ${c.cls}">
+      <div class="cash-card-label">${c.label}</div>
+      <div class="cash-card-amount ${c.cls}${neg?' negative':''}">${amtStr}</div>
+      <div class="cash-log">
+        <div class="cash-log-title">Últimos movimientos</div>
+        ${logRows || '<div style="font-family:var(--mono);font-size:10px;color:var(--muted)">Sin movimientos</div>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function buildPortfolio(clean) {
+  const allTickers = [...new Set(clean.map(t=>t.ticker))].sort();
+  const instruments = {};
+  for(const tk of allTickers) instruments[tk] = buildInstrument(tk, clean);
+
+  const usCards=[], arCards=[];
+  let optionsExcluded = 0;
+  for(const [ticker, d] of Object.entries(instruments)) {
+    if(!d.bought && !d.sold && !d.amort && !d.xfer_in) continue;
+    // Skip options contracts — vencen sin posición residual pero Balanz no registra cierre
+    if(isOption(ticker)) { optionsExcluded++; continue; }
+    const netAr = netForAcct(ticker,'Argentina',clean);
+    const netUs = netForAcct(ticker,'EEUU',clean);
+    if(netAr>0 && netUs>0) {
+      const note = `${netUs.toLocaleString('es-AR')} en EEUU · ${netAr.toLocaleString('es-AR')} en AR`;
+      usCards.push(makeCard(d, netUs, 'EEUU', note));
+      arCards.push(makeCard(d, netAr, 'Argentina', note));
+    } else if(netAr>0) {
+      arCards.push(makeCard(d));
+    } else if(netUs>0) {
+      usCards.push(makeCard(d));
+    } else {
+      const nUs = d.txns.filter(t=>t.cuenta?.includes('EEUU')).length;
+      const nAr = d.txns.filter(t=>t.cuenta?.includes('Argentina')).length;
+      (nUs>=nAr && nUs>0 ? usCards : arCards).push(makeCard(d));
+    }
+  }
+  // Remove implicit-closed false positives
+  const arClean = arCards.filter(c => !(IMPLICIT_CLOSED.has(c.ticker) && c.net>0));
+  usCards.sort((a,b) => b.net-a.net || a.ticker.localeCompare(b.ticker));
+  arClean.sort((a,b) => b.net-a.net || a.ticker.localeCompare(b.ticker));
+  return {usCards, arCards:arClean, optionsExcluded};
+}
+
+function buildAuditRows(clean, rawTxns, usdCaucionMovs) {
+  // clean: deduped+canonicalized rows shown in the table
+  // rawTxns: pre-dedup rows used for accurate cash balance (includes commission rows
+  //          that deduplicateMEP drops as "cross-account duplicates")
+  const CASH_ACCOUNTS = new Set(['EEUU (USD)', 'Argentina (ARS)', 'Argentina (USD)']);
+  // Build running cash balance using RAW txns (pre-dedup) sorted by date+nro_mov
+  const rawSorted = [...rawTxns].sort((a,b) => {
+    const d = a.fecha.localeCompare(b.fecha);
+    if(d !== 0) return d;
+    return (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
+  });
+  const runningBal = {'EEUU (USD)':0, 'Argentina (ARS)':0, 'Argentina (USD)':0};
+  // Map: "fecha|nro_mov|cuenta" -> running balance after that raw row
+  const rawBalMap = new Map();
+  for(const t of rawSorted) {
+    if(CASH_ACCOUNTS.has(t.cuenta) && !isCashSkip(t, usdCaucionMovs) && t.monto !== 0) {
+      runningBal[t.cuenta] = (runningBal[t.cuenta] || 0) + t.monto;
+      // Key by nro_mov+cuenta (nro_mov=0 rows use fecha+operacion+monto as tiebreak)
+      const k = t.nro_mov && t.nro_mov !== '0'
+        ? `${t.nro_mov}|${t.cuenta}`
+        : `0|${t.fecha}|${t.operacion}|${t.cuenta}|${Math.round((t.monto||0)*100)}`;
+      rawBalMap.set(k, runningBal[t.cuenta]);
+    }
+  }
+
+  // Sort clean rows for display
+  const sorted = [...clean].sort((a,b) => {
+    const d = a.fecha.localeCompare(b.fecha);
+    if(d !== 0) return d;
+    return (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
+  });
+
+  return sorted.map(t => {
+    // Look up cash balance for this row using the raw balance map
+    let saldo_cash = null;
+    if(CASH_ACCOUNTS.has(t.cuenta) && !isCashSkip(t, usdCaucionMovs) && t.monto !== 0) {
+      const k = t.nro_mov && t.nro_mov !== '0'
+        ? `${t.nro_mov}|${t.cuenta}`
+        : `0|${t.fecha}|${t.operacion}|${t.cuenta}|${Math.round((t.monto||0)*100)}`;
+      saldo_cash = rawBalMap.has(k) ? rawBalMap.get(k) : null;
+    }
+    return {
+      fecha:t.fecha, year:t.fecha.slice(0,4), cuenta:t.cuenta,
+      ticker:t.ticker, ticker_raw:t.ticker_raw||t.ticker,
+      operacion:t.operacion, cantidad:t.cantidad, precio:t.precio,
+      monto:t.monto, comision:t.comision, iva:t.iva, nro_boleto:t.nro_boleto,
+      nro_mov:t.nro_mov||0, saldo_cash
+    };
+  });
+}
+
+// ══════ CASH DAILY TAB ══════
+let _cashDaily = [];   // [{fecha, ars, ar_usd, us_usd}] — one row per day with movement
+let cData = [];
+let cSort_col = 'fecha', cSort_dir = -1;
+
+function buildCashDaily(rawTxns, usdCaucionMovs) {
+  const CASH_ACCOUNTS = new Set(['EEUU (USD)', 'Argentina (ARS)', 'Argentina (USD)']);
+  // uses global isCashSkip(t, usdCaucionMovs)
+
+  // Running balance per account, accumulate by day
+  const runBal = {'Argentina (ARS)':0, 'Argentina (USD)':0, 'EEUU (USD)':0};
+  const dayMap = {}; // fecha -> {ars, ar_usd, us_usd}
+
+  const sorted = [...rawTxns].sort((a,b) => {
+    const d = a.fecha.localeCompare(b.fecha);
+    return d !== 0 ? d : (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
+  });
+
+  for(const t of sorted) {
+    if(!CASH_ACCOUNTS.has(t.cuenta)) continue;
+    if(isCashSkip(t, usdCaucionMovs)) continue;
+    if(!t.monto) continue;
+    runBal[t.cuenta] = (runBal[t.cuenta] || 0) + t.monto;
+    if(!dayMap[t.fecha]) dayMap[t.fecha] = {};
+    dayMap[t.fecha].ars    = runBal['Argentina (ARS)'];
+    dayMap[t.fecha].ar_usd = runBal['Argentina (USD)'];
+    dayMap[t.fecha].us_usd = runBal['EEUU (USD)'];
+  }
+
+  return Object.entries(dayMap)
+    .map(([fecha, v]) => ({fecha, ars: v.ars||0, ar_usd: v.ar_usd||0, us_usd: v.us_usd||0}))
+    .sort((a,b) => b.fecha.localeCompare(a.fecha));
+}
+
+function rebuildCashYearDropdown() {
+  const sel = document.getElementById('cYear');
+  if(!sel) return;
+  const cur = sel.value;
+  while(sel.options.length > 1) sel.remove(1);
+  const yrs = [...new Set(_cashDaily.map(r => r.fecha.slice(0,4)))].sort().reverse();
+  yrs.forEach(y => { const o = document.createElement('option'); o.value = o.textContent = y; sel.appendChild(o); });
+  if(cur) sel.value = cur;
+}
+
+function cFilter() {
+  const yr  = document.getElementById('cYear').value;
+  const mo  = document.getElementById('cMonth').value;
+  const day = (document.getElementById('cDay').value||'').trim().padStart(2,'0');
+  cData = _cashDaily.filter(r => {
+    if(yr  && r.fecha.slice(0,4) !== yr)  return false;
+    if(mo  && r.fecha.slice(5,7) !== mo)  return false;
+    if(day && day !== '00' && r.fecha.slice(8,10) !== day) return false;
+    return true;
+  });
+  cSortApply();
+}
+
+function cSort(col) {
+  if(col === cSort_col) cSort_dir *= -1;
+  else { cSort_col = col; cSort_dir = col === 'fecha' ? -1 : 1; }
+  cSortApply();
+}
+
+function cSortApply() {
+  document.querySelectorAll('#cash-tbl thead th').forEach(th => {
+    th.classList.remove('sa','sd');
+    const col = th.getAttribute('onclick')?.match(/cSort\('(\w+)'\)/)?.[1];
+    if(col === cSort_col) th.classList.add(cSort_dir === 1 ? 'sa' : 'sd');
+  });
+  cData.sort((a,b) => {
+    const va = a[cSort_col], vb = b[cSort_col];
+    return (typeof va === 'string' ? va.localeCompare(vb) : (va - vb)) * cSort_dir;
+  });
+  cRender();
+}
+
+function cRender() {
+  const tbody = document.getElementById('cTbody');
+  if(!tbody) return;
+  document.getElementById('cCount').textContent = `${cData.length} / ${_cashDaily.length} días`;
+  const fmtARS = n => (n < 0 ? '-' : '') + '$ '   + N(Math.abs(n), 2);
+  const fmtUSD = n => (n < 0 ? '-' : '') + 'U$S ' + N(Math.abs(n), 2);
+  const cls = n => n < 0 ? 'mn' : n > 0 ? 'mp' : '';
+  const fmt = d => d && d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : d;
+  tbody.innerHTML = cData.map(r => `<tr>
+    <td style="font-family:var(--mono);font-size:11px;">${fmt(r.fecha)}</td>
+    <td class="num ${cls(r.ars)}"    style="font-family:var(--mono);font-size:11px;">${fmtARS(r.ars)}</td>
+    <td class="num ${cls(r.ar_usd)}" style="font-family:var(--mono);font-size:11px;">${fmtUSD(r.ar_usd)}</td>
+    <td class="num ${cls(r.us_usd)}" style="font-family:var(--mono);font-size:11px;">${fmtUSD(r.us_usd)}</td>
+  </tr>`).join('');
+}
+
+// ── State ──
+let _historicalTxns = null;  // raw (not yet deduped)
+
+function processAndRefresh(rawMerged) {
+  _historicalTxns = rawMerged;
+  const deduped = deduplicateMEP(rawMerged);
+  const clean   = canonicalizeTickers(deduped);
+  const {usCards, arCards, optionsExcluded} = buildPortfolio(clean);
+  // Build cash balances from raw (pre-dedup) transactions
+  const usdCaucionMovs = buildUsdCaucionMovs(rawMerged);
+  const rawClean  = canonicalizeTickers(rawMerged); // canonical tickers, pre-dedup, for cash
+  const auditRows = buildAuditRows(clean, rawClean, usdCaucionMovs);
+
+  // Swap global data arrays in-place
+  AUDIT.length=0; AUDIT.push(...auditRows);
+  US.length=0;    US.push(...usCards);
+  AR.length=0;    AR.push(...arCards);
+  const {balances, movements} = buildCash(rawMerged, usdCaucionMovs);
+  _cashBalances = balances;
+  _optionsExcluded = optionsExcluded;
+
+  // Build daily cash snapshots for the Cash tab
+  _cashDaily = buildCashDaily(rawMerged, usdCaucionMovs);
+  cData = [..._cashDaily];
+  rebuildCashYearDropdown();
+  cSortApply();
+
+  // Refresh UI
+  renderPortfolioTable();
+  aFilter();
+  rebuildYearDropdown();
+
+  // Cash strips removed — cash is now shown inline in the Portfolio table
+  // Options disclaimer is now handled inside renderPortfolioTable()
+
+  // Update date range in header
+  const dates = auditRows.map(r=>r.fecha).filter(Boolean).sort();
+  if(dates.length) {
+    const fmt = d => {
+    if(!d || d.length < 10) return d||'';
+    return `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
+  };
+    document.querySelector('header span').textContent =
+      `${fmt(dates[0])} → ${fmt(dates.at(-1))} · ${auditRows.length.toLocaleString('es-AR')} operaciones · clasificado por posición abierta`;
+    // update toolbar date range
+    const dateSpan = document.querySelector('.atb span[data-daterange]');
+    if(dateSpan) dateSpan.textContent = `${fmt(dates[0])} → ${fmt(dates.at(-1))}`;
+  }
+
+  // Save updated historical to localStorage for next session
+  try {
+    localStorage.setItem('portfolio_txns', JSON.stringify(rawMerged));
+  } catch(e) { /* storage full, ignore */ }
+
+  // Auto-fetch latest prices from Supabase
+  fetchLatestPrices();
+}
+
+async function handleFileImport(file) {
+  const modal = document.getElementById('import-modal');
+  const status = document.getElementById('import-status');
+
+  status.textContent = 'Leyendo archivo...';
+  showModal(true);
+
+  try {
+    const buf = await file.arrayBuffer();
+    const workbook = XLSX.read(buf, {type:'array', raw:true, cellDates:false});
+
+    status.textContent = 'Procesando transacciones...';
+    await new Promise(r => setTimeout(r, 30)); // let UI breathe
+
+    const incoming = parseBalanzRows(workbook);
+    if(!incoming.length) throw new Error('No se encontraron transacciones en el archivo.');
+
+    // Get current historical base from localStorage only
+    let historical = _historicalTxns;
+    if(!historical) {
+      const stored = localStorage.getItem('portfolio_txns');
+      historical = stored ? JSON.parse(stored) : [];
+    }
+
+    status.textContent = 'Mergeando con histórico...';
+    await new Promise(r => setTimeout(r, 30));
+
+    const {merged, added} = mergeTransactions(historical, incoming);
+    processAndRefresh(merged);
+
+    status.textContent = `✓ ${added} operaciones nuevas importadas (${merged.length} total)`;
+    status.style.color = 'var(--green)';
+    setTimeout(() => showModal(false), 2500);
+
+  } catch(err) {
+    status.textContent = `✗ Error: ${err.message}`;
+    status.style.color = 'var(--red)';
+    console.error(err);
+  }
+}
+
+function showModal(show) {
+  document.getElementById('import-modal').style.display = show ? 'flex' : 'none';
+}
+
+// ══════ CLEAR DATA ══════
+function showClearConfirm() {
+  document.getElementById('clear-modal').style.display = 'flex';
+}
+function hideClearConfirm() {
+  document.getElementById('clear-modal').style.display = 'none';
+}
+function clearAllData() {
+  localStorage.removeItem('portfolio_txns');
+  location.reload();
+}
+
+// ══════ INIT ══════
+(function init() {
+  const stored = localStorage.getItem('portfolio_txns');
+  if (stored) {
+    try {
+      const raw = JSON.parse(stored);
+      processAndRefresh(raw); // this already calls fetchLatestPrices at the end
+    } catch(e) {
+      console.error('Error loading stored data:', e);
+      showEmptyState();
+    }
+  } else {
+    showEmptyState();
+    fetchLatestPrices(); // still load prices even if no txn data yet
+  }
+})();
+
+function showEmptyState() {
+  document.querySelector('header span').textContent = 'Sin datos — importá un archivo .xls de Balanz para comenzar';
+  _cashBalances = null;
+  _optionsExcluded = 0;
+  renderPortfolioTable();
+  aFilter();
+  _cashDaily = []; cData = [];
+  const ct = document.getElementById('cTbody'); if(ct) ct.innerHTML = '';
+  const cc = document.getElementById('cCount'); if(cc) cc.textContent = '';
+}
+</script>
+
+<!-- Import Modal -->
+<div id="import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:28px 32px;min-width:360px;max-width:480px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)">IMPORTAR TRANSACCIONES</span>
+      <button onclick="showModal(false)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px;">✕</button>
+    </div>
+    <div id="drop-zone" style="border:2px dashed var(--border);border-radius:6px;padding:32px 24px;text-align:center;cursor:pointer;transition:border-color .15s;"
+         onclick="document.getElementById('file-input').click()"
+         ondragover="event.preventDefault();this.style.borderColor='var(--ar)'"
+         ondragleave="this.style.borderColor='var(--border)'"
+         ondrop="event.preventDefault();this.style.borderColor='var(--border)';handleFileImport(event.dataTransfer.files[0])">
+      <div style="font-size:28px;margin-bottom:10px;">📂</div>
+      <div style="font-family:var(--mono);font-size:12px;color:var(--text);margin-bottom:6px;">Arrastrá el archivo acá</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);">o hacé click para seleccionar</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px;">.xls · .xlsx</div>
+    </div>
+    <input id="file-input" type="file" accept=".xls,.xlsx" style="display:none"
+           onchange="handleFileImport(this.files[0])">
+    <div id="import-status" style="font-family:var(--mono);font-size:11px;color:var(--muted);text-align:center;margin-top:14px;min-height:18px;"></div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.6;">
+        <b style="color:var(--text)">Cómo exportar de Balanz:</b><br>
+        Reportes → Movimientos Históricos → seleccioná el rango completo → Exportar .xls
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Clear Data Modal -->
+<div id="clear-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:28px 32px;min-width:320px;max-width:420px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)">LIMPIAR DATOS</span>
+      <button onclick="hideClearConfirm()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px;">✕</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:22px;">
+      Esto va a borrar <span style="color:var(--red);font-weight:600;">todas las transacciones</span> guardadas en este browser y dejar el dashboard en blanco.<br><br>
+      <span style="font-size:10px;">Esta acción no se puede deshacer. Los archivos .xls originales no se modifican.</span>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="hideClearConfirm()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;">Cancelar</button>
+      <button onclick="clearAllData()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--red);background:rgba(239,68,68,.15);color:var(--red);font-family:var(--mono);font-size:11px;cursor:pointer;font-weight:600;">🗑 Borrar todo</button>
+    </div>
+  </div>
+</div>
+
+<!-- SheetJS CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+</body>
+</html>
