@@ -930,8 +930,8 @@ function buildInstrument(ticker, clean) {
   }
   let balance=0, cost=0;
   const txns = ops.map(t => {
-    const {operacion:op, cantidad:qty, precio} = t;
-    if(BUY_OPS.includes(op) && qty>0)              { balance+=qty; cost+=qty*precio; }
+    const {operacion:op, cantidad:qty, monto} = t;
+    if(BUY_OPS.includes(op) && qty>0)              { balance+=qty; cost+=Math.abs(monto||0); }
     else if(SELL_OPS.includes(op) && qty>0)        { balance-=qty; }
     else if(op==='Pago de Amortización' && qty<0)  { balance+=qty; }
     else if(op===XFER_IN && qty>0)                 { balance+=qty; }
@@ -942,7 +942,8 @@ function buildInstrument(ticker, clean) {
   const sold     = ops.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
   const amort    = ops.filter(t=>t.operacion==='Pago de Amortización'&&t.cantidad<0).reduce((s,t)=>s+Math.abs(t.cantidad),0);
   const xfer_in  = ops.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
-  const bc       = ops.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0&&t.precio>0).reduce((s,t)=>s+t.cantidad*t.precio,0);
+  // avg cost = total |monto| of buys / total qty bought (monto is in account currency, not ARS precio)
+  const bc       = ops.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+Math.abs(t.monto||0),0);
   const avg      = bought>0 ? bc/bought : 0;
   const dates    = ops.map(t=>t.fecha).filter(Boolean);
   return {ticker, net:Math.round(balance*100)/100, bought, sold, amort, xfer_in, avg,
@@ -956,7 +957,7 @@ function makeCard(d, netOverride, txnsFilter, splitNote) {
   const net = netOverride ?? d.net;
   const buyT = txns.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0);
   const totalBought = buyT.reduce((s,t)=>s+t.cantidad,0);
-  const buyCost = buyT.filter(t=>t.precio>0).reduce((s,t)=>s+t.cantidad*t.precio,0);
+  const buyCost = buyT.reduce((s,t)=>s+Math.abs(t.monto||0),0);
   const avg = totalBought>0 ? buyCost/totalBought : d.avg;
   const totalSold = txns.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
   const xfer = txns.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
