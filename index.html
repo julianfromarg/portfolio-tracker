@@ -751,10 +751,14 @@ const COL = {nro_mov:0, nro_boleto:1, tipo_mov:2, fecha:3, fecha_liq:4,
 
 function numArg(s) {
   if(s===null||s===undefined) return 0;
-  if(typeof s === 'number') return s; // raw:true gives actual numbers
+  if(typeof s === 'number') return s; // already a JS number from SheetJS
   const str = String(s).trim();
-  // Handle Argentine format: 1.234,56 -> 1234.56
+  if(!str || str === '-') return 0;
+  // Argentine decimal format: 1.234,56 → 1234.56  (dots=thousands, comma=decimal)
   if(/^-?[\d.]+,\d+$/.test(str)) return parseFloat(str.replace(/\./g,'').replace(',','.')) || 0;
+  // Integer with dot-thousands separator (no comma): 677.225 → 677225
+  // Only apply when there are exactly 3 digits after each dot (thousands grouping pattern)
+  if(/^-?\d{1,3}(\.\d{3})+$/.test(str)) return parseFloat(str.replace(/\./g,'')) || 0;
   return parseFloat(str) || 0;
 }
 function parseDate(s) {
@@ -823,9 +827,42 @@ function extractOp(tipoMov) {
 function parseBalanzRows(workbook) {
   const XLSX = window.XLSX;
   const rows = [];
+  // Detect if this is a broker HTML-disguised XLS file.
+  // The broker file is HTML, so SheetJS may coerce number-looking cells to JS numbers
+  // via parseFloat, truncating AR-format decimals like "99,7494" -> 99 or "1.234,56" -> 1.234.
+  // To avoid this, we read each cell's 'w' (formatted text) property which always contains
+  // the original string as it appeared in the HTML cell.
+  const isHtmlXls = workbook.Workbook?.WBProps?.date1904 === undefined &&
+    Object.values(workbook.Sheets).some(ws => ws['!type'] === 'https' || ws['!fullref']);
+  // Safer detection: check if any cell has 'w' property that looks like AR number format
+  function getCellText(ws, addr) {
+    const cell = ws[addr];
+    if(!cell) return null;
+    // Prefer 'w' (formatted text from HTML cell) over 'v' (parsed value)
+    // This preserves "99,7494", "1.234,56" etc. as strings
+    if(cell.w !== undefined && cell.w !== null && cell.w !== '') return String(cell.w);
+    if(cell.v !== undefined && cell.v !== null) return String(cell.v);
+    return null;
+  }
   for(const sheetName of workbook.SheetNames) {
     const ws = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    // Build data array using cell text (preserves original AR number strings)
+    const ref = ws['!ref'];
+    let data;
+    if(ref) {
+      const range = XLSX.utils.decode_range(ref);
+      data = [];
+      for(let R = range.s.r; R <= range.e.r; R++) {
+        const rowArr = [];
+        for(let C = range.s.c; C <= range.e.c; C++) {
+          const addr = XLSX.utils.encode_cell({r:R, c:C});
+          rowArr.push(getCellText(ws, addr));
+        }
+        data.push(rowArr);
+      }
+    } else {
+      data = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    }
     
     // Find header row (has 'Nro' in first cell)
     let headerIdx = -1;
@@ -922,9 +959,12 @@ function isEffectivelyClosed(ticker, ops) {
   if(IMPLICIT_CLOSED.has(ticker)) return true;
   if(!ops.length) return false;
 
-  // Case 1: stale position — last op is old, closed before history starts
+  // Case 1: stale position — last op is on or before STALE_CUTOFF_YEAR
+  // Using <= so instruments whose last activity was IN 2020 are also treated as stale
+  // (e.g. BDC20 fully amortized in Jan 2020 — the export history doesn't go back
+  // far enough to confirm the position was opened and closed within that year)
   const years = ops.map(t => { const y=(t.fecha||'').slice(0,4); return y?parseInt(y):0; }).filter(y=>y>0);
-  if(years.length && Math.max(...years) < STALE_CUTOFF_YEAR) return true;
+  if(years.length && Math.max(...years) <= STALE_CUTOFF_YEAR) return true;
 
   // Case 2: fully amortized (Pago de Amortización with cantidad=0)
   const hasBuy   = ops.some(t => BUY_OPS.includes(t.operacion) && t.cantidad > 0);
@@ -1370,6 +1410,52 @@ function processAndRefresh(rawMerged) {
   fetchLatestPrices();
 }
 
+// Parse the broker HTML-disguised XLS directly via DOMParser, bypassing SheetJS
+// numeric coercion entirely. This ensures "10.000,00" stays as the string "10.000,00"
+// rather than being truncated to 10 by SheetJS's parseFloat logic.
+function parseBalanzRowsFromHTML(htmlText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(htmlText, 'text/html');
+  const tableRows = Array.from(doc.querySelectorAll('table tr, tr'));
+  const rows = [];
+  let headerIdx = -1;
+  const data = tableRows.map(tr =>
+    Array.from(tr.querySelectorAll('td, th')).map(td => td.textContent.trim())
+  ).filter(r => r.length > 0);
+
+  for(let i = 0; i < data.length; i++) {
+    if(data[i][0] && String(data[i][0]).includes('Mov')) { headerIdx = i; break; }
+  }
+  if(headerIdx < 0) return null; // not a broker HTML file
+
+  for(let i = headerIdx + 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row[COL.tipo_mov]) continue;
+    if(String(row[COL.estado]||'').trim() === 'Cancelada') continue;
+    const tipoCuenta = String(row[COL.tipo_cuenta]||'').trim();
+    const cuenta = ACCOUNT_MAP[tipoCuenta] || tipoCuenta;
+    const fecha = parseDate(row[COL.fecha]);
+    if(!fecha) continue;
+    const tipoMov = String(row[COL.tipo_mov]||'');
+    rows.push({
+      fecha, cuenta,
+      fecha_liq:  parseDate(row[COL.fecha_liq]),
+      ticker:     extractTicker(tipoMov),
+      operacion:  extractOp(tipoMov),
+      cantidad:   numArg(row[COL.cantidad]),
+      precio:     numArg(row[COL.precio]),
+      monto:      numArg(row[COL.monto]),
+      comision:   numArg(row[COL.comision]),
+      iva:        numArg(row[COL.iva]),
+      otros_imp:  numArg(row[COL.otros_imp]),
+      nro_boleto: String(row[COL.nro_boleto]||'0'),
+      nro_mov:    String(row[COL.nro_mov]||'0'),
+      estado:     String(row[COL.estado]||''),
+    });
+  }
+  return rows;
+}
+
 async function handleFileImport(file) {
   const modal = document.getElementById('import-modal');
   const status = document.getElementById('import-status');
@@ -1378,13 +1464,29 @@ async function handleFileImport(file) {
   showModal(true);
 
   try {
-    const buf = await file.arrayBuffer();
-    const workbook = XLSX.read(buf, {type:'array', raw:true, cellDates:false});
+    // Detect broker HTML-disguised XLS by reading the first bytes as text
+    // The broker file starts with an HTML tag, not a binary signature
+    const textBuf = await file.slice(0, 512).text();
+    const isHtmlXls = /<html|<table|<tr|<!DOCTYPE/i.test(textBuf);
 
-    status.textContent = 'Procesando transacciones...';
-    await new Promise(r => setTimeout(r, 30)); // let UI breathe
+    let incoming;
+    if(isHtmlXls) {
+      // Broker HTML file: parse via DOMParser to preserve exact cell strings
+      // This avoids SheetJS truncating "10.000,00" → 10 via parseFloat
+      status.textContent = 'Procesando archivo del broker...';
+      await new Promise(r => setTimeout(r, 30));
+      const fullText = await file.text();
+      incoming = parseBalanzRowsFromHTML(fullText);
+      if(!incoming) throw new Error('No se encontró tabla de operaciones en el archivo HTML.');
+    } else {
+      // Real XLSX file: use SheetJS as before
+      const buf = await file.arrayBuffer();
+      const workbook = XLSX.read(buf, {type:'array', raw:true, cellDates:false});
+      status.textContent = 'Procesando transacciones...';
+      await new Promise(r => setTimeout(r, 30));
+      incoming = parseBalanzRows(workbook);
+    }
 
-    const incoming = parseBalanzRows(workbook);
     if(!incoming.length) throw new Error('No se encontraron transacciones en el archivo.');
 
     // Get current historical base from localStorage only
