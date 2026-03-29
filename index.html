@@ -133,6 +133,17 @@ tbody tr:hover td{background:var(--s2);}
 }
 #portfolio-tbl tfoot tr.total-ars td:first-child{color:var(--ar);}
 #portfolio-tbl tfoot tr.total-usd td:first-child{color:var(--usd);}
+/* ── NRA TAB ── */
+.tab.act-nra{color:var(--usd);border-bottom-color:var(--usd);}
+#nra-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 10px;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);}
+#nra-tbl tbody td{padding:6px 10px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
+#nra-tbl tbody tr:hover td{background:var(--s2);}
+#nra-tbl tfoot td{padding:8px 10px;font-family:var(--mono);font-size:11px;font-weight:600;border-top:2px solid var(--border);background:var(--s2);}
+.nra-toggle{padding:3px 10px;border-radius:3px;font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;}
+.nra-toggle.aplica{background:rgba(245,158,11,.12);color:var(--usd);border-color:rgba(245,158,11,.4);}
+.nra-toggle.aplica:hover{background:rgba(245,158,11,.25);}
+.nra-toggle.excluida{background:rgba(107,122,153,.12);color:var(--muted);border-color:var(--border);}
+.nra-toggle.excluida:hover{background:rgba(107,122,153,.2);}
 </style>
 </head>
 <body>
@@ -144,6 +155,7 @@ tbody tr:hover td{background:var(--s2);}
   <div class="tab act-portfolio" onclick="switchTab(this,'portfolio')">📊 Portfolio</div>
   <div class="tab" onclick="switchTab(this,'audit')">📋 Transacciones</div>
   <div class="tab" onclick="switchTab(this,'cash')">💵 Saldo Cash</div>
+  <div class="tab" onclick="switchTab(this,'nra')">🏛 Ret. NRA</div>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
     <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
     <button class="tab" onclick="showClearConfirm()" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--muted);letter-spacing:.04em;" title="Borrar todos los datos">🗑 Limpiar datos</button>
@@ -224,6 +236,7 @@ tbody tr:hover td{background:var(--s2);}
         <th id="th-monto" onclick="aSort('monto')" class="num">Monto</th>
         <th id="th-comision" onclick="aSort('comision')" class="num">Comisión</th>
         <th id="th-iva" onclick="aSort('iva')" class="num">IVA</th>
+        <th id="th-nra" onclick="aSort('nra')" class="num" style="color:var(--usd)">Ret. NRA</th>
         <th id="th-saldo_cash" onclick="aSort('saldo_cash')" class="num">Saldo cash</th>
         <th class="num">Nro. Boleto</th>
       </tr></thead>
@@ -405,7 +418,7 @@ function aRender(){
       const totM=rows.reduce((s,r)=>s+r.monto,0);
       const totC=rows.reduce((s,r)=>s+r.comision,0);
       const kEsc=key.replace(/'/g,"\'");
-      html+=`<tr class="gh" onclick="toggleG('${kEsc}')"><td colspan="10">
+      html+=`<tr class="gh" onclick="toggleG('${kEsc}')"><td colspan="11">
         <span class="arrow">${coll?'▶':'▼'}</span>
         ${key} &nbsp;·&nbsp; ${rows.length} op.
         &emsp; monto: <span style="color:${totM>=0?'var(--green)':'var(--red)'}">${N(totM,2)}</span>
@@ -414,7 +427,7 @@ function aRender(){
       if(!coll) html+=rows.map(aRow).join('');
     });
   }
-  tbody.innerHTML=html||'<tr><td colspan="10" class="no-r">Sin resultados.</td></tr>';
+  tbody.innerHTML=html||'<tr><td colspan="11" class="no-r">Sin resultados.</td></tr>';
 }
 
 function aRow(r){
@@ -445,6 +458,7 @@ function aRow(r){
     <td class="num ${r.monto>=0?'mp':'mn'}">${N(r.monto,2)}</td>
     <td class="num">${r.comision>0?N(r.comision,2):'—'}</td>
     <td class="num">${r.iva>0?N(r.iva,2):'—'}</td>
+    <td class="num${r.nra<0?' mn':''}" style="${r.nra<0?'':'color:var(--muted)'}">${r.nra<0?'−U$S '+N(Math.abs(r.nra),2):'—'}</td>
     ${saldoCell}
     <td class="num" style="color:var(--muted)">${r.nro_boleto&&r.nro_boleto!=='0'?r.nro_boleto:'—'}</td>
   </tr>`;
@@ -491,7 +505,21 @@ async function fetchLatestPrices() {
 
     const fmt = d => d ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : '';
     setPriceStatus(`Precios al ${fmt(latestDate)}`, 'var(--green)');
+
+    // Also fetch NRA overrides
+    try {
+      const nr = await fetch(
+        `${SUPABASE_URL}/rest/v1/nra_overrides?select=nro_mov,excluir`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      );
+      if(nr.ok) {
+        const nrRows = await nr.json();
+        _nraOverrides = new Set(nrRows.filter(r => r.excluir).map(r => String(r.nro_mov)));
+      }
+    } catch(e) { console.warn('NRA overrides fetch failed:', e); }
+
     renderPortfolioTable();
+    renderNRATab();
   } catch(e) {
     setPriceStatus(`Error: ${e.message}`, 'var(--red)');
     console.error('fetchLatestPrices:', e);
@@ -704,6 +732,27 @@ const BOND_TICKERS = new Set([
 function isBond(ticker) {
   // También detectar por patrón: letras+números terminando en D o C (versiones dólar de bonos)
   return BOND_TICKERS.has(ticker);
+}
+
+// ══════ NRA WITHHOLDING ══════
+// US dividends paid to non-residents are subject to 30% NRA withholding.
+// Balanz does not report this retention in the transaction file — it silently
+// reduces the cash credited. We estimate it and subtract it from EEUU cash.
+// Formula: nra = (|monto| + comision + iva) * 0.30
+//   i.e. we reconstruct the gross dividend and apply 30%.
+// Only applies to: operacion === 'Pago de Dividendos' AND cuenta === 'EEUU (USD)'
+const NRA_RATE = 0.30;
+let _nraOverrides = new Set(); // set of nro_mov strings where NRA = 0 (user-overridden)
+
+function isNRAApplicable(t) {
+  return t.operacion === 'Pago de Dividendos' && t.cuenta === 'EEUU (USD)';
+}
+
+function calcNRA(t) {
+  if(!isNRAApplicable(t)) return 0;
+  if(_nraOverrides.has(String(t.nro_mov))) return 0;
+  const gross = Math.abs(t.monto || 0) + Math.abs(t.comision || 0) + Math.abs(t.iva || 0);
+  return -(gross * NRA_RATE); // negative = cash outflow
 }
 
 // Calcula el costo de una compra en la moneda de la cuenta:
@@ -1098,7 +1147,10 @@ function buildCash(rawTxns, usdCaucionMovs) {
     const m = t.monto || 0;
     if(m === 0) continue;
     balances[acct] += m;
-    movements[acct].push({fecha:t.fecha, op:t.operacion, ticker:t.ticker||'', monto:m});
+    // Deduct estimated NRA withholding for US dividends
+    const nra = calcNRA(t);
+    if(nra !== 0) balances[acct] += nra; // nra is already negative
+    movements[acct].push({fecha:t.fecha, op:t.operacion, ticker:t.ticker||'', monto:m, nra});
   }
 
   // Sort movements by date desc, keep last 6
@@ -1255,7 +1307,8 @@ function buildAuditRows(clean, rawTxns, usdCaucionMovs) {
       ticker:t.ticker, ticker_raw:t.ticker_raw||t.ticker,
       operacion:t.operacion, cantidad:t.cantidad, precio:t.precio,
       monto:t.monto, comision:t.comision, iva:t.iva, nro_boleto:t.nro_boleto,
-      nro_mov:t.nro_mov||0, saldo_cash
+      nro_mov:t.nro_mov||0, saldo_cash,
+      nra: calcNRA(t)  // estimated NRA withholding (negative) or 0
     };
   });
 }
@@ -1283,6 +1336,8 @@ function buildCashDaily(rawTxns, usdCaucionMovs) {
     if(isCashSkip(t, usdCaucionMovs)) continue;
     if(!t.monto) continue;
     runBal[t.cuenta] = (runBal[t.cuenta] || 0) + t.monto;
+    const nra = calcNRA(t);
+    if(nra !== 0) runBal[t.cuenta] += nra;
     if(!dayMap[t.fecha]) dayMap[t.fecha] = {};
     dayMap[t.fecha].ars    = runBal['Argentina (ARS)'];
     dayMap[t.fecha].ar_usd = runBal['Argentina (USD)'];
@@ -1352,6 +1407,115 @@ function cRender() {
   </tr>`).join('');
 }
 
+// ══════ NRA TAB ══════
+let _nraData = [];          // all dividend EEUU rows (from AUDIT)
+let _nraSort_col = 'fecha', _nraSort_dir = -1;
+
+function buildNRAData() {
+  return AUDIT.filter(r => r.operacion === 'Pago de Dividendos' && r.cuenta === 'EEUU (USD)')
+    .map(r => {
+      const gross = Math.abs(r.monto||0) + Math.abs(r.comision||0) + Math.abs(r.iva||0);
+      const nra   = _nraOverrides.has(String(r.nro_mov)) ? 0 : -(gross * NRA_RATE);
+      return {...r, gross, nra_est: nra, excluida: _nraOverrides.has(String(r.nro_mov))};
+    });
+}
+
+function nraSort(col) {
+  if(col === _nraSort_col) _nraSort_dir *= -1;
+  else { _nraSort_col = col; _nraSort_dir = col === 'fecha' ? -1 : 1; }
+  renderNRATab();
+}
+
+async function toggleNRAOverride(nro_mov, currentlyExcluida) {
+  const newVal = !currentlyExcluida;
+  const btn = document.querySelector(`[data-nramov="${nro_mov}"]`);
+  if(btn) { btn.textContent = '...'; btn.disabled = true; }
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/nra_overrides`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON,
+          Authorization: `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify({ nro_mov: String(nro_mov), excluir: newVal }),
+      }
+    );
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    if(newVal) _nraOverrides.add(String(nro_mov));
+    else        _nraOverrides.delete(String(nro_mov));
+    const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns || []);
+    const deduped  = deduplicateMEP(_historicalTxns || []);
+    const clean    = canonicalizeTickers(deduped);
+    const rawClean = canonicalizeTickers(_historicalTxns || []);
+    const auditRows = buildAuditRows(clean, rawClean, usdCaucionMovs);
+    AUDIT.length = 0; AUDIT.push(...auditRows);
+    const {balances} = buildCash(_historicalTxns || [], usdCaucionMovs);
+    _cashBalances = balances;
+    renderPortfolioTable();
+    aFilter();
+    renderNRATab();
+  } catch(e) {
+    console.error('toggleNRAOverride:', e);
+    if(btn) { btn.textContent = currentlyExcluida ? 'No aplica' : '30% aplicado'; btn.disabled = false; }
+    alert(`Error al guardar: ${e.message}`);
+  }
+}
+
+function renderNRATab() {
+  const tbody = document.getElementById('nraTbody');
+  const tfoot = document.getElementById('nraTfoot');
+  const count = document.getElementById('nraCount');
+  if(!tbody) return;
+  _nraData = buildNRAData();
+  _nraData.sort((a, b) => {
+    const va = a[_nraSort_col], vb = b[_nraSort_col];
+    return (typeof va === 'string' ? va.localeCompare(vb) : ((+va||0)-(+vb||0))) * _nraSort_dir;
+  });
+  if(count) count.textContent = `${_nraData.length} dividendo${_nraData.length!==1?'s':''}`;
+  const fmt = d => d&&d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : d||'--';
+  const fU  = n => 'U$S ' + N(Math.abs(n), 2);
+  if(!_nraData.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="no-r">Sin dividendos en cuenta EEUU.</td></tr>';
+    if(tfoot) tfoot.innerHTML = '';
+    return;
+  }
+  tbody.innerHTML = _nraData.map(r => {
+    const excl = r.excluida;
+    const nraDisplay = excl
+      ? '<span style="color:var(--muted)">-- (excluida)</span>'
+      : `<span class="mn">-${fU(Math.abs(r.nra_est))}</span>`;
+    const btnCls  = excl ? 'nra-toggle excluida' : 'nra-toggle aplica';
+    const btnText = excl ? 'No aplica' : '30% aplicado';
+    return `<tr>
+      <td>${fmt(r.fecha)}</td>
+      <td><b>${r.ticker}</b></td>
+      <td class="num mp">${fU(r.monto)}</td>
+      <td class="num">${r.comision>0?fU(r.comision):'--'}</td>
+      <td class="num">${r.iva>0?fU(r.iva):'--'}</td>
+      <td class="num" style="color:var(--text)">${fU(r.gross)}</td>
+      <td class="num">${nraDisplay}</td>
+      <td class="num" style="color:var(--muted)">${r.nro_mov&&r.nro_mov!=='0'?r.nro_mov:'--'}</td>
+      <td style="text-align:center;">
+        <button class="${btnCls}" data-nramov="${r.nro_mov}"
+          onclick="toggleNRAOverride('${r.nro_mov}', ${excl})">${btnText}</button>
+      </td>
+    </tr>`;
+  }).join('');
+  const totalNRA   = _nraData.reduce((s, r) => s + Math.abs(r.nra_est), 0);
+  const totalGross = _nraData.reduce((s, r) => s + r.gross, 0);
+  const excluded   = _nraData.filter(r => r.excluida).length;
+  if(tfoot) tfoot.innerHTML = `<tr>
+    <td colspan="5" style="color:var(--muted)">TOTAL - ${_nraData.length} dividendos - ${excluded} excluido${excluded!==1?'s':''}</td>
+    <td class="num">${fU(totalGross)}</td>
+    <td class="num mn">-${fU(totalNRA)}</td>
+    <td colspan="2"></td>
+  </tr>`;
+}
+
 // ── State ──
 let _historicalTxns = null;  // raw (not yet deduped)
 
@@ -1383,6 +1547,7 @@ function processAndRefresh(rawMerged) {
   renderPortfolioTable();
   aFilter();
   rebuildYearDropdown();
+  renderNRATab();
 
   // Cash strips removed — cash is now shown inline in the Portfolio table
   // Options disclaimer is now handled inside renderPortfolioTable()
@@ -1584,6 +1749,34 @@ function showEmptyState() {
         Reportes → Movimientos Históricos → seleccioná el rango completo → Exportar .xls
       </div>
     </div>
+  </div>
+</div>
+
+<!-- NRA Tab Panel -->
+<div id="panel-nra" class="panel" style="padding:0;">
+  <div class="atb" style="justify-content:space-between;">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--usd);">🏛 Retención NRA — Dividendos EEUU</span>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);max-width:520px;line-height:1.5;">
+      Estimación del 30% de retención para no residentes. Balanz no la reporta en el archivo — la calculamos sobre el dividendo bruto reconstituyendo comisiones e IVA. Marcá una fila como "No aplica" si la retención no correspondió en ese caso.
+    </span>
+    <span class="a-count" id="nraCount"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="nra-tbl" style="min-width:820px;">
+      <thead><tr>
+        <th style="text-align:left;cursor:pointer;user-select:none;" onclick="nraSort('fecha')">Fecha</th>
+        <th style="text-align:left;cursor:pointer;user-select:none;" onclick="nraSort('ticker')">Ticker</th>
+        <th class="num" style="cursor:pointer;user-select:none;" onclick="nraSort('monto')">Monto neto</th>
+        <th class="num">Comisión</th>
+        <th class="num">IVA</th>
+        <th class="num">Bruto estimado</th>
+        <th class="num" style="color:var(--usd)">Ret. NRA (30%)</th>
+        <th class="num">Nro. Mov.</th>
+        <th style="text-align:center;">Override</th>
+      </tr></thead>
+      <tbody id="nraTbody"></tbody>
+      <tfoot id="nraTfoot"></tfoot>
+    </table>
   </div>
 </div>
 
