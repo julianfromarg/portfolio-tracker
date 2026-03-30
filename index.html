@@ -135,6 +135,13 @@ tbody tr:hover td{background:var(--s2);}
 #portfolio-tbl tfoot tr.total-usd td:first-child{color:var(--usd);}
 /* ── NRA TAB ── */
 .tab.act-nra{color:var(--usd);border-bottom-color:var(--usd);}
+/* ── EVOLUCIÓN TAB ── */
+.tab.act-evol{color:var(--purple);border-bottom-color:var(--purple);}
+.evol-rb{padding:4px 10px;font-family:var(--mono);font-size:10px;font-weight:600;border:none;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;letter-spacing:.04em;}
+.evol-rb:hover{color:var(--text);}
+.evol-rb.act{background:var(--border);color:var(--text);}
+.evol-series{padding:4px 12px;border-radius:4px;font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;border:1px solid;background:transparent;transition:all .15s;opacity:.4;}
+.evol-series.act{opacity:1;}
 #nra-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 10px;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);}
 #nra-tbl tbody td{padding:6px 10px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
 #nra-tbl tbody tr:hover td{background:var(--s2);}
@@ -156,6 +163,7 @@ tbody tr:hover td{background:var(--s2);}
   <div class="tab" onclick="switchTab(this,'audit')">📋 Transacciones</div>
   <div class="tab" onclick="switchTab(this,'cash')">💵 Saldo Cash</div>
   <div class="tab" onclick="switchTab(this,'nra')">🏛 Ret. NRA</div>
+  <div class="tab" onclick="switchTab(this,'evol')">📈 Evolución</div>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
     <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
     <button class="tab" onclick="showClearConfirm()" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--muted);letter-spacing:.04em;" title="Borrar todos los datos">🗑 Limpiar datos</button>
@@ -173,6 +181,17 @@ tbody tr:hover td{background:var(--s2);}
     <button class="fb" onclick="fetchLatestPrices()" style="color:var(--green);border-color:var(--green);">🔄 Actualizar precios</button>
     <span id="price-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
     <span id="options-disclaimer-inline" style="display:none;padding:4px 10px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.25);border-radius:4px;font-family:var(--mono);font-size:10px;color:rgba(251,191,36,.85);"></span>
+    <!-- AR total mode toggle (only shown for Argentina) -->
+    <div id="ar-mode-wrap" style="display:none;margin-left:auto;display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
+        <button class="evol-rb act" id="armode-origin" onclick="setARMode('origin')">Moneda origen</button>
+        <button class="evol-rb" id="armode-ars"    onclick="setARMode('ars')">Todo ARS</button>
+        <button class="evol-rb" id="armode-usd"    onclick="setARMode('usd')">Todo USD</button>
+      </div>
+      <input class="fi" id="fx-input" type="number" step="0.01" placeholder="FX hoy (ARS/USD)" style="width:160px;" oninput="renderPortfolioTable()">
+      <button class="fb" onclick="saveFXRate()" style="color:var(--usd);border-color:var(--usd);">💾 Guardar FX</button>
+      <span id="fx-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+    </div>
   </div>
 
   <!-- Portfolio table -->
@@ -480,6 +499,13 @@ let _prices = {};        // { ticker: close }  — latest EOD price per ticker
 let _pricesDate = null;  // date string of the prices loaded
 let _pricesLoading = false;
 
+// ── Extended data for valuation & evolution ──
+let _pricesHistory = {};   // { ticker: { 'YYYY-MM-DD': close } } — full history
+let _fxHistory = {};       // { 'YYYY-MM-DD': usd_ars }
+let _fxLatest = null;      // latest fx rate loaded from DB
+let _snapshots = [];       // [{date, ar_ars, ar_usd, us_usd, fx_rate}] sorted asc
+let _arMode = 'origin';    // 'origin' | 'ars' | 'usd'
+
 async function fetchLatestPrices() {
   if(_pricesLoading) return;
   _pricesLoading = true;
@@ -531,6 +557,133 @@ async function fetchLatestPrices() {
 function setPriceStatus(msg, color) {
   const el = document.getElementById('price-status');
   if(el) { el.textContent = msg; el.style.color = color; }
+}
+
+// ══════ FETCH FULL PRICE HISTORY ══════
+async function fetchPricesHistory() {
+  try {
+    // Fetch all prices — ~15k rows, batched via range header if needed
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/prices?select=ticker,date,close&order=ticker.asc,date.asc&limit=50000`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`, 'Range-Unit': 'items', 'Range': '0-49999' } }
+    );
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows = await r.json();
+    _pricesHistory = {};
+    for(const row of rows) {
+      if(!_pricesHistory[row.ticker]) _pricesHistory[row.ticker] = {};
+      _pricesHistory[row.ticker][row.date] = row.close;
+    }
+    console.log(`Loaded price history: ${rows.length} rows, ${Object.keys(_pricesHistory).length} tickers`);
+  } catch(e) { console.warn('fetchPricesHistory failed:', e); }
+}
+
+// ══════ FETCH FX HISTORY ══════
+async function fetchFXHistory() {
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.asc&limit=5000`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+    );
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows = await r.json();
+    _fxHistory = {};
+    for(const row of rows) _fxHistory[row.date] = row.usd_ars;
+    // Set latest FX in input
+    if(rows.length) {
+      const latest = rows[rows.length - 1];
+      _fxLatest = latest.usd_ars;
+      const inp = document.getElementById('fx-input');
+      if(inp && !inp.value) inp.value = _fxLatest;
+    }
+    console.log(`Loaded FX history: ${rows.length} rows`);
+  } catch(e) { console.warn('fetchFXHistory failed:', e); }
+}
+
+// ══════ FETCH SNAPSHOTS ══════
+async function fetchSnapshots() {
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate&order=date.asc&limit=5000`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+    );
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    _snapshots = await r.json();
+    console.log(`Loaded snapshots: ${_snapshots.length} rows`);
+    renderEvolChart();
+  } catch(e) { console.warn('fetchSnapshots failed:', e); }
+}
+
+// ══════ SAVE FX RATE ══════
+async function saveFXRate() {
+  const inp = document.getElementById('fx-input');
+  const val = parseFloat(inp?.value);
+  if(!val || val <= 0) { setFXStatus('Valor inválido', 'var(--red)'); return; }
+  const today = new Date().toISOString().slice(0,10);
+  setFXStatus('Guardando...', 'var(--muted)');
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/fx_rates`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+        'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify({ date: today, usd_ars: val })
+    });
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    _fxHistory[today] = val;
+    _fxLatest = val;
+    setFXStatus(`FX ${today} guardado ✓`, 'var(--green)');
+    renderPortfolioTable();
+  } catch(e) { setFXStatus(`Error: ${e.message}`, 'var(--red)'); }
+}
+function setFXStatus(msg, color) {
+  const el = document.getElementById('fx-status');
+  if(el) { el.textContent = msg; el.style.color = color; }
+}
+
+// ══════ AR MODE TOGGLE ══════
+function setARMode(mode) {
+  _arMode = mode;
+  ['origin','ars','usd'].forEach(m => {
+    const btn = document.getElementById(`armode-${m}`);
+    if(btn) btn.classList.toggle('act', m === mode);
+  });
+  renderPortfolioTable();
+}
+
+// ══════ PRICE WITH FALLBACK ══════
+// Returns {price, estimated} for a ticker on a given date.
+// estimated=true means we fell back to avg cost (no market price available).
+function getPriceForDate(ticker, date, avgCost) {
+  const byTicker = _pricesHistory[ticker];
+  if(byTicker) {
+    // Exact date
+    if(byTicker[date] !== undefined) return { price: byTicker[date], estimated: false };
+    // Most recent date <= target date
+    const dates = Object.keys(byTicker).filter(d => d <= date).sort();
+    if(dates.length) return { price: byTicker[dates[dates.length-1]], estimated: false };
+  }
+  // Fallback: use avg cost (valued at cost)
+  return { price: avgCost || 0, estimated: true };
+}
+
+// Get latest FX rate on or before a given date
+function getFXForDate(date) {
+  if(!date) return _fxLatest || 1;
+  const dates = Object.keys(_fxHistory).filter(d => d <= date).sort();
+  if(dates.length) return _fxHistory[dates[dates.length-1]];
+  // If date is before our history, use earliest available
+  const all = Object.keys(_fxHistory).sort();
+  return all.length ? _fxHistory[all[0]] : (_fxLatest || 1);
+}
+
+// Get current FX from input or latest known
+function getCurrentFX() {
+  const inp = document.getElementById('fx-input');
+  const val = parseFloat(inp?.value);
+  if(val && val > 0) return val;
+  return _fxLatest || 1;
 }
 
 // ══════ TAB SWITCH ══════
@@ -589,9 +742,14 @@ function renderPortfolioTable() {
     return ((+va||0) - (+vb||0)) * _pSort_dir;
   });
 
+  const today = new Date().toISOString().slice(0,10);
   const fmt2  = n => N(n, 2);
   const fmt0  = n => N(n, 0);
   const fmtP  = (n, avg) => avg < 200 ? N(n, 4) : N(n, 2);
+
+  // Show/hide AR mode controls
+  const arModeWrap = document.getElementById('ar-mode-wrap');
+  if(arModeWrap) arModeWrap.style.display = isAr ? 'flex' : 'none';
 
   const tbody = document.getElementById('portfolio-tbody');
   tbody.innerHTML = open.map(d => {
@@ -599,22 +757,32 @@ function renderPortfolioTable() {
     const avgComFmt = d.avgWithCom > 0 ? fmtP(d.avgWithCom, d.avgWithCom) : '—';
     const netFmt = isAr ? fmt0(d.net) : fmt2(d.net);
 
-    // Price lookup — only EEUU tickers have prices for now
-    const currentPrice = isAr ? null : (_prices[d.ticker] ?? null);
-    const priceFmt = currentPrice !== null ? fmtP(currentPrice, currentPrice) : '—';
+    // Price lookup with fallback
+    let currentPrice = null, isEstimated = false;
+    if(!isAr) {
+      const lookup = getPriceForDate(d.ticker, today, d.avg);
+      currentPrice = lookup.price > 0 ? lookup.price : null;
+      isEstimated = lookup.estimated;
+    }
+    const priceColor = currentPrice !== null ? (isEstimated ? 'color:var(--usd)' : 'color:var(--text)') : 'color:var(--muted)';
+    const priceFmt = currentPrice !== null
+      ? (fmtP(currentPrice, currentPrice) + (isEstimated ? ' *' : ''))
+      : '—';
 
-    // P&L uses avg SIN comisiones (= precio del broker, comparable con precio actual)
+    // P&L
     let plCell = '<td class="num" style="color:var(--muted)">—</td>';
     let valCell = '<td class="num" style="color:var(--muted)">—</td>';
     if(currentPrice !== null && d.net > 0) {
       const valor = currentPrice * d.net;
-      const pl    = d.avg > 0 ? (currentPrice - d.avg) * d.net : null;
-      const plPct = d.avg > 0 ? ((currentPrice / d.avg) - 1) * 100 : null;
+      const pl    = d.avg > 0 && !isEstimated ? (currentPrice - d.avg) * d.net : null;
+      const plPct = d.avg > 0 && !isEstimated ? ((currentPrice / d.avg) - 1) * 100 : null;
       valCell = `<td class="num mp">${'U$S ' + N(valor, 2)}</td>`;
       if(pl !== null) {
         const cls = pl >= 0 ? 'mp' : 'mn';
         const sign = pl >= 0 ? '+' : '';
         plCell = `<td class="num ${cls}">${sign}U$S ${N(Math.abs(pl),2)} <span style="font-size:9px;opacity:.7">(${sign}${N(plPct,1)}%)</span></td>`;
+      } else {
+        plCell = `<td class="num" style="color:var(--muted)">—</td>`;
       }
     }
 
@@ -623,7 +791,7 @@ function renderPortfolioTable() {
       <td class="num">${netFmt}</td>
       <td class="num">${avgFmt}</td>
       <td class="num" style="color:var(--muted);font-size:11px">${avgComFmt}</td>
-      <td class="num" style="${currentPrice!==null?'color:var(--text)':'color:var(--muted)'}">${priceFmt}</td>
+      <td class="num" style="${priceColor}">${priceFmt}</td>
       ${plCell}
       ${valCell}
     </tr>`;
@@ -659,27 +827,62 @@ function renderPortfolioTable() {
   // Footer totals
   const tfoot = document.getElementById('portfolio-tfoot');
   if(isAr) {
-    tfoot.innerHTML = `
-      <tr class="total-ars">
-        <td colspan="6">TOTAL ARGENTINA (ARS)</td>
-        <td class="num" style="color:var(--muted)">— (precios BYMA pendiente)</td>
-      </tr>
-      <tr class="total-usd">
-        <td colspan="6">TOTAL ARGENTINA (USD)</td>
-        <td class="num" style="color:var(--muted)">— (tipo de cambio pendiente)</td>
-      </tr>`;
+    const bARS = _cashBalances?.['Argentina (ARS)'] ?? 0;
+    const bUSD = _cashBalances?.['Argentina (USD)'] ?? 0;
+    const fx   = getCurrentFX();
+    // Valuation note
+    const note = `<span style="font-size:9px;color:var(--muted)">(posiciones al costo + caja)</span>`;
+    if(_arMode === 'origin') {
+      // Two lines: ARS and USD separately (positions valuated at cost in their currency)
+      const posARS = open.filter(d => d.accounts.some(a => a.includes('ARS')))
+                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const posUSD = open.filter(d => d.accounts.some(a => a.includes('USD')))
+                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      tfoot.innerHTML = `
+        <tr class="total-ars">
+          <td colspan="6">TOTAL ARGENTINA (ARS) ${note}</td>
+          <td class="num mp" style="font-size:13px">$ ${N(posARS + bARS, 2)}</td>
+        </tr>
+        <tr class="total-usd">
+          <td colspan="6">TOTAL ARGENTINA (USD) ${note}</td>
+          <td class="num mp" style="font-size:13px">U$S ${N(posUSD + bUSD, 2)}</td>
+        </tr>`;
+    } else if(_arMode === 'ars') {
+      const posARS = open.filter(d => d.accounts.some(a => a.includes('ARS')))
+                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const posUSD = open.filter(d => d.accounts.some(a => a.includes('USD')))
+                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const totalARS = posARS + bARS + (posUSD + bUSD) * fx;
+      tfoot.innerHTML = `
+        <tr class="total-ars">
+          <td colspan="6">TOTAL ARGENTINA (ARS) ${note} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+          <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
+        </tr>`;
+    } else { // usd
+      const posARS = open.filter(d => d.accounts.some(a => a.includes('ARS')))
+                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const posUSD = open.filter(d => d.accounts.some(a => a.includes('USD')))
+                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const totalUSD = (posARS + bARS) / fx + posUSD + bUSD;
+      tfoot.innerHTML = `
+        <tr class="total-usd">
+          <td colspan="6">TOTAL ARGENTINA (USD) ${note} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+          <td class="num mp" style="font-size:13px">U$S ${N(totalUSD, 2)}</td>
+        </tr>`;
+    }
   } else {
-    // Sum up values for EEUU positions with known prices
-    const totalVal = open.reduce((sum, d) => {
-      const p = _prices[d.ticker] ?? null;
-      return p !== null ? sum + p * d.net : sum;
-    }, 0);
+    // EEUU — use fallback pricing for all positions
+    let totalVal = 0;
+    let anyPrice = false;
+    for(const d of open) {
+      const lookup = getPriceForDate(d.ticker, today, d.avg);
+      if(lookup.price > 0) { totalVal += lookup.price * d.net; anyPrice = true; }
+    }
     const bUS = _cashBalances?.['EEUU (USD)'] ?? 0;
-    const hasAnyPrice = open.some(d => _prices[d.ticker] !== undefined);
     const grandTotal = totalVal + bUS;
-    tfoot.innerHTML = hasAnyPrice
+    tfoot.innerHTML = anyPrice
       ? `<tr>
-          <td colspan="5" style="color:var(--us)">TOTAL EEUU (USD) <span style="font-size:9px;color:var(--muted)">(posiciones valorizadas + caja)</span></td>
+          <td colspan="5" style="color:var(--us)">TOTAL EEUU (USD) <span style="font-size:9px;color:var(--muted)">(posiciones + caja · * = al costo)</span></td>
           <td class="num"></td>
           <td class="num mp" style="font-size:14px">U$S ${N(grandTotal, 2)}</td>
         </tr>`
@@ -1552,6 +1755,245 @@ function renderNRATab() {
 // ── State ──
 let _historicalTxns = null;  // raw (not yet deduped)
 
+// ══════ SNAPSHOT CALCULATION ══════
+async function recalcSnapshots() {
+  if(!_historicalTxns || !_historicalTxns.length) {
+    alert('No hay transacciones cargadas. Importá un archivo .xls primero.');
+    return;
+  }
+  if(!Object.keys(_fxHistory).length) {
+    alert('El historial de FX todavía no terminó de cargar. Esperá unos segundos y volvé a intentar.');
+    return;
+  }
+
+  const btn = document.getElementById('evol-recalc-btn');
+  const progressWrap = document.getElementById('evol-progress');
+  const progressBar  = document.getElementById('evol-progress-bar');
+  const progressLbl  = document.getElementById('evol-progress-label');
+  if(btn) btn.disabled = true;
+  if(progressWrap) progressWrap.style.display = 'block';
+
+  // Get all unique dates that have movements (from cashDaily)
+  const dates = [...new Set(_cashDaily.map(r => r.fecha))].sort();
+  if(!dates.length) { if(btn) btn.disabled = false; return; }
+
+  const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
+  const snapshots = [];
+
+  for(let i = 0; i < dates.length; i++) {
+    const date = dates[i];
+    const pct = Math.round((i / dates.length) * 100);
+    if(progressBar) progressBar.style.width = pct + '%';
+    if(progressLbl) progressLbl.textContent = `Calculando ${date} (${i+1}/${dates.length})...`;
+
+    // Reconstruct positions up to this date
+    const txnsUpTo = _historicalTxns.filter(t => t.fecha <= date);
+    const deduped  = deduplicateMEP(txnsUpTo);
+    const clean    = canonicalizeTickers(deduped);
+
+    // buildPortfolio is pure (doesn't mutate globals — globals are set in processAndRefresh)
+    const {usCards, arCards} = buildPortfolio(clean);
+
+    // Cash up to this date
+    const {balances} = buildCash(txnsUpTo, usdCaucionMovs);
+
+    // FX for this date
+    const fx = getFXForDate(date);
+
+    // EEUU value: sum positions + cash
+    let us_usd = balances['EEUU (USD)'] || 0;
+    for(const d of usCards.filter(c => c.net > 0)) {
+      const {price} = getPriceForDate(d.ticker, date, d.avg);
+      us_usd += price * d.net;
+    }
+
+    // Argentina ARS: positions in ARS account (valued at avg cost) + ARS cash
+    let ar_ars = balances['Argentina (ARS)'] || 0;
+    // Argentina USD: positions in AR USD account (valued at avg cost) + USD cash
+    let ar_usd = balances['Argentina (USD)'] || 0;
+
+    // For each AR card, attribute value to the correct sub-account
+    for(const d of arCards.filter(c => c.net > 0)) {
+      const inARS = d.accounts.some(a => a === 'Argentina (ARS)');
+      const inUSD = d.accounts.some(a => a === 'Argentina (USD)');
+      if(inARS && !inUSD) {
+        ar_ars += (d.avg || 0) * d.net;
+      } else if(inUSD && !inARS) {
+        ar_usd += (d.avg || 0) * d.net;
+      } else if(inARS && inUSD) {
+        // Split position exists in both — use net per account from raw txns
+        const netARS = netForAcct(d.ticker, 'Argentina (ARS)', clean);
+        const netUSD = netForAcct(d.ticker, 'Argentina (USD)', clean);
+        // avg applies to both (canonicalized), split by net qty
+        ar_ars += (d.avg || 0) * Math.max(netARS, 0);
+        ar_usd += (d.avg || 0) * Math.max(netUSD, 0);
+      }
+    }
+
+    snapshots.push({ date, ar_ars: Math.round(ar_ars*100)/100, ar_usd: Math.round(ar_usd*100)/100, us_usd: Math.round(us_usd*100)/100, fx_rate: fx });
+
+    // Debug: log every 50th snapshot
+    if(i % 50 === 0) console.log(`Snapshot ${date}: ar_ars=${ar_ars.toFixed(0)}, ar_usd=${ar_usd.toFixed(2)}, us_usd=${us_usd.toFixed(2)}, fx=${fx}`);
+
+    // Yield to browser every 20 iterations to avoid freezing
+    if(i % 20 === 0) await new Promise(r => setTimeout(r, 0));
+  }
+
+  if(progressLbl) progressLbl.textContent = `Guardando ${snapshots.length} snapshots en Supabase...`;
+  if(progressBar) progressBar.style.width = '100%';
+
+  // Upsert to Supabase in batches of 200
+  const BATCH = 200;
+  for(let i = 0; i < snapshots.length; i += BATCH) {
+    const batch = snapshots.slice(i, i + BATCH);
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/portfolio_snapshots`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify(batch)
+      });
+      if(!r.ok) { const err = await r.text(); console.error('Snapshot upsert error:', err); }
+    } catch(e) { console.error('Snapshot upsert failed:', e); }
+  }
+
+  // Update local state and re-render chart
+  _snapshots = snapshots;
+  if(progressWrap) progressWrap.style.display = 'none';
+  if(btn) btn.disabled = false;
+  renderEvolChart();
+}
+
+// ══════ EVOLUTION CHART ══════
+let _evolChart = null;
+let _evolRange = 'MAX';
+let _evolSeries = new Set(['ar','us','total']);
+
+function evolSetRange(range) {
+  _evolRange = range;
+  document.querySelectorAll('.evol-rb').forEach(b => b.classList.toggle('act', b.dataset.range === range));
+  renderEvolChart();
+}
+
+function evolToggleSeries(series) {
+  if(_evolSeries.has(series)) _evolSeries.delete(series);
+  else _evolSeries.add(series);
+  document.querySelectorAll('.evol-series').forEach(b => b.classList.toggle('act', _evolSeries.has(b.dataset.series)));
+  renderEvolChart();
+}
+
+function renderEvolChart() {
+  const canvas = document.getElementById('evol-chart');
+  const emptyEl = document.getElementById('evol-empty');
+  const summaryEl = document.getElementById('evol-summary');
+  if(!canvas) return;
+
+  if(!_snapshots.length) {
+    canvas.style.display = 'none';
+    if(emptyEl) emptyEl.style.display = 'block';
+    return;
+  }
+  canvas.style.display = 'block';
+  if(emptyEl) emptyEl.style.display = 'none';
+
+  // Filter by range
+  let data = [..._snapshots].sort((a,b) => a.date.localeCompare(b.date));
+  if(_evolRange !== 'MAX') {
+    const months = {'1M':1,'3M':3,'6M':6,'1Y':12}[_evolRange] || 12;
+    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+    const cutStr = cutoff.toISOString().slice(0,10);
+    data = data.filter(r => r.date >= cutStr);
+  }
+
+  const labels = data.map(r => r.date);
+  const fmtLbl = d => `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
+
+  // Build series: AR in USD, EEUU USD, Total USD
+  const arUSD   = data.map(r => r.fx_rate > 0 ? Math.round((r.ar_ars / r.fx_rate + r.ar_usd)*100)/100 : r.ar_usd);
+  const usUSD   = data.map(r => r.us_usd);
+  const totalUSD = data.map((r,i) => Math.round((arUSD[i] + usUSD[i])*100)/100);
+
+  const datasets = [];
+  if(_evolSeries.has('ar')) datasets.push({
+    label: '🇦🇷 Argentina (USD)', data: arUSD,
+    borderColor: 'var(--ar)', backgroundColor: 'rgba(0,212,170,.08)',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(_evolSeries.has('us')) datasets.push({
+    label: '🇺🇸 EEUU (USD)', data: usUSD,
+    borderColor: 'var(--us)', backgroundColor: 'rgba(61,127,255,.08)',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(_evolSeries.has('total')) datasets.push({
+    label: '∑ Total (USD)', data: totalUSD,
+    borderColor: 'var(--purple)', backgroundColor: 'rgba(167,139,250,.08)',
+    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+
+  if(_evolChart) { _evolChart.destroy(); _evolChart = null; }
+
+  const ctx = canvas.getContext('2d');
+  _evolChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: labels.map(fmtLbl), datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2330', borderColor: '#2a3040', borderWidth: 1,
+          titleColor: '#6b7a99', bodyColor: '#e8ecf5',
+          titleFont: { family: "'IBM Plex Mono'" }, bodyFont: { family: "'IBM Plex Mono'" },
+          callbacks: {
+            title: items => items[0].label,
+            label: item => ` ${item.dataset.label}: U$S ${new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(item.raw)}`
+          }
+        },
+        zoom: {
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
+          pan:  { enabled: true, mode: 'x' },
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#6b7a99', font: { family: "'IBM Plex Mono'", size: 10 }, maxTicksLimit: 12, maxRotation: 0 },
+          grid: { color: 'rgba(42,48,64,.5)' },
+          border: { color: '#2a3040' }
+        },
+        y: {
+          ticks: { color: '#6b7a99', font: { family: "'IBM Plex Mono'", size: 10 },
+            callback: v => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:0,maximumFractionDigits:0}).format(v) },
+          grid: { color: 'rgba(42,48,64,.5)' },
+          border: { color: '#2a3040' }
+        }
+      }
+    }
+  });
+
+  // Summary row
+  if(summaryEl && data.length) {
+    const last = data[data.length-1];
+    const lastAR = arUSD[arUSD.length-1];
+    const lastUS = usUSD[usUSD.length-1];
+    const lastTotal = totalUSD[totalUSD.length-1];
+    const fmtU = n => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(n);
+    summaryEl.innerHTML = `
+      <div style="font-family:var(--mono);font-size:11px;">
+        <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Última fecha: ${fmtLbl(last.date)}</div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;">
+          ${_evolSeries.has('ar')    ? `<span style="color:var(--ar)">🇦🇷 ${fmtU(lastAR)}</span>` : ''}
+          ${_evolSeries.has('us')    ? `<span style="color:var(--us)">🇺🇸 ${fmtU(lastUS)}</span>` : ''}
+          ${_evolSeries.has('total') ? `<span style="color:var(--purple)">∑ ${fmtU(lastTotal)}</span>` : ''}
+          <span style="color:var(--muted);font-size:10px;">FX: ${N(last.fx_rate,2)} ARS/USD</span>
+        </div>
+      </div>`;
+  }
+}
+
 function processAndRefresh(rawMerged) {
   _historicalTxns = rawMerged;
   const deduped = deduplicateMEP(rawMerged);
@@ -1733,15 +2175,19 @@ function clearAllData() {
   if (stored) {
     try {
       const raw = JSON.parse(stored);
-      processAndRefresh(raw); // this already calls fetchLatestPrices at the end
+      processAndRefresh(raw);
     } catch(e) {
       console.error('Error loading stored data:', e);
       showEmptyState();
     }
   } else {
     showEmptyState();
-    fetchLatestPrices(); // still load prices even if no txn data yet
+    fetchLatestPrices();
   }
+  // Always fetch extended data
+  fetchPricesHistory();
+  fetchFXHistory();
+  fetchSnapshots();
 })();
 
 function showEmptyState() {
@@ -1823,6 +2269,47 @@ function showEmptyState() {
   </div>
 </div>
 
+<!-- Evolución Panel -->
+<div id="panel-evol" class="panel" style="padding:0;">
+  <div class="atb" style="gap:12px;">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;">📈 Evolución del Portfolio</span>
+    <div style="display:flex;gap:6px;align-items:center;margin-left:auto;">
+      <!-- Range selector -->
+      <div id="evol-range" style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
+        <button class="evol-rb" data-range="1M" onclick="evolSetRange('1M')">1M</button>
+        <button class="evol-rb" data-range="3M" onclick="evolSetRange('3M')">3M</button>
+        <button class="evol-rb" data-range="6M" onclick="evolSetRange('6M')">6M</button>
+        <button class="evol-rb" data-range="1Y" onclick="evolSetRange('1Y')">1Y</button>
+        <button class="evol-rb act" data-range="MAX" onclick="evolSetRange('MAX')">MAX</button>
+      </div>
+      <!-- Series toggles -->
+      <button class="evol-series act" data-series="ar" onclick="evolToggleSeries('ar')" style="border-color:var(--ar);color:var(--ar);">🇦🇷 Argentina</button>
+      <button class="evol-series act" data-series="us" onclick="evolToggleSeries('us')" style="border-color:var(--us);color:var(--us);">🇺🇸 EEUU</button>
+      <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:var(--purple);color:var(--purple);">∑ Total</button>
+      <!-- Recalc button -->
+      <button class="fb" id="evol-recalc-btn" onclick="recalcSnapshots()" style="color:var(--usd);border-color:var(--usd);white-space:nowrap;">⟳ Recalcular</button>
+    </div>
+  </div>
+  <!-- Progress bar (hidden by default) -->
+  <div id="evol-progress" style="display:none;padding:6px 20px;background:var(--surface);border-bottom:1px solid var(--border);">
+    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px;" id="evol-progress-label">Calculando...</div>
+    <div style="background:var(--s2);border-radius:2px;height:4px;overflow:hidden;">
+      <div id="evol-progress-bar" style="height:100%;width:0%;background:var(--usd);transition:width .1s;"></div>
+    </div>
+  </div>
+  <!-- Chart -->
+  <div style="padding:20px 24px;height:calc(100vh - 160px);display:flex;flex-direction:column;gap:16px;">
+    <div style="flex:1;position:relative;min-height:0;">
+      <canvas id="evol-chart"></canvas>
+    </div>
+    <div id="evol-empty" style="display:none;text-align:center;padding:60px 0;font-family:var(--mono);font-size:12px;color:var(--muted);">
+      Sin datos — presioná <span style="color:var(--usd)">⟳ Recalcular</span> para generar la evolución histórica.
+    </div>
+    <!-- Summary row -->
+    <div id="evol-summary" style="display:flex;gap:20px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:12px;"></div>
+  </div>
+</div>
+
 <!-- Clear Data Modal -->
 <div id="clear-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:28px 32px;min-width:320px;max-width:420px;">
@@ -1843,6 +2330,9 @@ function showEmptyState() {
 
 <!-- SheetJS CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Chart.js + zoom plugin -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
 
 </body>
 </html>
