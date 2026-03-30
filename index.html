@@ -1465,17 +1465,50 @@ async function toggleNRAOverride(nro_mov, currentlyExcluida) {
   }
 }
 
+function rebuildNRAYearDropdown(data) {
+  const sel = document.getElementById('nraYear');
+  if(!sel) return;
+  const cur = sel.value;
+  while(sel.options.length > 1) sel.remove(1);
+  const yrs = [...new Set(data.map(r => r.fecha.slice(0,4)))].sort().reverse();
+  yrs.forEach(y => { const o = document.createElement('option'); o.value = o.textContent = y; sel.appendChild(o); });
+  if(cur) sel.value = cur;
+}
+
+function nraClear() {
+  const s = document.getElementById('nraSearch'); if(s) s.value = '';
+  const y = document.getElementById('nraYear');   if(y) y.value = '';
+  const m = document.getElementById('nraMonth');  if(m) m.value = '';
+  renderNRATab();
+}
+
 function renderNRATab() {
   const tbody = document.getElementById('nraTbody');
   const tfoot = document.getElementById('nraTfoot');
   const count = document.getElementById('nraCount');
   if(!tbody) return;
-  _nraData = buildNRAData();
+
+  // Build full dataset first (for year dropdown)
+  const all = buildNRAData();
+  rebuildNRAYearDropdown(all);
+
+  // Apply filters
+  const q    = (document.getElementById('nraSearch')?.value || '').toLowerCase().trim();
+  const yr   = document.getElementById('nraYear')?.value  || '';
+  const mo   = document.getElementById('nraMonth')?.value || '';
+
+  _nraData = all.filter(r => {
+    if(yr && r.fecha.slice(0,4) !== yr) return false;
+    if(mo && r.fecha.slice(5,7) !== mo) return false;
+    if(q && !r.ticker.toLowerCase().includes(q) && !String(r.nro_mov).includes(q)) return false;
+    return true;
+  });
+
   _nraData.sort((a, b) => {
     const va = a[_nraSort_col], vb = b[_nraSort_col];
     return (typeof va === 'string' ? va.localeCompare(vb) : ((+va||0)-(+vb||0))) * _nraSort_dir;
   });
-  if(count) count.textContent = `${_nraData.length} dividendo${_nraData.length!==1?'s':''}`;
+  if(count) count.textContent = `${_nraData.length} / ${all.length} dividendo${all.length!==1?'s':''}`;
   const fmt = d => d&&d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : d||'--';
   const fU  = n => 'U$S ' + N(Math.abs(n), 2);
   if(!_nraData.length) {
@@ -1754,10 +1787,20 @@ function showEmptyState() {
 
 <!-- NRA Tab Panel -->
 <div id="panel-nra" class="panel" style="padding:0;">
-  <div class="atb" style="justify-content:space-between;">
-    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--usd);">🏛 Retención NRA — Dividendos EEUU</span>
-    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);max-width:520px;line-height:1.5;">
-      Estimación del 30% de retención para no residentes. Balanz no la reporta en el archivo — la calculamos sobre el dividendo bruto reconstituyendo comisiones e IVA. Marcá una fila como "No aplica" si la retención no correspondió en ese caso.
+  <div class="atb">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--usd);white-space:nowrap;">🏛 Ret. NRA</span>
+    <input class="fi" id="nraSearch" type="text" placeholder="🔍  Ticker o nro. mov..." style="width:200px" oninput="renderNRATab()">
+    <select class="fi" id="nraYear" onchange="renderNRATab()"><option value="">Todos los años</option></select>
+    <select class="fi" id="nraMonth" onchange="renderNRATab()">
+      <option value="">Todos los meses</option>
+      <option value="01">Enero</option><option value="02">Febrero</option><option value="03">Marzo</option>
+      <option value="04">Abril</option><option value="05">Mayo</option><option value="06">Junio</option>
+      <option value="07">Julio</option><option value="08">Agosto</option><option value="09">Septiembre</option>
+      <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+    </select>
+    <button class="fb" onclick="nraClear()">✕ Limpiar</button>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);flex:1;min-width:0;">
+      30% estimado sobre bruto (monto + comis + IVA). Marcá "No aplica" para excluir una fila.
     </span>
     <span class="a-count" id="nraCount"></span>
   </div>
