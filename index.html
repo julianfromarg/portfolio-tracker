@@ -151,6 +151,41 @@ tbody tr:hover td{background:var(--s2);}
 .nra-toggle.aplica:hover{background:rgba(245,158,11,.25);}
 .nra-toggle.excluida{background:rgba(107,122,153,.12);color:var(--muted);border-color:var(--border);}
 .nra-toggle.excluida:hover{background:rgba(107,122,153,.2);}
+/* NRA override pill */
+.nra-pill{padding:3px 10px;border-radius:3px;font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;white-space:nowrap;}
+.nra-pill.auto{background:rgba(245,158,11,.12);color:var(--usd);border-color:rgba(245,158,11,.4);}
+.nra-pill.auto:hover{background:rgba(245,158,11,.25);}
+.nra-pill.zeroed{background:rgba(107,122,153,.12);color:var(--muted);border-color:var(--border);}
+.nra-pill.zeroed:hover{background:rgba(107,122,153,.2);}
+.nra-pill.custom{background:rgba(239,68,68,.12);color:var(--red);border-color:rgba(239,68,68,.4);}
+.nra-pill.custom:hover{background:rgba(239,68,68,.22);}
+/* NRA popover */
+#nra-popover{
+  position:fixed;z-index:500;
+  background:var(--surface);border:1px solid var(--border);border-radius:6px;
+  padding:14px 16px;min-width:260px;box-shadow:0 8px 24px rgba(0,0,0,.5);
+  display:none;
+}
+#nra-popover.show{display:block;}
+#nra-popover-title{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;}
+#nra-popover-auto{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:8px;}
+#nra-popover-input{
+  width:100%;background:var(--s2);border:1px solid var(--border);color:var(--text);
+  padding:6px 10px;border-radius:4px;font-family:var(--mono);font-size:12px;outline:none;
+}
+#nra-popover-input:focus{border-color:var(--usd);}
+#nra-popover-hint{font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:5px;line-height:1.5;}
+.nra-popover-btns{display:flex;gap:6px;margin-top:10px;}
+.nra-popover-btns button{
+  flex:1;padding:5px 0;border-radius:4px;font-family:var(--mono);font-size:11px;
+  font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;
+}
+#nra-pop-save{background:rgba(245,158,11,.15);color:var(--usd);border-color:rgba(245,158,11,.4);}
+#nra-pop-save:hover{background:rgba(245,158,11,.3);}
+#nra-pop-clear{background:var(--s2);color:var(--muted);border-color:var(--border);}
+#nra-pop-clear:hover{color:var(--text);border-color:var(--muted);}
+#nra-pop-cancel{background:var(--s2);color:var(--muted);border-color:var(--border);}
+#nra-pop-cancel:hover{color:var(--text);}
 </style>
 </head>
 <body>
@@ -535,12 +570,15 @@ async function fetchLatestPrices() {
     // Also fetch NRA overrides
     try {
       const nr = await fetch(
-        `${SUPABASE_URL}/rest/v1/nra_overrides?select=nro_mov,excluir`,
+        `${SUPABASE_URL}/rest/v1/nra_overrides?select=nro_mov,monto_override`,
         { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
       );
       if(nr.ok) {
         const nrRows = await nr.json();
-        _nraOverrides = new Set(nrRows.filter(r => r.excluir).map(r => String(r.nro_mov)));
+        _nraOverrides = new Set(nrRows.filter(r => r.monto_override !== null).map(r => String(r.nro_mov)));
+        _nraOverrideAmounts = new Map(
+          nrRows.filter(r => r.monto_override !== null).map(r => [String(r.nro_mov), Number(r.monto_override)])
+        );
       }
     } catch(e) { console.warn('NRA overrides fetch failed:', e); }
 
@@ -945,7 +983,8 @@ function isBond(ticker) {
 //   i.e. we reconstruct the gross dividend and apply 30%.
 // Only applies to: operacion === 'Pago de Dividendos' AND cuenta === 'EEUU (USD)'
 const NRA_RATE = 0.30;
-let _nraOverrides = new Set(); // set of nro_mov strings where NRA = 0 (user-overridden)
+let _nraOverrides = new Set();       // set of nro_mov strings that have any override
+let _nraOverrideAmounts = new Map(); // nro_mov → numeric amount (user-specified, with sign)
 
 function isNRAApplicable(t) {
   return t.operacion === 'Pago de Dividendos' && t.cuenta === 'EEUU (USD)';
@@ -953,7 +992,11 @@ function isNRAApplicable(t) {
 
 function calcNRA(t) {
   if(!isNRAApplicable(t)) return 0;
-  if(_nraOverrides.has(String(t.nro_mov))) return 0;
+  const key = String(t.nro_mov);
+  if(_nraOverrides.has(key)) {
+    // User-specified amount: use as-is (already signed). Zero = no retention.
+    return _nraOverrideAmounts.get(key) || 0;
+  }
   const gross = Math.abs(t.monto || 0) + Math.abs(t.comision || 0) + Math.abs(t.iva || 0);
   return -(gross * NRA_RATE); // negative = cash outflow
 }
@@ -1617,9 +1660,12 @@ let _nraSort_col = 'fecha', _nraSort_dir = -1;
 function buildNRAData() {
   return AUDIT.filter(r => r.operacion === 'Pago de Dividendos' && r.cuenta === 'EEUU (USD)')
     .map(r => {
+      const key = String(r.nro_mov);
+      const hasOverride = _nraOverrides.has(key);
+      const overrideAmt = hasOverride ? (_nraOverrideAmounts.get(key) ?? 0) : null;
       const gross = Math.abs(r.monto||0) + Math.abs(r.comision||0) + Math.abs(r.iva||0);
-      const nra   = _nraOverrides.has(String(r.nro_mov)) ? 0 : -(gross * NRA_RATE);
-      return {...r, gross, nra_est: nra, excluida: _nraOverrides.has(String(r.nro_mov))};
+      const nra_est = hasOverride ? overrideAmt : -(gross * NRA_RATE);
+      return {...r, gross, nra_est, hasOverride, overrideAmt};
     });
 }
 
@@ -1629,27 +1675,90 @@ function nraSort(col) {
   renderNRATab();
 }
 
-async function toggleNRAOverride(nro_mov, currentlyExcluida) {
-  const newVal = !currentlyExcluida;
-  const btn = document.querySelector(`[data-nramov="${nro_mov}"]`);
-  if(btn) { btn.textContent = '...'; btn.disabled = true; }
+// ══════ NRA OVERRIDE POPOVER ══════
+let _nraPopoverMov = null; // nro_mov currently being edited
+
+function openNRAPopover(evt, nro_mov, hasOverride, overrideAmt, autoNRA) {
+  evt.stopPropagation();
+  const pop = document.getElementById('nra-popover');
+  _nraPopoverMov = String(nro_mov);
+
+  // Populate
+  document.getElementById('nra-popover-auto').textContent =
+    `Retención automática (30%): -U$S ${N(Math.abs(autoNRA), 2)}`;
+  const inp = document.getElementById('nra-popover-input');
+  inp.value = hasOverride ? (overrideAmt ?? '') : '';
+  inp.placeholder = N(autoNRA, 2) + ' (auto)';
+
+  // Position near the button
+  const btn = evt.currentTarget;
+  const rect = btn.getBoundingClientRect();
+  const popW = 270;
+  let left = rect.left;
+  if(left + popW > window.innerWidth - 12) left = window.innerWidth - popW - 12;
+  pop.style.left = left + 'px';
+  const popH = 160;
+  const top = rect.bottom + 6 + popH > window.innerHeight
+    ? rect.top - popH - 6
+    : rect.bottom + 6;
+  pop.style.top = top + 'px';
+
+  pop.classList.add('show');
+  setTimeout(() => inp.focus(), 50);
+}
+
+function closeNRAPopover() {
+  document.getElementById('nra-popover').classList.remove('show');
+  _nraPopoverMov = null;
+}
+
+async function saveNRAOverride() {
+  const nro_mov = _nraPopoverMov;
+  if(!nro_mov) return;
+  const raw = document.getElementById('nra-popover-input').value.trim();
+
+  let monto_override;
+  if(raw === '' || raw === null) {
+    // Empty = remove override (back to auto)
+    monto_override = null;
+  } else {
+    const parsed = parseFloat(raw.replace(',', '.'));
+    if(isNaN(parsed)) {
+      document.getElementById('nra-popover-input').style.borderColor = 'var(--red)';
+      return;
+    }
+    monto_override = parsed;
+  }
+
+  const btn = document.getElementById('nra-pop-save');
+  btn.textContent = '...'; btn.disabled = true;
+
   try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/nra_overrides`,
-      {
+    if(monto_override === null) {
+      // Delete the override row
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/nra_overrides?nro_mov=eq.${encodeURIComponent(nro_mov)}`,
+        { method: 'DELETE', headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      );
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      _nraOverrides.delete(nro_mov);
+      _nraOverrideAmounts.delete(nro_mov);
+    } else {
+      // Upsert with monto_override
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/nra_overrides`, {
         method: 'POST',
         headers: {
-          apikey: SUPABASE_ANON,
-          Authorization: `Bearer ${SUPABASE_ANON}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'resolution=merge-duplicates',
+          apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates',
         },
-        body: JSON.stringify({ nro_mov: String(nro_mov), excluir: newVal }),
-      }
-    );
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    if(newVal) _nraOverrides.add(String(nro_mov));
-    else        _nraOverrides.delete(String(nro_mov));
+        body: JSON.stringify({ nro_mov: String(nro_mov), monto_override, excluir: monto_override === 0 }),
+      });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      _nraOverrides.add(nro_mov);
+      _nraOverrideAmounts.set(nro_mov, monto_override);
+    }
+
+    // Recalculate everything
     const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns || []);
     const deduped  = deduplicateMEP(_historicalTxns || []);
     const clean    = canonicalizeTickers(deduped);
@@ -1661,12 +1770,31 @@ async function toggleNRAOverride(nro_mov, currentlyExcluida) {
     renderPortfolioTable();
     aFilter();
     renderNRATab();
+    closeNRAPopover();
   } catch(e) {
-    console.error('toggleNRAOverride:', e);
-    if(btn) { btn.textContent = currentlyExcluida ? 'No aplica' : '30% aplicado'; btn.disabled = false; }
+    console.error('saveNRAOverride:', e);
     alert(`Error al guardar: ${e.message}`);
+  } finally {
+    btn.textContent = 'Guardar'; btn.disabled = false;
   }
 }
+
+async function clearNRAOverride() {
+  // Set input to empty and save (= delete override)
+  document.getElementById('nra-popover-input').value = '';
+  await saveNRAOverride();
+}
+
+// Close popover on outside click
+document.addEventListener('click', e => {
+  const pop = document.getElementById('nra-popover');
+  if(pop && pop.classList.contains('show') && !pop.contains(e.target)) {
+    closeNRAPopover();
+  }
+});
+
+// Keep old toggleNRAOverride as no-op to avoid any stale references
+async function toggleNRAOverride() {}
 
 function rebuildNRAYearDropdown(data) {
   const sel = document.getElementById('nraYear');
@@ -1720,12 +1848,24 @@ function renderNRATab() {
     return;
   }
   tbody.innerHTML = _nraData.map(r => {
-    const excl = r.excluida;
-    const nraDisplay = excl
-      ? '<span style="color:var(--muted)">-- (excluida)</span>'
-      : `<span class="mn">-${fU(Math.abs(r.nra_est))}</span>`;
-    const btnCls  = excl ? 'nra-toggle excluida' : 'nra-toggle aplica';
-    const btnText = excl ? 'No aplica' : '30% aplicado';
+    const autoNRA = -(r.gross * NRA_RATE);
+    let pillCls, pillTxt, nraDisplay;
+    if(!r.hasOverride) {
+      pillCls = 'nra-pill auto';
+      pillTxt = '30% auto';
+      nraDisplay = `<span class="mn">-${fU(Math.abs(r.nra_est))}</span>`;
+    } else if(r.overrideAmt === 0) {
+      pillCls = 'nra-pill zeroed';
+      pillTxt = 'Sin ret.';
+      nraDisplay = '<span style="color:var(--muted)">-- (override)</span>';
+    } else {
+      pillCls = 'nra-pill custom';
+      const sign = r.overrideAmt > 0 ? '+' : '';
+      pillTxt = `${sign}U$S ${N(Math.abs(r.overrideAmt),2)}`;
+      nraDisplay = r.overrideAmt < 0
+        ? `<span class="mn">-${fU(Math.abs(r.overrideAmt))}</span>`
+        : `<span class="mp">+${fU(r.overrideAmt)}</span>`;
+    }
     return `<tr>
       <td>${fmt(r.fecha)}</td>
       <td><b>${r.ticker}</b></td>
@@ -1736,8 +1876,9 @@ function renderNRATab() {
       <td class="num">${nraDisplay}</td>
       <td class="num" style="color:var(--muted)">${r.nro_mov&&r.nro_mov!=='0'?r.nro_mov:'--'}</td>
       <td style="text-align:center;">
-        <button class="${btnCls}" data-nramov="${r.nro_mov}"
-          onclick="toggleNRAOverride('${r.nro_mov}', ${excl})">${btnText}</button>
+        <button class="${pillCls}" data-nramov="${r.nro_mov}" data-autonra="${autoNRA.toFixed(4)}"
+          onclick="openNRAPopover(event, '${r.nro_mov}', ${r.hasOverride}, ${r.overrideAmt ?? 'null'}, ${autoNRA.toFixed(4)})"
+        >${pillTxt}</button>
       </td>
     </tr>`;
   }).join('');
@@ -2201,6 +2342,24 @@ function showEmptyState() {
   const cc = document.getElementById('cCount'); if(cc) cc.textContent = '';
 }
 </script>
+
+<!-- NRA Override Popover -->
+<div id="nra-popover">
+  <div id="nra-popover-title">Override retención NRA</div>
+  <div id="nra-popover-auto"></div>
+  <input id="nra-popover-input" type="number" step="0.01"
+    placeholder="ej: -6.15 (negativo = egreso)"
+    onkeydown="if(event.key==='Enter') saveNRAOverride(); if(event.key==='Escape') closeNRAPopover();">
+  <div id="nra-popover-hint">
+    Ingresá el monto con signo.<br>
+    Negativo = egreso de caja · Cero = sin retención · Vacío = volver al 30% auto.
+  </div>
+  <div class="nra-popover-btns">
+    <button id="nra-pop-save" onclick="saveNRAOverride()">Guardar</button>
+    <button id="nra-pop-clear" onclick="clearNRAOverride()">Limpiar (auto)</button>
+    <button id="nra-pop-cancel" onclick="closeNRAPopover()">Cancelar</button>
+  </div>
+</div>
 
 <!-- Import Modal -->
 <div id="import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;">
