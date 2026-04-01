@@ -596,6 +596,16 @@ async function fetchLatestPrices() {
       }
     } catch(e) { console.warn('NRA overrides fetch failed:', e); }
 
+    // Recalculate cash with freshly loaded NRA overrides
+    if(_historicalTxns && _historicalTxns.length) {
+      const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
+      const {balances} = buildCash(_historicalTxns, usdCaucionMovs);
+      _cashBalances = balances;
+      _cashDaily = buildCashDaily(_historicalTxns, usdCaucionMovs);
+      cData = [..._cashDaily];
+      rebuildCashYearDropdown();
+      cFilter();
+    }
     renderPortfolioTable();
     renderNRATab();
   } catch(e) {
