@@ -1313,40 +1313,63 @@ function buildInstrument(ticker, clean) {
             first:ops[0]?.fecha||'', last:ops.at(-1)?.fecha||'', n:ops.length,
             accounts:[...new Set(ops.map(t=>t.cuenta))], txns:ops.map(t=>({...t,balance:0,avg_compra:0}))};
   }
-  let balance=0, costWithComis=0, costNoComis=0;
-  let bought=0, sold=0, amort=0, xfer_in=0;
+  // Track balance and cost separately per account group (EEUU vs Argentina),
+  // because the same canonicalized ticker can exist in different currencies
+  // (e.g. MELI as CEDEAR in ARS and as direct stock in USD).
+  const acctState = {}; // 'EEUU' | 'AR' -> {balance, costNoComis, costWithComis}
+  const getAcct = cuenta => {
+    const key = cuenta.includes('EEUU') ? 'EEUU' : 'AR';
+    if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0};
+    return acctState[key];
+  };
+
+  let balance=0, bought=0, sold=0, amort=0, xfer_in=0;
   const txns = ops.map(t => {
-    const {operacion:op, cantidad:qty} = t;
+    const {operacion:op, cantidad:qty, cuenta} = t;
+    const ac = getAcct(cuenta);
     if(BUY_OPS.includes(op) && qty>0) {
-      balance       += qty;
-      costWithComis += calcBuyCost(t, true);
-      costNoComis   += calcBuyCost(t, false);
-      bought        += qty;
+      ac.balance       += qty;
+      ac.costWithComis += calcBuyCost(t, true);
+      ac.costNoComis   += calcBuyCost(t, false);
+      balance += qty; bought += qty;
     }
     else if(SELL_OPS.includes(op) && qty>0) {
-      // Reduce accumulated cost proportionally to units sold (VWAP moving average)
-      const sellQty = Math.min(qty, balance); // can't sell more than we hold
-      if(balance > 0) {
-        const ratio = Math.max(0, (balance - sellQty) / balance);
-        costNoComis   *= ratio;
-        costWithComis *= ratio;
+      const sellQty = Math.min(qty, ac.balance);
+      if(ac.balance > 0) {
+        const ratio = Math.max(0, (ac.balance - sellQty) / ac.balance);
+        ac.costNoComis   *= ratio;
+        ac.costWithComis *= ratio;
       }
-      balance -= qty;
-      if(balance <= 0) { balance = 0; costNoComis = 0; costWithComis = 0; }
-      sold += qty;
+      ac.balance -= qty;
+      if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; }
+      balance -= qty; sold += qty;
     }
-    else if(op==='Pago de Amortización' && qty<0)  { balance+=qty; amort+=Math.abs(qty); }
-    else if(op===XFER_IN && qty>0)                 { balance+=qty; xfer_in+=qty; }
-    const avgNoComis = balance>0 ? costNoComis/balance : 0;
+    else if(op==='Pago de Amortización' && qty<0) { ac.balance+=qty; balance+=qty; amort+=Math.abs(qty); }
+    else if(op===XFER_IN && qty>0)                { ac.balance+=qty; balance+=qty; xfer_in+=qty; }
+    const avgNoComis = ac.balance>0 ? ac.costNoComis/ac.balance : 0;
     return {...t, balance:Math.round(balance*100)/100, avg_compra:Math.round(avgNoComis*10000)/10000};
   });
-  // avg and avgWithCom reflect the current open position cost (moving average net of sells)
-  const avg        = balance>0 ? costNoComis/balance   : 0;
-  const avgWithCom = balance>0 ? costWithComis/balance : 0;
+  if(balance < 0) balance = 0;
+
+  // Per-account avg (correct currency for each panel)
+  const avgByAcct = {};
+  for(const [key, ac] of Object.entries(acctState)) {
+    avgByAcct[key] = {
+      avg:        ac.balance>0 ? ac.costNoComis/ac.balance   : 0,
+      avgWithCom: ac.balance>0 ? ac.costWithComis/ac.balance : 0,
+    };
+  }
+  // Global fallback (instruments in a single account)
+  const _totNo   = Object.values(acctState).reduce((s,ac)=>s+ac.costNoComis,0);
+  const _totWith = Object.values(acctState).reduce((s,ac)=>s+ac.costWithComis,0);
+  const _totBal  = Object.values(acctState).reduce((s,ac)=>s+ac.balance,0);
+  const avg        = _totBal>0 ? _totNo/_totBal   : 0;
+  const avgWithCom = _totBal>0 ? _totWith/_totBal : 0;
   const dates    = ops.map(t=>t.fecha).filter(Boolean);
   return {ticker, net:Math.round(balance*100)/100, bought, sold, amort, xfer_in,
-          avg,          // sin comisiones = precio del broker
-          avgWithCom,   // con comisiones = costo real de adquisición
+          avg,          // sin comisiones = precio del broker (global fallback)
+          avgWithCom,   // con comisiones = costo real de adquisición (global fallback)
+          avgByAcct,    // per-account avg for split tickers (e.g. MELI in ARS + USD)
           first: dates.length?dates[0]:'', last: dates.length?dates.at(-1):'',
           n:ops.length, accounts:[...new Set(ops.map(t=>t.cuenta))], txns};
 }
@@ -1356,9 +1379,11 @@ function makeCard(d, netOverride, txnsFilter, splitNote) {
   if(txnsFilter) txns = txns.filter(t=>t.cuenta.includes(txnsFilter));
   const net = netOverride ?? d.net;
   const totalBought = txns.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
-  // Use avg already computed by buildInstrument (VWAP moving average, net of sells)
-  const avg        = d.avg;
-  const avgWithCom = d.avgWithCom;
+  // Use per-account avg when available (handles split tickers like MELI in ARS + USD)
+  const acctKey = txnsFilter ? (txnsFilter.includes('EEUU') ? 'EEUU' : 'AR') : null;
+  const acctAvg = acctKey && d.avgByAcct && d.avgByAcct[acctKey];
+  const avg        = acctAvg ? acctAvg.avg        : d.avg;
+  const avgWithCom = acctAvg ? acctAvg.avgWithCom : d.avgWithCom;
   const totalSold = txns.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
   const xfer = txns.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
   const sortedTxns = [...txns].sort((a,b)=>a.fecha.localeCompare(b.fecha));
