@@ -2171,18 +2171,18 @@ function renderEvolChart() {
   const datasets = [];
   if(_evolSeries.has('ar')) datasets.push({
     label: '🇦🇷 Argentina (USD)', data: arUSD,
-    borderColor: 'var(--ar)', backgroundColor: 'rgba(0,212,170,.08)',
-    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderColor: '#3d7fff', backgroundColor: 'transparent',
+    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
   if(_evolSeries.has('us')) datasets.push({
     label: '🇺🇸 EEUU (USD)', data: usUSD,
-    borderColor: 'var(--us)', backgroundColor: 'rgba(61,127,255,.08)',
-    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderColor: '#ef4444', backgroundColor: 'transparent',
+    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
   if(_evolSeries.has('total')) datasets.push({
     label: '∑ Total (USD)', data: totalUSD,
-    borderColor: 'var(--purple)', backgroundColor: 'rgba(167,139,250,.08)',
-    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderColor: '#a78bfa', backgroundColor: 'transparent',
+    borderWidth: 3, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
 
   if(_evolChart) { _evolChart.destroy(); _evolChart = null; }
@@ -2772,9 +2772,9 @@ function exportNRAcsv() {
         <button class="evol-rb act" data-range="MAX" onclick="evolSetRange('MAX')">MAX</button>
       </div>
       <!-- Series toggles -->
-      <button class="evol-series act" data-series="ar" onclick="evolToggleSeries('ar')" style="border-color:var(--ar);color:var(--ar);">🇦🇷 Argentina</button>
-      <button class="evol-series act" data-series="us" onclick="evolToggleSeries('us')" style="border-color:var(--us);color:var(--us);">🇺🇸 EEUU</button>
-      <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:var(--purple);color:var(--purple);">∑ Total</button>
+      <button class="evol-series act" data-series="ar" onclick="evolToggleSeries('ar')" style="border-color:#3d7fff;color:#3d7fff;">🇦🇷 Argentina</button>
+      <button class="evol-series act" data-series="us" onclick="evolToggleSeries('us')" style="border-color:#ef4444;color:#ef4444;">🇺🇸 EEUU</button>
+      <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:#a78bfa;color:#a78bfa;">∑ Total</button>
       <!-- Recalc button -->
       <button class="fb" id="evol-recalc-btn" onclick="recalcSnapshots()" style="color:var(--usd);border-color:var(--usd);white-space:nowrap;">⟳ Recalcular</button>
     </div>
