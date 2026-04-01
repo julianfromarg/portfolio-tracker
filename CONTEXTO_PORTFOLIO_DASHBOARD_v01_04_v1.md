@@ -1,0 +1,478 @@
+# Contexto: Portfolio Dashboard — Balanz / Julian
+## Versión: 01/04/2026 v1
+
+---
+
+## Qué es este proyecto
+
+Dashboard HTML single-file para visualizar el portfolio de inversiones en Balanz.
+Hosteado en GitHub Pages — URL pública: **https://julianfromarg.github.io/portfolio-tracker**
+
+Repositorio del dashboard: **github.com/julianfromarg/portfolio-tracker** (público)
+Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (privado)
+
+---
+
+## Archivos
+
+| Archivo | Descripción |
+|---|---|
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~2600 líneas. |
+| `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
+| `CONTEXTO_PORTFOLIO_DASHBOARD_v01_04_v1.md` | Este archivo |
+
+---
+
+## Estructura del dashboard
+
+### 5 tabs:
+- **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones abiertas con precios live + caja + totales. Argentina tiene toggle de modo (moneda origen / todo ARS / todo USD) con input de FX.
+- **📋 Transacciones** — Tabla audit completa con filtros, agrupación, columna **Saldo cash** y columna **Ret. NRA**.
+- **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
+- **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
+- **📈 Evolución** — Gráfico de línea con evolución histórica del portfolio (AR en USD, EEUU, Total). Con zoom, pan, selector de rango y botón de recálculo.
+- **Botones fijos:** `↑ Importar .xls` (en tabs bar)
+- **Header:** selector de sesiones con `＋ Nueva`, `✎ Renombrar`, `🗑 Borrar`
+
+### Flujo de datos:
+1. Abrir → lee sesión activa de `localStorage` → si vacío, muestra estado vacío
+2. Al cargar datos → `fetchLatestPrices()` automático desde Supabase + `fetchPricesHistory()` + `fetchFXHistory()` + `fetchSnapshots()`
+3. Importar .xls → `handleFileImport()` detecta HTML vs XLSX → parsea → `mergeTransactions()` → `processAndRefresh()` → guarda en localStorage (key de sesión) → `fetchLatestPrices()`
+4. Botón 🔄 Actualizar precios → re-fetchea Supabase manualmente
+5. Botón ⟳ Recalcular (tab Evolución) → reconstruye snapshots históricos → upsert en `portfolio_snapshots`
+6. Borrar sesión → borra localStorage de esa sesión + overrides NRA en Supabase para esa sesión
+
+---
+
+## Sistema de sesiones
+
+### Concepto
+Cada "sesión" representa una cuenta de Balanz independiente. Las sesiones son locales al browser — no hay autenticación todavía (Fase 3 pendiente).
+
+### Estructura en localStorage
+```
+sessions_index        → [{id, name, createdAt}]
+active_session_id     → id de la sesión activa
+portfolio_txns_{id}   → transacciones de esa sesión
+```
+
+### session_id especial: `'default'`
+- La primera sesión (migrada desde datos existentes) usa `id = 'default'`
+- Los NRA overrides en Supabase que tenían `session_id = 'default'` siguen funcionando
+- Las sesiones nuevas generan IDs del tipo `sess_xxxxx_xxxxx`
+
+### Funciones clave
+- `getSessions()` / `saveSessions()` — CRUD del índice
+- `getActiveSessionId()` / `setActiveSessionId()` — sesión activa
+- `getSessionTxnsKey(id)` → `portfolio_txns_{id}`
+- `switchSession(id)` — carga transacciones y overrides de otra sesión
+- `newSessionPrompt()` — crea sesión nueva con nombre
+- `renameSessionPrompt()` — renombra sesión activa
+- `clearAllData()` — borra sesión activa (localStorage + Supabase NRA overrides)
+- `renderSessionDropdown()` — refresca el `<select>` del header
+
+### Migración automática
+Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localStorage sin sesión, se migra automáticamente a `portfolio_txns_default` con sesión "Mi cuenta".
+
+---
+
+## Tab Portfolio — diseño
+
+### Columnas de la tabla:
+| Columna | Descripción |
+|---|---|
+| Instrumento | Ticker canonicalizado |
+| Cantidad | Posición neta (solo abiertas, net > 0) |
+| P. Prom. s/comis. | Precio promedio sin comisiones = igual al broker |
+| P. Prom. c/comis. | Precio promedio con comisiones = costo real de adquisición |
+| Precio Actual | Precio de mercado EOD desde Supabase, o precio promedio s/comis si no hay precio (marcado con `*` en naranja) |
+| Gan./Pérd. | (Precio actual − P. Prom. s/comis.) × cantidad + % (solo cuando hay precio de mercado) |
+| Valor Tenencia | Precio actual × cantidad |
+
+### Lógica de precio con fallback:
+- `getPriceForDate(ticker, date, avgCost)` — busca precio en `_pricesHistory[ticker][date]`, luego el más reciente anterior a esa fecha, y si no hay nada usa `avgCost` (P. Prom. s/comis.)
+- Precios estimados al costo aparecen con `*` en color naranja (`var(--usd)`)
+- P&L solo se calcula cuando hay precio de mercado real (no estimado)
+
+### Caja:
+- Panel Argentina: dos filas — Caja ARS y Caja USD
+- Panel EEUU: una fila — Caja USD
+- Aparece al pie de las posiciones, antes del total
+
+### Total Argentina — toggle 3 modos:
+- **Moneda origen:** ARS en ARS + USD en USD (dos líneas separadas)
+- **Todo ARS:** todo convertido a pesos al FX del input
+- **Todo USD:** todo convertido a dólares al FX del input
+- Input FX del día con botón 💾 que guarda en tabla `fx_rates` de Supabase
+- Posiciones AR valuadas al costo (P. Prom. s/comis.) hasta tener precios BYMA
+
+### Total EEUU:
+- Suma posiciones con fallback al costo + caja USD
+- Muestra `*` en el footer cuando alguna posición usa precio estimado
+
+---
+
+## Retención NRA — `calcNRA(t)`
+
+**Contexto:** Balanz no reporta la retención NRA del 30% para dividendos de no residentes en cuenta EEUU. El dashboard la estima y la descuenta del cash.
+
+**Fórmula default:**
+```javascript
+// Solo aplica a: operacion === 'Pago de Dividendos' AND cuenta === 'EEUU (USD)'
+const gross = Math.abs(monto) + Math.abs(comision) + Math.abs(iva);
+const nra = -(gross * 0.30); // negativo = egreso de caja
+```
+
+**Sistema de overrides — monto ad-hoc por transacción:**
+
+La retención real puede diferir del 30% calculado automáticamente (ej: IOL a veces liquida la NRA acumulada en un boleto separado con monto anómalo). El usuario puede ingresar la retención real directamente.
+
+```javascript
+function calcNRA(t) {
+  if(!isNRAApplicable(t)) return 0;
+  const key = String(t.nro_mov);
+  if(_nraOverrides.has(key)) {
+    return _nraOverrideAmounts.get(key) || 0; // monto con signo libre del usuario
+  }
+  const gross = Math.abs(t.monto||0) + Math.abs(t.comision||0) + Math.abs(t.iva||0);
+  return -(gross * NRA_RATE);
+}
+```
+
+**Dos globals para overrides:**
+```javascript
+let _nraOverrides = new Set();       // set de nro_mov con override activo
+let _nraOverrideAmounts = new Map(); // nro_mov → monto numérico (con signo)
+```
+
+**Dónde se aplica `calcNRA`:**
+- `buildCash()` — descuenta NRA del balance de `EEUU (USD)`
+- `buildCashDaily()` — idem para saldos diarios
+- `buildAuditRows()` — agrega campo `nra` a cada fila
+
+**Tabla `nra_overrides` en Supabase:**
+```
+nro_mov        TEXT
+excluir        BOOL          (legacy, se mantiene por compatibilidad)
+monto_override NUMERIC       (NULL = usar 30% auto; cualquier valor = usar ese monto)
+session_id     TEXT          (filtra overrides por sesión)
+PRIMARY KEY (nro_mov, session_id)
+```
+
+**UX — Tab 🏛 Ret. NRA:**
+- Pill de 3 estados por fila:
+  - `30% auto` (naranja) → sin override
+  - `Sin ret.` (gris) → override = 0
+  - `+/-U$S X.XX` (rojo) → override con monto custom
+- Click en pill → popover con input numérico (signo libre), monto auto como referencia, botones Guardar / Limpiar (auto) / Cancelar
+- Enter guarda, Escape cierra
+- "Limpiar (auto)" → PATCH `monto_override = NULL` (no DELETE, por permisos RLS)
+- Botón `↓ CSV` → exporta todas las filas con columnas: fecha, ticker, montos, tipo retención, nro_mov
+
+**Fetch de overrides (al cargar precios):**
+```javascript
+// Filtra por session_id de la sesión activa
+GET /nra_overrides?select=nro_mov,monto_override&session_id=eq.{sessionId}
+```
+
+---
+
+## Estructura del .xls de Balanz
+
+**CRÍTICO: el archivo .xls de Balanz es en realidad HTML disfrazado** (no un binario XLS real).
+El dashboard lo detecta por los primeros bytes y lo parsea con `DOMParser` nativo del browser, **NO con SheetJS**.
+
+```
+Row 1: Título "Operaciones Historicas del periodo..."
+Row 2: Headers — columnas por índice:
+  [0]  Nro. de Mov.   → nro_mov  (puede ser 0 para eventos sin boleto)
+  [1]  Nro. de Boleto → nro_boleto
+  [2]  Tipo Mov.      → "Compra(STRC)", "Venta(AL30D)", "Remuneración de Saldos Líquidos", etc.
+  [3]  Concert.       → fecha de concertación — string "dd/mm/yy" en el archivo del broker
+  [4]  Liquid.        → fecha de liquidación
+  [5]  Est            → estado: "Terminada" | "Cancelada"
+  [6]  Cant. titulos  → cantidad
+  [7]  Precio         → precio — EN LA MONEDA DE LA CUENTA, con coma decimal AR
+  [8]  Comis.         → comisión
+  [9]  Iva Com.       → IVA
+  [10] Otros Imp.     → otros impuestos
+  [11] Monto          → monto neto (ya incluye comisiones, con signo: negativo=egreso)
+  [12] Observaciones
+  [13] Tipo Cuenta    → "Inversion Estados Unidos Dolares" / "Inversion Argentina Pesos" / "Inversion Argentina Dolares"
+```
+
+**Mapeo de cuentas:**
+```
+"Inversion Estados Unidos Dolares" → "EEUU (USD)"
+"Inversion Argentina Pesos"        → "Argentina (ARS)"
+"Inversion Argentina Dolares"      → "Argentina (USD)"
+```
+
+**CRÍTICO — campo Precio:**
+- El campo `precio` está en la moneda de la cuenta
+- Usa coma decimal formato AR: `11,7699` = $11.7699 USD
+- **Para bonos:** el precio es por cada 100 de valor nominal → costo = `precio × cantidad / 100`
+- **Para acciones/CEDEARs:** el precio es por unidad → costo = `precio × cantidad`
+
+**CRÍTICO — campo Monto:**
+- Siempre en la moneda de la cuenta
+- Ya incluye comisiones (neto)
+- Negativo = egreso de caja
+
+---
+
+## Cálculo de precio promedio — `calcBuyCost(t, withComissions)`
+
+Dos versiones del precio promedio:
+
+**Sin comisiones** (= precio del broker, comparable con precio de mercado):
+- Acciones/CEDEARs: `(|monto| - comision - iva) / cantidad`
+- Bonos: `precio × cantidad / 100` (el precio ya es sin comisiones en los bonos)
+
+**Con comisiones** (= costo real de adquisición):
+- Acciones/CEDEARs: `|monto| / cantidad`
+- Bonos: igual que sin comisiones
+
+**Detección de bonos — `isBond(ticker)`:**
+```javascript
+const BOND_TICKERS = new Set([
+  'AL30','AY24','GD30','CO26','AO20','BDC20','AS13','TO26',
+  'AL30D','AY24D','GD30D','AO20D','PARYD',
+  'AL30C','AY24C',
+]);
+```
+
+---
+
+## Pipeline de procesamiento
+
+### 1. Parse — `handleFileImport()` → `parseBalanzRowsFromHTML()` o `parseBalanzRows()`
+
+**CRÍTICO — detección del tipo de archivo:**
+```javascript
+const isHtmlXls = /<html|<table|<tr|<!DOCTYPE/i.test(textBuf);
+```
+- Si es HTML → `parseBalanzRowsFromHTML()` con `DOMParser`
+- Si es XLSX → `parseBalanzRows()` con SheetJS
+
+**`numArg()` — tres casos:**
+```javascript
+// 1. Formato AR con decimal: "1.234,56" → 1234.56
+if(/^-?[\d.]+,\d+$/.test(str)) return parseFloat(str.replace(/\./g,'').replace(',','.'));
+// 2. Entero con separador de miles: "677.225" → 677225
+if(/^-?\d{1,3}(\.\d{3})+$/.test(str)) return parseFloat(str.replace(/\./g,''));
+// 3. Número JS directo o decimal estándar
+```
+
+### 2. Merge — `mergeTransactions()`
+
+Clave primaria via `primaryKey()`:
+- Si `nro_mov != '0'`: `mov|fecha|cuenta|nro_mov`
+- Fallback: `fb|fecha|cuenta|ticker|operacion|cantidad`
+
+### 3. Deduplicación MEP — `deduplicateMEP()`
+
+**CRÍTICO:** solo deduplicar si hay filas del mismo grupo en cuentas DISTINTAS (`accounts.size > 1`).
+**CRÍTICO:** usar siempre `rawClean` (pre-dedup) para calcular cash.
+
+### 4. Canonicalización de tickers — `canonicalizeTickers()`
+
+```javascript
+const INSTRUMENT_GROUPS = {
+  AL30:['AL30','AL30D','AL30C'], AY24:['AY24','AY24D','AY24C'],
+  GD30:['GD30','GD30D'], AO20:['AO20','AO20D'],
+  MELI:['MELI','MELID'], VIST:['VIST','VISTD'],
+  SPY:['SPY','SPYD'], PARY:['PARY','PARYD'],
+};
+```
+
+### 5. Cálculo de posiciones — `buildPortfolio()`
+
+**BUY_OPS:** `Compra`, `Suscripción Primaria`, `Suscripción FCI`, `Transferencia de Titulos IN -`
+**SELL_OPS:** `Venta`, `Rescate FCI`, `Pago de Amortización` (cantidad < 0)
+
+**Detección de posiciones cerradas — `isEffectivelyClosed()`:**
+1. Stale: `Math.max(...years) <= 2020`
+2. Fully amortized: buys + Pago de Amortización ≥ 80% del costo, sin sells
+
+**CRÍTICO:** `buildPortfolio()` es pura — no muta globals. Segura para llamar con subsets.
+
+### 6. Exclusión de opciones — `isOption()`
+
+```javascript
+const OPTION_DECIMAL_RE = /^[A-Za-z]{2,6}\d+\.\d+[A-Za-z]{1,2}$/;
+const OPTION_PREFIX_RE  = /^(TPPC|TPPV|ALUC|ALUP|GFGV|TECC|PBRC|EDNC|EDNA|EDND)/;
+```
+
+---
+
+## Cálculo de cash — `buildCash()` y `buildAuditRows()`
+
+**CASH_SKIP_OPS:**
+```javascript
+new Set([
+  'Transferencia de Titulos IN -',
+  'Depósito por transferencia interna',
+  'Extracción por Transferencia interna',
+])
+```
+
+**Cauciones en Dólares:** `buildUsdCaucionMovs()` identifica `nro_mov` de cauciones en dólares y excluye sus filas del cash.
+
+**NRA en cash:**
+- `buildCash()` y `buildCashDaily()` llaman `calcNRA(t)` para cada dividendo EEUU
+- El resultado (negativo) se suma al balance de `EEUU (USD)`
+
+**CRÍTICO — `buildAuditRows(clean, rawClean, usdCaucionMovs)`:**
+- `clean`: deduped + canonicalized → para mostrar en tabla
+- `rawClean`: pre-dedup + canonicalized → para calcular saldo cash correcto
+
+---
+
+## Precios y datos externos — Supabase + GitHub Actions
+
+### Supabase
+- **Proyecto:** portfolio-tracker (`ghxisfkgwfqqxndfpmgp.supabase.co`)
+- **Anon key:** `sb_publishable_s5hodNiLD-8_OwX8NWHfRw_S1uylN2Y`
+- **Tablas:**
+  - `instruments` — catálogo de instrumentos
+  - `prices` — precios EOD históricos
+  - `nra_overrides` — overrides de retención NRA (`nro_mov`, `excluir`, `monto_override`, `session_id`) — PK: `(nro_mov, session_id)`
+  - `fx_rates` — tipo de cambio USD/ARS diario
+  - `portfolio_snapshots` — valor diario del portfolio
+
+### Tickers US activos:
+`NU, STRC, VGSH, SHV, EWZ, IREN, MSTR, MELI, IVV, SPY, VIST`
+
+### GitHub Actions
+- **Repo:** github.com/julianfromarg/portfolio-tracker-prices (privado)
+- **Cron:** lunes a viernes 21:00 UTC (18:00 ART)
+- **Script:** `update_prices.py` — fetcha Yahoo Finance, upsert en Supabase
+
+### Fetch en el dashboard (al cargar + botón 🔄):
+- `fetchLatestPrices()` — último EOD + NRA overrides de la sesión activa
+- `fetchPricesHistory()` — histórico completo
+- `fetchFXHistory()` — histórico FX + pre-carga input
+- `fetchSnapshots()` — snapshots guardados
+
+**CRÍTICO — orden de carga:** `fetchFXHistory()` debe completar antes de `recalcSnapshots()`.
+
+---
+
+## Tab 📈 Evolución
+
+### `recalcSnapshots()`:
+1. Verifica `_historicalTxns` y `_fxHistory` cargados
+2. Por cada fecha en `_cashDaily`: reconstruye posiciones, valoriza, obtiene FX, guarda snapshot
+3. Upsert en `portfolio_snapshots` en batches de 200
+4. Barra de progreso durante el cálculo
+
+### `renderEvolChart()`:
+- 3 series: `arUSD = ar_ars / fx_rate + ar_usd`, `usUSD = us_usd`, `totalUSD = arUSD + usUSD`
+- Chart.js con zoom plugin
+- Selector de rango: 1M / 3M / 6M / 1Y / MAX
+- Toggle de series individual
+
+---
+
+## Fase 2 — pendiente
+
+- **Precios BYMA (Argentina):** conectar IOL API para CEDEARs, acciones y bonos AR
+- **Backfill BYMA:** histórico desde 2020
+- **FX automático:** automatizar ingreso diario del tipo de cambio
+
+## Fase 3 — pendiente
+
+- **Autenticación de usuarios:** Supabase Auth
+- **Multi-usuario real:** `user_id` en Supabase, sesiones ligadas al usuario
+- La arquitectura actual (session_id local) está diseñada para migrar a esto sin reescribir
+
+---
+
+## Bugs resueltos — no repetir
+
+### Parseo y pipeline
+
+| Bug | Causa | Fix |
+|---|---|---|
+| Fechas invertidas | SheetJS con `raw:false` | Usar `raw:true` + `XLSX.SSF.parse_date_code()` |
+| "Remuneración de Saldos Líquidos" no aparece | Filtro por `nro_mov` | Cambiar a `if(!row[COL.tipo_mov])` |
+| Transacciones canceladas contabilizan | Estado "Cancelada" no filtrado | `if(estado === 'Cancelada') continue` |
+| Dos ventas TVPP descartadas | `deduplicateMEP` sin chequeo de cuenta | Solo deduplicar si `accounts.size > 1` |
+| Cash ARS incorrecto | `buildAuditRows` usaba `clean` post-dedup | Pasar `rawClean` pre-dedup |
+| Números con miles truncados | SheetJS trunca `"10.000,00"` → `10` | Usar `DOMParser` (`parseBalanzRowsFromHTML()`) |
+| Cantidades con punto de miles | `numArg` no reconocía enteros con miles | Agregar regex `/^-?\d{1,3}(\.\d{3})+$/` |
+
+### Posiciones y precios
+
+| Bug | Causa | Fix |
+|---|---|---|
+| Precio promedio incorrecto EEUU | Formato AR con SheetJS | `(|monto| - comis - iva) / cantidad` |
+| Precio promedio bonos incorrecto | Bonos cotizan por lámina de 100 | `calcBuyCost`: `precio × cantidad / 100` |
+| Tickers viejos con posición abierta | Historial incompleto | `isEffectivelyClosed()`: stale `<= 2020` |
+| BDC20 aparece como abierta | Check stale era `< 2020` | Cambiar a `<= 2020` |
+| Bonos amortizados con posición abierta | `Pago de Amortización` sin cantidad | Criterio amortización ≥ 80% |
+| Opciones con posición abierta | Vencen sin cierre registrado | `isOption()`: excluir completamente |
+| ADRDOLA no aparece | Cantidad `"677.225"` parseada mal | Fix en `numArg()` para enteros con miles |
+
+### Cash
+
+| Bug | Causa | Fix |
+|---|---|---|
+| Transferencias internas duplican cash | Aparecen en dos cuentas | Agregar a CASH_SKIP_OPS |
+| Caución en Dólares distorsiona saldos | Broker registra -USD y +ARS | `buildUsdCaucionMovs()` + `isCashSkip()` |
+| Cash Argentina USD negativo | SheetJS trunca `"10.000,00"` | Usar `DOMParser` |
+| Cash EEUU incorrecto (factor ~10x) | NRA no descontada | `calcNRA()` en `buildCash()` y `buildCashDaily()` |
+| Override NRA no impacta cash | `cFilter()` no se llamaba tras guardar override | Llamar `cFilter()` en lugar de `cSortApply()` en `saveNRAOverride()` |
+
+### NRA overrides
+
+| Bug | Causa | Fix |
+|---|---|---|
+| "Limpiar" no persistía (override volvía en F5) | DELETE sin permisos RLS con anon key | Reemplazar DELETE por PATCH `monto_override = NULL` |
+| Override no impactaba cash tab | `saveNRAOverride` llamaba `cSortApply` (no refrescaba `cData`) | Cambiar a `cFilter()` |
+
+### Snapshots / Evolución
+
+| Bug | Causa | Fix |
+|---|---|---|
+| `recalcSnapshots` llama función inexistente | Referencia a `buildPortfolioLocal` | Usar `buildPortfolio()` directamente |
+| Atribución incorrecta posiciones AR | `d.accounts.some(a => a.includes('ARS'))` mezclaba | Comparar con `=== 'Argentina (ARS)'` |
+| Snapshots con `fx_rate = 1` | `fetchFXHistory` async no terminaba | Guard en `recalcSnapshots()` |
+
+---
+
+## Checkpoints de validación
+
+- 31/12/2011: ARS 42.412,60 ✅ | USD 0,00 ✅
+- 11/09/2019: ARS 72,58 ✅ | USD 1,35 ✅
+- NU precio promedio s/comis: ~11,77 USD ✅
+- Argentina USD cash final (25/03/2026): ~U$S 261,51 ✅
+- ADRDOLA posición abierta: ~297.952 cuotapartes ✅
+- BDC20: cerrada (stale) ✅
+- SPY dividendo 5/8/20: monto neto 20,32 → NRA estimada 6,15 ✅
+
+---
+
+## Cómo pedir cambios en un chat nuevo
+
+Pegá este documento + el HTML al inicio del chat. Ejemplos:
+
+> "Tengo este contexto [pegar doc]. Quiero conectar precios BYMA para la cuenta Argentina."
+
+> "Tengo este contexto [pegar doc]. El saldo cash al 31/12/2020 no cuadra."
+
+> "Tengo este contexto [pegar doc]. El gráfico de evolución no muestra datos."
+
+**Reglas para cambios:**
+- Siempre editar el archivo existente (no reescribir desde cero)
+- Antes de cualquier fix de cash, validar con Python usando el .xls directamente
+- Antes de cambiar `deduplicateMEP`, verificar con casos concretos
+- `buildCash()` y saldo en `buildAuditRows()` deben usar siempre `rawClean` (pre-dedup)
+- Para agregar tickers nuevos: INSERT en `instruments`, correr backfill desde GitHub Actions
+- El archivo del broker es HTML disfrazado — **nunca procesar con SheetJS directamente**
+- `buildPortfolio()` es pura — segura para llamar con subsets
+- `recalcSnapshots()` requiere `_fxHistory` cargado (el guard lo verifica)
+- El dashboard NO funciona en el sandbox de Claude (CSP bloquea Supabase). Siempre testear desde GitHub Pages
+- Los NRA overrides se filtran por `session_id` — cada sesión tiene sus propios overrides
+- El PATCH (no DELETE) es intencional para limpiar overrides — RLS no permite DELETE con anon key
