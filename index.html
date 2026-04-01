@@ -208,7 +208,7 @@ tbody tr:hover td{background:var(--s2);}
   </div>
 </header>
 <div class="tabs">
-  <div class="tab act-portfolio" onclick="switchTab(this,'portfolio')">📊 Portfolio</div>
+  <div class="tab" onclick="switchTab(this,'portfolio')">📊 Portfolio</div>
   <div class="tab" onclick="switchTab(this,'audit')">📋 Transacciones</div>
   <div class="tab" onclick="switchTab(this,'cash')">💵 Saldo Cash</div>
   <div class="tab" onclick="switchTab(this,'nra')">🏛 Ret. NRA</div>
@@ -218,7 +218,7 @@ tbody tr:hover td{background:var(--s2);}
   </div>
 </div>
 
-<div id="panel-portfolio" class="panel active">
+<div id="panel-portfolio" class="panel">
   <!-- Toggle AR / EEUU -->
   <div style="display:flex;align-items:center;gap:10px;padding:14px 0 10px;flex-wrap:wrap;">
     <div id="portfolio-toggle" style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:5px;overflow:hidden;">
@@ -794,6 +794,7 @@ function switchTab(el,key){
   el.classList.add('act-'+key);
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.getElementById('panel-'+key).classList.add('active');
+  localStorage.setItem('active_tab', key);
 }
 
 // ══════ PORTFOLIO TABLE ══════
@@ -2607,6 +2608,15 @@ async function clearAllData() {
   fetchPricesHistory();
   fetchFXHistory();
   fetchSnapshots();
+
+  // Restore last active tab (default: portfolio)
+  const savedTab = localStorage.getItem('active_tab') || 'portfolio';
+  const tabEl = document.querySelector(`.tab[onclick*="'${savedTab}'"]`);
+  if(tabEl) switchTab(tabEl, savedTab);
+  else {
+    const fallback = document.querySelector(".tab[onclick*=\"'portfolio'\"]");
+    if(fallback) switchTab(fallback, 'portfolio');
+  }
 })();
 
 function showEmptyState() {
