@@ -1314,27 +1314,35 @@ function buildInstrument(ticker, clean) {
             accounts:[...new Set(ops.map(t=>t.cuenta))], txns:ops.map(t=>({...t,balance:0,avg_compra:0}))};
   }
   let balance=0, costWithComis=0, costNoComis=0;
+  let bought=0, sold=0, amort=0, xfer_in=0;
   const txns = ops.map(t => {
     const {operacion:op, cantidad:qty} = t;
     if(BUY_OPS.includes(op) && qty>0) {
-      balance += qty;
+      balance       += qty;
       costWithComis += calcBuyCost(t, true);
       costNoComis   += calcBuyCost(t, false);
+      bought        += qty;
     }
-    else if(SELL_OPS.includes(op) && qty>0)        { balance-=qty; }
-    else if(op==='Pago de Amortización' && qty<0)  { balance+=qty; }
-    else if(op===XFER_IN && qty>0)                 { balance+=qty; }
+    else if(SELL_OPS.includes(op) && qty>0) {
+      // Reduce accumulated cost proportionally to units sold (VWAP moving average)
+      const sellQty = Math.min(qty, balance); // can't sell more than we hold
+      if(balance > 0) {
+        const ratio = Math.max(0, (balance - sellQty) / balance);
+        costNoComis   *= ratio;
+        costWithComis *= ratio;
+      }
+      balance -= qty;
+      if(balance <= 0) { balance = 0; costNoComis = 0; costWithComis = 0; }
+      sold += qty;
+    }
+    else if(op==='Pago de Amortización' && qty<0)  { balance+=qty; amort+=Math.abs(qty); }
+    else if(op===XFER_IN && qty>0)                 { balance+=qty; xfer_in+=qty; }
     const avgNoComis = balance>0 ? costNoComis/balance : 0;
     return {...t, balance:Math.round(balance*100)/100, avg_compra:Math.round(avgNoComis*10000)/10000};
   });
-  const bought   = ops.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
-  const sold     = ops.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
-  const amort    = ops.filter(t=>t.operacion==='Pago de Amortización'&&t.cantidad<0).reduce((s,t)=>s+Math.abs(t.cantidad),0);
-  const xfer_in  = ops.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
-  const totalBuyCostWithComis = ops.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+calcBuyCost(t,true),0);
-  const totalBuyCostNoComis   = ops.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+calcBuyCost(t,false),0);
-  const avg         = bought>0 ? totalBuyCostNoComis/bought : 0;   // sin comisiones (= broker)
-  const avgWithCom  = bought>0 ? totalBuyCostWithComis/bought : 0; // con comisiones (= costo real)
+  // avg and avgWithCom reflect the current open position cost (moving average net of sells)
+  const avg        = balance>0 ? costNoComis/balance   : 0;
+  const avgWithCom = balance>0 ? costWithComis/balance : 0;
   const dates    = ops.map(t=>t.fecha).filter(Boolean);
   return {ticker, net:Math.round(balance*100)/100, bought, sold, amort, xfer_in,
           avg,          // sin comisiones = precio del broker
@@ -1347,12 +1355,10 @@ function makeCard(d, netOverride, txnsFilter, splitNote) {
   let txns = d.txns;
   if(txnsFilter) txns = txns.filter(t=>t.cuenta.includes(txnsFilter));
   const net = netOverride ?? d.net;
-  const buyT = txns.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0);
-  const totalBought = buyT.reduce((s,t)=>s+t.cantidad,0);
-  const buyCostNoComis  = buyT.reduce((s,t)=>s+calcBuyCost(t,false),0);
-  const buyCostWithComis= buyT.reduce((s,t)=>s+calcBuyCost(t,true),0);
-  const avg        = totalBought>0 ? buyCostNoComis/totalBought   : d.avg;
-  const avgWithCom = totalBought>0 ? buyCostWithComis/totalBought : d.avgWithCom;
+  const totalBought = txns.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  // Use avg already computed by buildInstrument (VWAP moving average, net of sells)
+  const avg        = d.avg;
+  const avgWithCom = d.avgWithCom;
   const totalSold = txns.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
   const xfer = txns.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
   const sortedTxns = [...txns].sort((a,b)=>a.fecha.localeCompare(b.fecha));
