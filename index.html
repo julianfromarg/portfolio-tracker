@@ -280,6 +280,13 @@ tbody tr:hover td{background:var(--s2);}
     <select class="fi" id="aYear" onchange="aFilter()">
       <option value="">Todos los años</option>
     </select>
+    <select class="fi" id="aMonth" onchange="aFilter()">
+      <option value="">Todos los meses</option>
+      <option value="01">Enero</option><option value="02">Febrero</option><option value="03">Marzo</option>
+      <option value="04">Abril</option><option value="05">Mayo</option><option value="06">Junio</option>
+      <option value="07">Julio</option><option value="08">Agosto</option><option value="09">Septiembre</option>
+      <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+    </select>
     <select class="fi" id="aGroup" onchange="aRender()">
       <option value="">Sin agrupar</option>
       <option value="ticker">Por instrumento</option>
@@ -288,6 +295,7 @@ tbody tr:hover td{background:var(--s2);}
       <option value="year">Por año</option>
     </select>
     <button class="fb" onclick="aClear()">✕ Limpiar</button>
+    <button class="fb" onclick="exportAuditCSV()" style="color:var(--green);border-color:rgba(34,197,94,.3);">↓ CSV</button>
     <span style="font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap"><span data-daterange><span data-daterange>18/02/2015 → 13/03/2026</span></span></span>
     <span class="a-count" id="aCount"></span>
   </div>
@@ -435,11 +443,13 @@ function aFilter(){
   const cuenta=document.getElementById('aCuenta').value;
   const op=document.getElementById('aOp').value;
   const year=document.getElementById('aYear').value;
+  const month=document.getElementById('aMonth').value;
   aData=AUDIT.filter(r=>{
     if(cuenta&&r.cuenta!==cuenta) return false;
     if(op==='Otras'){if(!OTHER_OPS.has(r.operacion)) return false;}
     else if(op&&r.operacion!==op) return false;
     if(year&&r.year!==year) return false;
+    if(month&&(r.fecha||'').slice(5,7)!==month) return false;
     if(q){const hay=r.ticker+' '+r.ticker_raw+' '+r.operacion+' '+r.cuenta+' '+r.nro_boleto;if(!hay.toLowerCase().includes(q)) return false;}
     return true;
   });
@@ -534,9 +544,39 @@ function aRow(r){
 function toggleG(key){gCollapsed[key]=!gCollapsed[key];aRender();}
 function aClear(){
   document.querySelector('.atb .fi').value='';
-  ['aCuenta','aOp','aYear','aGroup'].forEach(id=>document.getElementById(id).value='');
+  ['aCuenta','aOp','aYear','aMonth','aGroup'].forEach(id=>document.getElementById(id).value='');
   Object.keys(gCollapsed).forEach(k=>delete gCollapsed[k]);
   aFilter();
+}
+
+function exportAuditCSV() {
+  if(!aData.length) { alert('No hay filas para exportar.'); return; }
+  const headers = ['Fecha','Cuenta','Instrumento','Operación','Cantidad','Precio','Monto','Comisión','IVA','Ret. NRA','Saldo Cash','Nro. Boleto'];
+  const rows = aData.map(r => [
+    r.fecha||'',
+    r.cuenta||'',
+    r.ticker||'',
+    r.operacion||'',
+    r.cantidad>0 ? r.cantidad : '',
+    r.precio>0   ? r.precio   : '',
+    r.monto      != null ? r.monto    : '',
+    r.comision>0 ? r.comision : '',
+    r.iva>0      ? r.iva      : '',
+    r.nra<0      ? r.nra      : '',
+    r.saldo_cash != null ? r.saldo_cash : '',
+    r.nro_boleto && r.nro_boleto!=='0' ? r.nro_boleto : '',
+  ]);
+  const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const sessions = getSessions();
+  const session = sessions.find(s => s.id === getActiveSessionId());
+  const sessionName = session ? session.name.replace(/[^a-z0-9]/gi,'_') : 'portfolio';
+  a.download = `Transacciones_${sessionName}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ══════ SUPABASE PRICES ══════
