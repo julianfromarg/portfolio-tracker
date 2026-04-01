@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 01/04/2026 v2
+## Versión: 01/04/2026 v3
 
 ---
 
@@ -17,22 +17,26 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~2780 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3100 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
-| `CONTEXTO_PORTFOLIO_DASHBOARD_v01_04_v2.md` | Este archivo |
+| `CONTEXTO_PORTFOLIO_DASHBOARD_v01_04_v3.md` | Este archivo |
 
 ---
 
 ## Estructura del dashboard
 
-### 5 tabs:
-- **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones abiertas con precios live + caja + totales. Argentina tiene toggle de modo (moneda origen / todo ARS / todo USD) con input de FX.
-- **📋 Transacciones** — Tabla audit completa con filtros (cuenta, operación, año, **mes**), agrupación, columna **Saldo cash**, columna **Ret. NRA** y botón `↓ CSV`.
+### 6 tabs:
+- **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones abiertas con precios live + caja + totales. Argentina tiene toggle de modo (moneda origen / todo ARS / todo USD). FX siempre desde `fx_rates` en Supabase — sin input manual.
+- **📋 Transacciones** — Tabla audit completa con filtros (cuenta, operación, año, mes), agrupación, columna Saldo cash, columna Ret. NRA y botón `↓ CSV`.
 - **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
 - **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
-- **📈 Evolución** — Gráfico de línea con evolución histórica del portfolio (AR en USD, EEUU, Total). Con zoom, pan, selector de rango y botón de recálculo.
+- **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
+- **🔍 Especies** — Tab de auditoría por instrumento. Ver más abajo.
 - **Botones fijos:** `↑ Importar .xls` (en tabs bar)
 - **Header:** selector de sesiones con `＋ Nueva`, `✎ Renombrar`, `🗑 Borrar`
+
+### Tab activo persistente:
+`switchTab()` guarda el tab activo en `localStorage('active_tab')`. El `init()` lo restaura al cargar. `switchTab` es defensivo — hace guard si el panel no existe.
 
 ### Flujo de datos:
 1. Abrir → lee sesión activa de `localStorage` → si vacío, muestra estado vacío
@@ -53,6 +57,7 @@ Cada "sesión" representa una cuenta de Balanz independiente. Las sesiones son l
 ```
 sessions_index        → [{id, name, createdAt}]
 active_session_id     → id de la sesión activa
+active_tab            → tab activo (portfolio/audit/cash/nra/evol/especies)
 portfolio_txns_{id}   → transacciones de esa sesión
 ```
 
@@ -83,8 +88,8 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 |---|---|
 | Instrumento | Ticker canonicalizado |
 | Cantidad | Posición neta (solo abiertas, net > 0) |
-| P. Prom. s/comis. | Precio promedio sin comisiones = igual al broker |
-| P. Prom. c/comis. | Precio promedio con comisiones = costo real de adquisición |
+| P. Prom. s/comis. | Precio promedio sin comisiones, en la moneda del modo activo |
+| P. Prom. c/comis. | Precio promedio con comisiones, en la moneda del modo activo |
 | Precio Actual | Precio de mercado EOD desde Supabase, o precio promedio s/comis si no hay precio (marcado con `*` en naranja) |
 | Gan./Pérd. | (Precio actual − P. Prom. s/comis.) × cantidad + % (solo cuando hay precio de mercado) |
 | Valor Tenencia | Precio actual × cantidad |
@@ -101,14 +106,20 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 
 ### Total Argentina — toggle 3 modos:
 - **Moneda origen:** ARS en ARS + USD en USD (dos líneas separadas)
-- **Todo ARS:** todo convertido a pesos al FX del input
-- **Todo USD:** todo convertido a dólares al FX del input
-- Input FX del día con botón 💾 que guarda en tabla `fx_rates` de Supabase
+- **Todo ARS:** todo convertido a pesos al FX de `_fxLatest`
+- **Todo USD:** todo convertido a dólares al FX de `_fxLatest`
+- FX siempre tomado de `_fxHistory` / `_fxLatest` desde Supabase — no hay input manual
 - Posiciones AR valuadas al costo (P. Prom. s/comis.) hasta tener precios BYMA
 
 ### Total EEUU:
 - Suma posiciones con fallback al costo + caja USD
 - Muestra `*` en el footer cuando alguna posición usa precio estimado
+
+### Columnas P. Prom. en modo Argentina:
+Las columnas de precio promedio varían según el modo activo (ARS/USD), usando `avgByAcct` por slot:
+- **Moneda origen:** muestra cada slot en su moneda nativa (`$ X` / `U$S Y`) separados por `/` si hay ambos
+- **Todo ARS:** convierte slot USD multiplicando por FX, promedio ponderado por balance
+- **Todo USD:** convierte slot ARS dividiendo por FX, promedio ponderado por balance
 
 ---
 
@@ -176,7 +187,7 @@ GET /nra_overrides?select=nro_mov,monto_override&session_id=eq.{sessionId}
 ```
 
 **CRÍTICO — race condition al inicio resuelta:**
-`fetchLatestPrices()` recalcula `buildCash()` y `buildCashDaily()` después de cargar los overrides de Supabase. Sin esto, el cash al abrir la página ignora los overrides (se carga primero `processAndRefresh` con `_nraOverrides` vacío, y los overrides llegan después del fetch asíncrono).
+`fetchLatestPrices()` recalcula `buildCash()` y `buildCashDaily()` después de cargar los overrides de Supabase. Sin esto, el cash al abrir la página ignora los overrides.
 
 ---
 
@@ -240,20 +251,23 @@ ac.balance -= qty;
 if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; }
 ```
 
-### Segregación por cuenta (`acctState`)
+### Segregación por cuenta (`acctState`) — 3 slots
 
-**CRÍTICO:** `buildInstrument` trackea balance y costo **por separado para EEUU y Argentina**, porque el mismo ticker canonicalizado puede existir en distintas monedas (ej: MELI como acción directa en USD en cuenta EEUU, y como CEDEAR en ARS en cuenta Argentina). Si se mezclan los montos, el precio promedio queda completamente distorsionado.
+**CRÍTICO:** `buildInstrument` trackea balance y costo **por separado para 3 slots**, porque el mismo ticker canonicalizado puede existir en distintas monedas:
 
 ```javascript
-const acctState = {}; // 'EEUU' | 'AR' -> {balance, costNoComis, costWithComis}
+// 'EEUU'   → cuenta EEUU (USD)       -- avg en USD
+// 'AR_ARS' → cuenta Argentina (ARS)  -- avg en ARS
+// 'AR_USD' → cuenta Argentina (USD)  -- avg en USD
+const acctState = {};
 const getAcct = cuenta => {
-  const key = cuenta.includes('EEUU') ? 'EEUU' : 'AR';
+  const key = cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
   if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0};
   return acctState[key];
 };
 ```
 
-`buildInstrument` retorna `avgByAcct` (además del avg global fallback). `makeCard` usa `avgByAcct[acctKey]` cuando filtra por cuenta.
+`buildInstrument` retorna `avgByAcct` con hasta 3 entradas, cada una con `{avg, avgWithCom, balance}`. `makeCard` preserva `avgByAcct` en el objeto final. El footer y las columnas de precio promedio usan `avgByAcct` directamente — **nunca el `avg` global mezclado**.
 
 ### `calcBuyCost(t, withComissions)`
 
@@ -372,7 +386,7 @@ new Set([
   - `instruments` — catálogo de instrumentos
   - `prices` — precios EOD históricos
   - `nra_overrides` — overrides de retención NRA (`nro_mov`, `excluir`, `monto_override`, `session_id`) — PK: `(nro_mov, session_id)`
-  - `fx_rates` — tipo de cambio USD/ARS diario
+  - `fx_rates` — tipo de cambio USD/ARS diario (fuente de verdad — no hay input manual)
   - `portfolio_snapshots` — valor diario del portfolio
 
 ### Tickers US activos:
@@ -386,7 +400,7 @@ new Set([
 ### Fetch en el dashboard (al cargar + botón 🔄):
 - `fetchLatestPrices()` — último EOD + NRA overrides de la sesión activa + **recálculo de cash post-overrides**
 - `fetchPricesHistory()` — histórico completo
-- `fetchFXHistory()` — histórico FX + pre-carga input
+- `fetchFXHistory()` — histórico FX + setea `_fxLatest`
 - `fetchSnapshots()` — snapshots guardados
 
 **CRÍTICO — orden de carga:** `fetchFXHistory()` debe completar antes de `recalcSnapshots()`.
@@ -397,15 +411,54 @@ new Set([
 
 ### `recalcSnapshots()`:
 1. Verifica `_historicalTxns` y `_fxHistory` cargados
-2. Por cada fecha en `_cashDaily`: reconstruye posiciones, valoriza, obtiene FX, guarda snapshot
-3. Upsert en `portfolio_snapshots` en batches de 200
-4. Barra de progreso durante el cálculo
+2. Por cada fecha en `_cashDaily`: reconstruye posiciones usando `avgByAcct` por slot, valoriza, obtiene FX, guarda snapshot
+3. AR: `ar_ars += avgByAcct.AR_ARS.avg × balance`, `ar_usd += avgByAcct.AR_USD.avg × balance`
+4. Upsert en `portfolio_snapshots` en batches de 200
+5. Barra de progreso durante el cálculo
 
 ### `renderEvolChart()`:
-- 3 series: `arUSD = ar_ars / fx_rate + ar_usd`, `usUSD = us_usd`, `totalUSD = arUSD + usUSD`
+- 3 series independientes (no apiladas, sin fill):
+  - 🇦🇷 Argentina: `arUSD = ar_ars / fx_rate + ar_usd`, color `#3d7fff`, borderWidth 2.5
+  - 🇺🇸 EEUU: `usUSD = us_usd`, color `#ef4444`, borderWidth 2.5
+  - ∑ Total: `totalUSD = arUSD + usUSD`, color `#a78bfa`, borderWidth 3
 - Chart.js con zoom plugin
 - Selector de rango: 1M / 3M / 6M / 1Y / MAX
-- Toggle de series individual
+- Toggle de series individual — cada serie es independiente, Total no es redundante
+
+---
+
+## Tab 🔍 Especies
+
+Tab de auditoría de precio promedio por instrumento. Permite ver la evolución fila por fila del VWAP.
+
+### UX:
+- Dropdown con todos los tickers de AR + US, ordenados alfabéticamente
+- Se repuebla automáticamente al cambiar de tab (en `switchTab`) y al cargar datos (`processAndRefresh`)
+- Toggle **Valoriz. ARS / USD** — afecta columnas Avg y Valorización de ambos grupos
+- Una fila por fecha (si hay actividad en AR y EEUU el mismo día, se consolidan en una fila)
+
+### Estructura de la tabla:
+Dos grupos de columnas generados dinámicamente según qué cuentas tenga la especie:
+
+**Grupo 🇦🇷 Argentina** (si tiene ops en cuentas Argentina):
+- Compras · Ventas · Xfer. · Amort. · Bal AR · Precio ARS/USD (según modo)
+
+**Grupo 🇺🇸 EEUU** (si tiene ops en cuenta EEUU):
+- Compras · Ventas · Xfer. · Amort. · Bal EEUU · Precio USD
+
+**Columnas compartidas al final:**
+- Avg AR · Valoriz. AR · Avg EEUU · Valoriz. EEUU · FX
+
+Si la especie solo existe en un lado, solo aparece ese grupo de columnas.
+
+### Lógica VWAP en Especies:
+Mismo algoritmo que `buildInstrument()` pero recalculado fila por fila en `renderEspecies()` para mostrar la evolución. Usa los mismos slots `AR_ARS`, `AR_USD`, `EEUU`.
+
+### Funciones clave:
+- `rebuildEspeciesDropdown()` — repuebla el selector
+- `renderEspecies()` — renderiza la tabla para el ticker seleccionado
+- `setEspValMode(mode)` — toggle ARS/USD para la valorización
+- `_espValMode` — estado global `'ars'` | `'usd'`
 
 ---
 
@@ -413,7 +466,7 @@ new Set([
 
 - **Precios BYMA (Argentina):** conectar IOL API para CEDEARs, acciones y bonos AR
 - **Backfill BYMA:** histórico desde 2020
-- **FX automático:** automatizar ingreso diario del tipo de cambio
+- **FX automático:** automatizar ingreso diario del tipo de cambio en `fx_rates`
 
 ## Fase 3 — pendiente
 
@@ -448,8 +501,9 @@ new Set([
 | Bonos amortizados con posición abierta | `Pago de Amortización` sin cantidad | Criterio amortización ≥ 80% |
 | Opciones con posición abierta | Vencen sin cierre registrado | `isOption()`: excluir completamente |
 | ADRDOLA no aparece | Cantidad `"677.225"` parseada mal | Fix en `numArg()` para enteros con miles |
-| **Precio promedio incorrecto tras ventas parciales** | **`avg = totalCostNoComis / bought` ignoraba ventas — dividía por total histórico, no por posición actual** | **VWAP móvil: al vender, `costNoComis *= (balance - sellQty) / balance`. Si balance = 0, reset a 0.** |
-| **Precio promedio incorrecto para tickers split AR/EEUU (ej: MELI)** | **`buildInstrument` mezclaba montos ARS y USD en el mismo acumulador** | **`acctState` separado por 'EEUU' vs 'AR'. `buildInstrument` retorna `avgByAcct`. `makeCard` usa el avg de la cuenta correspondiente.** |
+| Precio promedio incorrecto tras ventas parciales | `avg = totalCostNoComis / bought` ignoraba ventas | VWAP móvil: al vender, `costNoComis *= (balance - sellQty) / balance`. Si balance = 0, reset a 0. |
+| Precio promedio incorrecto para tickers split AR/EEUU (ej: MELI) | `buildInstrument` mezclaba montos ARS y USD en el mismo acumulador `'AR'` | 3 slots: `'EEUU'`, `'AR_ARS'`, `'AR_USD'`. `avgByAcct` incluye `balance` por slot. `makeCard` preserva `avgByAcct`. Footer y columnas usan slots directamente. |
+| Total Argentina (USD) mostraba ~U$S 32M | Footer filtraba por `accounts.includes('USD')` capturando CEDEARs con avg en pesos | `calcArSlots()` itera `avgByAcct.AR_ARS` y `avgByAcct.AR_USD` directamente — sin filtro por `accounts` |
 
 ### Cash
 
@@ -460,7 +514,7 @@ new Set([
 | Cash Argentina USD negativo | SheetJS trunca `"10.000,00"` | Usar `DOMParser` |
 | Cash EEUU incorrecto (factor ~10x) | NRA no descontada | `calcNRA()` en `buildCash()` y `buildCashDaily()` |
 | Override NRA no impacta cash | `cFilter()` no se llamaba tras guardar override | Llamar `cFilter()` en lugar de `cSortApply()` en `saveNRAOverride()` |
-| **Cash incorrecto al abrir (overrides ignorados)** | **Race condition: `processAndRefresh` corre antes de que `fetchLatestPrices` cargue los overrides de Supabase** | **`fetchLatestPrices()` recalcula `buildCash()` + `buildCashDaily()` + `cFilter()` después de cargar los overrides** |
+| Cash incorrecto al abrir (overrides ignorados) | Race condition: `processAndRefresh` corre antes de que `fetchLatestPrices` cargue los overrides de Supabase | `fetchLatestPrices()` recalcula `buildCash()` + `buildCashDaily()` + `cFilter()` después de cargar los overrides |
 
 ### NRA overrides
 
@@ -474,8 +528,16 @@ new Set([
 | Bug | Causa | Fix |
 |---|---|---|
 | `recalcSnapshots` llama función inexistente | Referencia a `buildPortfolioLocal` | Usar `buildPortfolio()` directamente |
-| Atribución incorrecta posiciones AR | `d.accounts.some(a => a.includes('ARS'))` mezclaba | Comparar con `=== 'Argentina (ARS)'` |
+| Atribución incorrecta posiciones AR | `d.accounts.some(a => a.includes('ARS'))` mezclaba | Usar `avgByAcct.AR_ARS` y `avgByAcct.AR_USD` directamente |
 | Snapshots con `fx_rate = 1` | `fetchFXHistory` async no terminaba | Guard en `recalcSnapshots()` |
+
+### UI / Tab
+
+| Bug | Causa | Fix |
+|---|---|---|
+| Tab activo no persiste al refrescar | `act-portfolio` hardcodeado en HTML, sin persistencia | `switchTab` guarda en `localStorage('active_tab')`, `init` restaura |
+| `switchTab` explota si panel no existe | `getElementById(...).classList` sobre null | Guard: `const panel = getElementById(...); if(!panel) return;` |
+| Dropdown Especies vacío al abrir tab | `rebuildEspeciesDropdown` solo se llamaba en `processAndRefresh` | También se llama en `switchTab` cuando key === `'especies'` |
 
 ---
 
@@ -488,7 +550,7 @@ new Set([
 - ADRDOLA posición abierta: ~297.952 cuotapartes ✅
 - BDC20: cerrada (stale) ✅
 - SPY dividendo 5/8/20: monto neto 20,32 → NRA estimada 6,15 ✅
-- **MELI precio promedio s/comis (cuenta EEUU): ~2.006,50 USD ✅**
+- MELI precio promedio s/comis (cuenta EEUU): ~2.006,50 USD ✅
 
 ---
 
@@ -514,6 +576,8 @@ Pegá este documento + el HTML al inicio del chat. Ejemplos:
 - El dashboard NO funciona en el sandbox de Claude (CSP bloquea Supabase). Siempre testear desde GitHub Pages
 - Los NRA overrides se filtran por `session_id` — cada sesión tiene sus propios overrides
 - El PATCH (no DELETE) es intencional para limpiar overrides — RLS no permite DELETE con anon key
-- **`buildInstrument` trackea `acctState` separado por EEUU/AR — nunca mezclar montos de distintas monedas en el avg**
+- **`buildInstrument` trackea `acctState` con 3 slots: `EEUU`, `AR_ARS`, `AR_USD` — nunca mezclar montos de distintas monedas**
+- **`avgByAcct` incluye `balance` por slot — usarlo siempre para footer y columnas de precio en AR**
 - **El avg en `makeCard` viene de `d.avgByAcct[acctKey]`, no de `d.avg` global — no cambiar esto**
 - **`fetchLatestPrices()` recalcula cash post-overrides — este recálculo es intencional, no eliminarlo**
+- **FX siempre desde `_fxHistory`/`_fxLatest` — no agregar inputs manuales de FX en el Portfolio tab**
