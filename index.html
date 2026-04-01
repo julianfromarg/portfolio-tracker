@@ -856,9 +856,45 @@ function renderPortfolioTable() {
 
   const tbody = document.getElementById('portfolio-tbody');
   tbody.innerHTML = open.map(d => {
-    const avgFmt    = d.avg > 0        ? fmtP(d.avg, d.avg)               : '—';
-    const avgComFmt = d.avgWithCom > 0 ? fmtP(d.avgWithCom, d.avgWithCom) : '—';
     const netFmt = isAr ? fmt0(d.net) : fmt2(d.net);
+
+    // AR mode: compute display avg using per-slot avgByAcct + FX conversion
+    let avgFmt = '—', avgComFmt = '—';
+    if(isAr) {
+      const ab  = d.avgByAcct || {};
+      const fx  = getCurrentFX();
+      const hasARS = ab.AR_ARS && ab.AR_ARS.balance > 0;
+      const hasUSD = ab.AR_USD && ab.AR_USD.balance > 0;
+      if(_arMode === 'origin') {
+        // Show each slot in its native currency
+        const parts = [], partsC = [];
+        if(hasARS) { parts.push('$ ' + fmtP(ab.AR_ARS.avg, ab.AR_ARS.avg)); partsC.push('$ ' + fmtP(ab.AR_ARS.avgWithCom, ab.AR_ARS.avgWithCom)); }
+        if(hasUSD) { parts.push('U$S ' + fmtP(ab.AR_USD.avg, ab.AR_USD.avg)); partsC.push('U$S ' + fmtP(ab.AR_USD.avgWithCom, ab.AR_USD.avgWithCom)); }
+        avgFmt    = parts.length  ? parts.join(' / ')  : '—';
+        avgComFmt = partsC.length ? partsC.join(' / ') : '—';
+      } else if(_arMode === 'ars') {
+        // Convert USD slot to ARS
+        let totalCost = 0, totalCostC = 0, totalBal = 0;
+        if(hasARS) { totalCost += ab.AR_ARS.avg * ab.AR_ARS.balance; totalCostC += ab.AR_ARS.avgWithCom * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
+        if(hasUSD) { totalCost += ab.AR_USD.avg * fx * ab.AR_USD.balance; totalCostC += ab.AR_USD.avgWithCom * fx * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
+        const blended    = totalBal > 0 ? totalCost  / totalBal : 0;
+        const blendedC   = totalBal > 0 ? totalCostC / totalBal : 0;
+        avgFmt    = blended  > 0 ? '$ ' + fmtP(blended,  blended)  : '—';
+        avgComFmt = blendedC > 0 ? '$ ' + fmtP(blendedC, blendedC) : '—';
+      } else { // usd
+        // Convert ARS slot to USD
+        let totalCost = 0, totalCostC = 0, totalBal = 0;
+        if(hasARS) { totalCost += (ab.AR_ARS.avg / fx) * ab.AR_ARS.balance; totalCostC += (ab.AR_ARS.avgWithCom / fx) * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
+        if(hasUSD) { totalCost += ab.AR_USD.avg * ab.AR_USD.balance; totalCostC += ab.AR_USD.avgWithCom * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
+        const blended  = totalBal > 0 ? totalCost  / totalBal : 0;
+        const blendedC = totalBal > 0 ? totalCostC / totalBal : 0;
+        avgFmt    = blended  > 0 ? 'U$S ' + fmtP(blended,  blended)  : '—';
+        avgComFmt = blendedC > 0 ? 'U$S ' + fmtP(blendedC, blendedC) : '—';
+      }
+    } else {
+      avgFmt    = d.avg > 0        ? fmtP(d.avg, d.avg)               : '—';
+      avgComFmt = d.avgWithCom > 0 ? fmtP(d.avgWithCom, d.avgWithCom) : '—';
+    }
 
     // Price lookup with fallback
     let currentPrice = null, isEstimated = false;
@@ -933,14 +969,22 @@ function renderPortfolioTable() {
     const bARS = _cashBalances?.['Argentina (ARS)'] ?? 0;
     const bUSD = _cashBalances?.['Argentina (USD)'] ?? 0;
     const fx   = getCurrentFX();
-    // Valuation note
     const note = `<span style="font-size:9px;color:var(--muted)">(posiciones al costo + caja)</span>`;
+
+    // Helper: compute AR position value split by currency slot
+    // Returns {ars, usd} — values in their native currency
+    const calcArSlots = () => {
+      let posARS = 0, posUSD = 0;
+      for(const d of open) {
+        const ab = d.avgByAcct || {};
+        if(ab.AR_ARS) posARS += ab.AR_ARS.avg * ab.AR_ARS.balance;
+        if(ab.AR_USD) posUSD += ab.AR_USD.avg * ab.AR_USD.balance;
+      }
+      return {posARS, posUSD};
+    };
+
     if(_arMode === 'origin') {
-      // Two lines: ARS and USD separately (positions valuated at cost in their currency)
-      const posARS = open.filter(d => d.accounts.some(a => a.includes('ARS')))
-                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
-      const posUSD = open.filter(d => d.accounts.some(a => a.includes('USD')))
-                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const {posARS, posUSD} = calcArSlots();
       tfoot.innerHTML = `
         <tr class="total-ars">
           <td colspan="6">TOTAL ARGENTINA (ARS) ${note}</td>
@@ -951,10 +995,7 @@ function renderPortfolioTable() {
           <td class="num mp" style="font-size:13px">U$S ${N(posUSD + bUSD, 2)}</td>
         </tr>`;
     } else if(_arMode === 'ars') {
-      const posARS = open.filter(d => d.accounts.some(a => a.includes('ARS')))
-                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
-      const posUSD = open.filter(d => d.accounts.some(a => a.includes('USD')))
-                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const {posARS, posUSD} = calcArSlots();
       const totalARS = posARS + bARS + (posUSD + bUSD) * fx;
       tfoot.innerHTML = `
         <tr class="total-ars">
@@ -962,10 +1003,7 @@ function renderPortfolioTable() {
           <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
         </tr>`;
     } else { // usd
-      const posARS = open.filter(d => d.accounts.some(a => a.includes('ARS')))
-                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
-      const posUSD = open.filter(d => d.accounts.some(a => a.includes('USD')))
-                        .reduce((s,d) => s + (d.avg||0)*d.net, 0);
+      const {posARS, posUSD} = calcArSlots();
       const totalUSD = (posARS + bARS) / fx + posUSD + bUSD;
       tfoot.innerHTML = `
         <tr class="total-usd">
@@ -1364,12 +1402,13 @@ function buildInstrument(ticker, clean) {
             first:ops[0]?.fecha||'', last:ops.at(-1)?.fecha||'', n:ops.length,
             accounts:[...new Set(ops.map(t=>t.cuenta))], txns:ops.map(t=>({...t,balance:0,avg_compra:0}))};
   }
-  // Track balance and cost separately per account group (EEUU vs Argentina),
-  // because the same canonicalized ticker can exist in different currencies
-  // (e.g. MELI as CEDEAR in ARS and as direct stock in USD).
-  const acctState = {}; // 'EEUU' | 'AR' -> {balance, costNoComis, costWithComis}
+  // Track balance and cost separately per account slot:
+  // 'EEUU'   -> cuenta EEUU (USD)       -- avg in USD
+  // 'AR_ARS' -> cuenta Argentina (ARS)  -- avg in ARS
+  // 'AR_USD' -> cuenta Argentina (USD)  -- avg in USD
+  const acctState = {};
   const getAcct = cuenta => {
-    const key = cuenta.includes('EEUU') ? 'EEUU' : 'AR';
+    const key = cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
     if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0};
     return acctState[key];
   };
@@ -1408,6 +1447,7 @@ function buildInstrument(ticker, clean) {
     avgByAcct[key] = {
       avg:        ac.balance>0 ? ac.costNoComis/ac.balance   : 0,
       avgWithCom: ac.balance>0 ? ac.costWithComis/ac.balance : 0,
+      balance:    ac.balance,
     };
   }
   // Global fallback (instruments in a single account)
@@ -1431,7 +1471,9 @@ function makeCard(d, netOverride, txnsFilter, splitNote) {
   const net = netOverride ?? d.net;
   const totalBought = txns.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
   // Use per-account avg when available (handles split tickers like MELI in ARS + USD)
-  const acctKey = txnsFilter ? (txnsFilter.includes('EEUU') ? 'EEUU' : 'AR') : null;
+  const acctKey = txnsFilter
+    ? (txnsFilter.includes('EEUU') ? 'EEUU' : txnsFilter.includes('ARS') ? 'AR_ARS' : 'AR_USD')
+    : null;
   const acctAvg = acctKey && d.avgByAcct && d.avgByAcct[acctKey];
   const avg        = acctAvg ? acctAvg.avg        : d.avg;
   const avgWithCom = acctAvg ? acctAvg.avgWithCom : d.avgWithCom;
@@ -1440,7 +1482,9 @@ function makeCard(d, netOverride, txnsFilter, splitNote) {
   const sortedTxns = [...txns].sort((a,b)=>a.fecha.localeCompare(b.fecha));
   return {
     ticker:d.ticker, net, net_total:d.net, bought:totalBought, sold:totalSold,
-    amort:d.amort||0, xfer_in:xfer, avg, avgWithCom, first:d.first, last:d.last,
+    amort:d.amort||0, xfer_in:xfer, avg, avgWithCom,
+    avgByAcct: d.avgByAcct || {},
+    first:d.first, last:d.last,
     n:txns.length, accounts:d.accounts, split_note:splitNote||null,
     txns: sortedTxns.map(t=>({
       f:t.fecha, op:t.operacion, c:t.cantidad, p:t.precio, m:t.monto,
@@ -2064,22 +2108,11 @@ async function recalcSnapshots() {
     // Argentina USD: positions in AR USD account (valued at avg cost) + USD cash
     let ar_usd = balances['Argentina (USD)'] || 0;
 
-    // For each AR card, attribute value to the correct sub-account
+    // For each AR card, attribute value using per-slot avg (AR_ARS in pesos, AR_USD in dollars)
     for(const d of arCards.filter(c => c.net > 0)) {
-      const inARS = d.accounts.some(a => a === 'Argentina (ARS)');
-      const inUSD = d.accounts.some(a => a === 'Argentina (USD)');
-      if(inARS && !inUSD) {
-        ar_ars += (d.avg || 0) * d.net;
-      } else if(inUSD && !inARS) {
-        ar_usd += (d.avg || 0) * d.net;
-      } else if(inARS && inUSD) {
-        // Split position exists in both — use net per account from raw txns
-        const netARS = netForAcct(d.ticker, 'Argentina (ARS)', clean);
-        const netUSD = netForAcct(d.ticker, 'Argentina (USD)', clean);
-        // avg applies to both (canonicalized), split by net qty
-        ar_ars += (d.avg || 0) * Math.max(netARS, 0);
-        ar_usd += (d.avg || 0) * Math.max(netUSD, 0);
-      }
+      const ab = d.avgByAcct || {};
+      if(ab.AR_ARS) ar_ars += ab.AR_ARS.avg * ab.AR_ARS.balance;
+      if(ab.AR_USD) ar_usd += ab.AR_USD.avg * ab.AR_USD.balance;
     }
 
     snapshots.push({ date, ar_ars: Math.round(ar_ars*100)/100, ar_usd: Math.round(ar_usd*100)/100, us_usd: Math.round(us_usd*100)/100, fx_rate: fx });
