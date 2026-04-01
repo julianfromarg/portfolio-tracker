@@ -25,6 +25,14 @@ header span{font-family:var(--mono);font-size:11px;color:var(--muted);}
 .tab.act-cash{color:var(--usd);border-bottom-color:var(--usd);}
 .panel{display:none;padding:18px 24px;}
 .panel.active{display:block;}
+/* ── SESSION SELECTOR ── */
+#session-selector{display:flex;align-items:center;gap:8px;}
+#session-select{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-family:var(--mono);font-size:11px;outline:none;cursor:pointer;max-width:180px;}
+#session-select:focus{border-color:var(--muted);}
+.session-btn{padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;white-space:nowrap;}
+.session-btn:hover{color:var(--text);border-color:var(--muted);}
+.session-btn.snew{color:var(--ar);border-color:rgba(0,212,170,.3);}
+.session-btn.snew:hover{background:rgba(0,212,170,.08);}
 /* ── FILTER BAR ── */
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap;}
 .fi{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-family:var(--mono);font-size:11px;outline:none;}
@@ -191,7 +199,12 @@ tbody tr:hover td{background:var(--s2);}
 <body>
 <header>
   <h1>PORTFOLIO TRACKER — MOVIMIENTOS HISTÓRICOS</h1>
-  <span>18/02/2015 → 20/03/2026 · 1,179 operaciones · clasificado por posición abierta</span>
+  <div id="session-selector">
+    <select id="session-select" onchange="switchSession(this.value)" title="Sesión activa"></select>
+    <button class="session-btn snew" onclick="newSessionPrompt()" title="Nueva sesión">＋ Nueva</button>
+    <button class="session-btn" onclick="renameSessionPrompt()" title="Renombrar sesión">✎</button>
+    <button class="session-btn" onclick="showClearConfirm()" title="Borrar sesión activa" style="color:var(--red);border-color:rgba(239,68,68,.3);">🗑</button>
+  </div>
 </header>
 <div class="tabs">
   <div class="tab act-portfolio" onclick="switchTab(this,'portfolio')">📊 Portfolio</div>
@@ -201,7 +214,6 @@ tbody tr:hover td{background:var(--s2);}
   <div class="tab" onclick="switchTab(this,'evol')">📈 Evolución</div>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
     <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
-    <button class="tab" onclick="showClearConfirm()" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--muted);letter-spacing:.04em;" title="Borrar todos los datos">🗑 Limpiar datos</button>
   </div>
 </div>
 
@@ -567,10 +579,11 @@ async function fetchLatestPrices() {
     const fmt = d => d ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : '';
     setPriceStatus(`Precios al ${fmt(latestDate)}`, 'var(--green)');
 
-    // Also fetch NRA overrides
+    // Also fetch NRA overrides for this session
     try {
+      const sessionId = getActiveSessionId() || 'default';
       const nr = await fetch(
-        `${SUPABASE_URL}/rest/v1/nra_overrides?select=nro_mov,monto_override`,
+        `${SUPABASE_URL}/rest/v1/nra_overrides?select=nro_mov,monto_override&session_id=eq.${encodeURIComponent(sessionId)}`,
         { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
       );
       if(nr.ok) {
@@ -1736,8 +1749,9 @@ async function saveNRAOverride() {
   try {
     if(monto_override === null) {
       // Clear override: PATCH monto_override to null (anon key may lack DELETE permission)
+      const sessionId = getActiveSessionId() || 'default';
       const res = await fetch(
-        `${SUPABASE_URL}/rest/v1/nra_overrides?nro_mov=eq.${encodeURIComponent(nro_mov)}`,
+        `${SUPABASE_URL}/rest/v1/nra_overrides?nro_mov=eq.${encodeURIComponent(nro_mov)}&session_id=eq.${encodeURIComponent(sessionId)}`,
         {
           method: 'PATCH',
           headers: {
@@ -1751,14 +1765,15 @@ async function saveNRAOverride() {
       _nraOverrides.delete(nro_mov);
       _nraOverrideAmounts.delete(nro_mov);
     } else {
-      // Upsert with monto_override
+      // Upsert with monto_override and session_id
+      const sessionId = getActiveSessionId() || 'default';
       const res = await fetch(`${SUPABASE_URL}/rest/v1/nra_overrides`, {
         method: 'POST',
         headers: {
           apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
           'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates',
         },
-        body: JSON.stringify({ nro_mov: String(nro_mov), monto_override, excluir: monto_override === 0 }),
+        body: JSON.stringify({ nro_mov: String(nro_mov), monto_override, excluir: monto_override === 0, session_id: sessionId }),
       });
       if(!res.ok) throw new Error(`HTTP ${res.status}`);
       _nraOverrides.add(nro_mov);
@@ -2188,16 +2203,20 @@ function processAndRefresh(rawMerged) {
     if(!d || d.length < 10) return d||'';
     return `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
   };
+    const sessions = getSessions();
+    const session = sessions.find(s => s.id === getActiveSessionId());
+    const sessionLabel = session ? `${session.name} · ` : '';
     document.querySelector('header span').textContent =
-      `${fmt(dates[0])} → ${fmt(dates.at(-1))} · ${auditRows.length.toLocaleString('es-AR')} operaciones · clasificado por posición abierta`;
+      `${sessionLabel}${fmt(dates[0])} → ${fmt(dates.at(-1))} · ${auditRows.length.toLocaleString('es-AR')} operaciones · clasificado por posición abierta`;
     // update toolbar date range
     const dateSpan = document.querySelector('.atb span[data-daterange]');
     if(dateSpan) dateSpan.textContent = `${fmt(dates[0])} → ${fmt(dates.at(-1))}`;
   }
 
-  // Save updated historical to localStorage for next session
+  // Save updated historical to localStorage for this session
   try {
-    localStorage.setItem('portfolio_txns', JSON.stringify(rawMerged));
+    const key = getSessionTxnsKey(getActiveSessionId());
+    localStorage.setItem(key, JSON.stringify(rawMerged));
   } catch(e) { /* storage full, ignore */ }
 
   // Auto-fetch latest prices from Supabase
@@ -2311,22 +2330,186 @@ function showModal(show) {
   document.getElementById('import-modal').style.display = show ? 'flex' : 'none';
 }
 
-// ══════ CLEAR DATA ══════
+// ══════ SESSION MANAGEMENT ══════
+// Sessions stored in localStorage as:
+//   sessions_index: [{id, name, createdAt}]
+//   portfolio_txns_{id}: [...transactions]
+// NRA overrides in Supabase filtered by session_id column.
+
+function generateSessionId() {
+  return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
+}
+
+function getSessions() {
+  try { return JSON.parse(localStorage.getItem('sessions_index') || '[]'); }
+  catch(e) { return []; }
+}
+
+function saveSessions(sessions) {
+  localStorage.setItem('sessions_index', JSON.stringify(sessions));
+}
+
+function getActiveSessionId() {
+  return localStorage.getItem('active_session_id') || null;
+}
+
+function setActiveSessionId(id) {
+  localStorage.setItem('active_session_id', id);
+}
+
+function getSessionTxnsKey(id) {
+  return `portfolio_txns_${id}`;
+}
+
+function renderSessionDropdown() {
+  const sel = document.getElementById('session-select');
+  if(!sel) return;
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  sel.innerHTML = sessions.map(s =>
+    `<option value="${s.id}" ${s.id === activeId ? 'selected' : ''}>${s.name}</option>`
+  ).join('');
+  if(!sessions.length) {
+    sel.innerHTML = '<option value="">Sin sesiones</option>';
+  }
+}
+
+function newSessionPrompt() {
+  const name = prompt('Nombre para la nueva sesión:', 'Mi cuenta');
+  if(!name || !name.trim()) return;
+  const id = generateSessionId();
+  const sessions = getSessions();
+  sessions.push({id, name: name.trim(), createdAt: new Date().toISOString()});
+  saveSessions(sessions);
+  setActiveSessionId(id);
+  renderSessionDropdown();
+  // Clear current UI state and start fresh
+  _historicalTxns = null;
+  AUDIT.length = 0; US.length = 0; AR.length = 0;
+  _cashBalances = null; _optionsExcluded = 0;
+  _nraOverrides = new Set(); _nraOverrideAmounts = new Map();
+  _cashDaily = []; cData = [];
+  showEmptyState();
+  fetchLatestPrices();
+}
+
+function renameSessionPrompt() {
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  if(!session) return;
+  const name = prompt('Nuevo nombre:', session.name);
+  if(!name || !name.trim()) return;
+  session.name = name.trim();
+  saveSessions(sessions);
+  renderSessionDropdown();
+}
+
+function switchSession(id) {
+  if(!id) return;
+  setActiveSessionId(id);
+  renderSessionDropdown();
+  // Load transactions for this session
+  const key = getSessionTxnsKey(id);
+  const stored = localStorage.getItem(key);
+  // Reset NRA overrides — will be fetched fresh for this session
+  _nraOverrides = new Set(); _nraOverrideAmounts = new Map();
+  if(stored) {
+    try {
+      const raw = JSON.parse(stored);
+      processAndRefresh(raw);
+    } catch(e) {
+      console.error('switchSession parse error:', e);
+      showEmptyState();
+      fetchLatestPrices();
+    }
+  } else {
+    _historicalTxns = null;
+    AUDIT.length = 0; US.length = 0; AR.length = 0;
+    _cashBalances = null; _optionsExcluded = 0;
+    _cashDaily = []; cData = [];
+    showEmptyState();
+    fetchLatestPrices();
+  }
+}
+
+// ══════ CLEAR DATA (session-aware) ══════
 function showClearConfirm() {
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  const nameEl = document.getElementById('clear-session-name');
+  if(nameEl) nameEl.textContent = session ? `"${session.name}"` : 'esta sesión';
   document.getElementById('clear-modal').style.display = 'flex';
 }
 function hideClearConfirm() {
   document.getElementById('clear-modal').style.display = 'none';
 }
-function clearAllData() {
-  localStorage.removeItem('portfolio_txns');
-  location.reload();
+async function clearAllData() {
+  hideClearConfirm();
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  // Remove txns from localStorage
+  if(activeId) localStorage.removeItem(getSessionTxnsKey(activeId));
+  // Remove NRA overrides for this session from Supabase
+  if(activeId) {
+    try {
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/nra_overrides?session_id=eq.${encodeURIComponent(activeId)}`,
+        { method: 'DELETE', headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      );
+    } catch(e) { console.warn('Could not delete NRA overrides for session:', e); }
+  }
+  // Remove session from index
+  const newSessions = sessions.filter(s => s.id !== activeId);
+  saveSessions(newSessions);
+  // Switch to another session or start fresh
+  if(newSessions.length) {
+    setActiveSessionId(newSessions[0].id);
+    switchSession(newSessions[0].id);
+  } else {
+    localStorage.removeItem('active_session_id');
+    _historicalTxns = null;
+    AUDIT.length = 0; US.length = 0; AR.length = 0;
+    _cashBalances = null; _optionsExcluded = 0;
+    _nraOverrides = new Set(); _nraOverrideAmounts = new Map();
+    _cashDaily = []; cData = [];
+    showEmptyState();
+    fetchLatestPrices();
+  }
+  renderSessionDropdown();
 }
 
 // ══════ INIT ══════
 (function init() {
-  const stored = localStorage.getItem('portfolio_txns');
-  if (stored) {
+  // Migrate legacy data (portfolio_txns without session) to a default session
+  const legacy = localStorage.getItem('portfolio_txns');
+  let sessions = getSessions();
+  if(legacy && !sessions.length) {
+    // Use 'default' as the session ID so existing NRA overrides in Supabase still match
+    const id = 'default';
+    sessions = [{id, name: 'Mi cuenta', createdAt: new Date().toISOString()}];
+    saveSessions(sessions);
+    localStorage.setItem(getSessionTxnsKey(id), legacy);
+    localStorage.removeItem('portfolio_txns');
+    setActiveSessionId(id);
+  }
+  // Ensure there's at least one session
+  if(!sessions.length) {
+    const id = 'default';
+    sessions = [{id, name: 'Mi cuenta', createdAt: new Date().toISOString()}];
+    saveSessions(sessions);
+    setActiveSessionId(id);
+  }
+  // Ensure active session exists
+  const activeId = getActiveSessionId();
+  if(!activeId || !sessions.find(s => s.id === activeId)) {
+    setActiveSessionId(sessions[0].id);
+  }
+  renderSessionDropdown();
+  // Load active session data
+  const stored = localStorage.getItem(getSessionTxnsKey(getActiveSessionId()));
+  if(stored) {
     try {
       const raw = JSON.parse(stored);
       processAndRefresh(raw);
@@ -2345,7 +2528,13 @@ function clearAllData() {
 })();
 
 function showEmptyState() {
-  document.querySelector('header span').textContent = 'Sin datos — importá un archivo .xls de Balanz para comenzar';
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  const hdr = document.querySelector('header span');
+  if(hdr) hdr.textContent = session
+    ? `${session.name} · Sin datos — importá un archivo .xls de Balanz para comenzar`
+    : 'Sin datos — importá un archivo .xls de Balanz para comenzar';
   _cashBalances = null;
   _optionsExcluded = 0;
   renderPortfolioTable();
@@ -2353,6 +2542,41 @@ function showEmptyState() {
   _cashDaily = []; cData = [];
   const ct = document.getElementById('cTbody'); if(ct) ct.innerHTML = '';
   const cc = document.getElementById('cCount'); if(cc) cc.textContent = '';
+}
+
+// ══════ NRA CSV EXPORT ══════
+function exportNRAcsv() {
+  const all = buildNRAData();
+  if(!all.length) { alert('No hay dividendos para exportar.'); return; }
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  const sessionName = session ? session.name : 'portfolio';
+
+  const headers = ['Fecha','Ticker','Monto neto USD','Comisión USD','IVA USD','Bruto estimado USD','Ret. NRA USD','Tipo retención','Nro. Mov.'];
+  const rows = all.map(r => {
+    const tipo = !r.hasOverride ? 'Auto 30%' : (r.overrideAmt === 0 ? 'Override: sin retención' : 'Override: manual');
+    return [
+      r.fecha,
+      r.ticker,
+      r.monto.toFixed(2),
+      r.comision.toFixed(2),
+      r.iva.toFixed(2),
+      r.gross.toFixed(2),
+      r.nra_est !== null ? r.nra_est.toFixed(2) : '0.00',
+      tipo,
+      r.nro_mov || '',
+    ];
+  });
+
+  const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `NRA_${sessionName.replace(/[^a-z0-9]/gi,'_')}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 </script>
 
@@ -2417,6 +2641,7 @@ function showEmptyState() {
       <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
     </select>
     <button class="fb" onclick="nraClear()">✕ Limpiar</button>
+    <button class="fb" onclick="exportNRAcsv()" style="color:var(--green);border-color:rgba(34,197,94,.3);">↓ CSV</button>
     <span style="font-family:var(--mono);font-size:10px;color:var(--muted);flex:1;min-width:0;">
       30% estimado sobre bruto (monto + comis + IVA). Marcá "No aplica" para excluir una fila.
     </span>
@@ -2486,16 +2711,16 @@ function showEmptyState() {
 <div id="clear-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:28px 32px;min-width:320px;max-width:420px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
-      <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)">LIMPIAR DATOS</span>
+      <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)">BORRAR SESIÓN</span>
       <button onclick="hideClearConfirm()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px;">✕</button>
     </div>
     <div style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:22px;">
-      Esto va a borrar <span style="color:var(--red);font-weight:600;">todas las transacciones</span> guardadas en este browser y dejar el dashboard en blanco.<br><br>
-      <span style="font-size:10px;">Esta acción no se puede deshacer. Los archivos .xls originales no se modifican.</span>
+      Esto va a borrar <span style="color:var(--red);font-weight:600;" id="clear-session-name">esta sesión</span> y todas sus transacciones del browser.<br><br>
+      <span style="font-size:10px;">Los overrides NRA en Supabase de esta sesión también se eliminarán. Los archivos .xls originales no se modifican.</span>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button onclick="hideClearConfirm()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;">Cancelar</button>
-      <button onclick="clearAllData()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--red);background:rgba(239,68,68,.15);color:var(--red);font-family:var(--mono);font-size:11px;cursor:pointer;font-weight:600;">🗑 Borrar todo</button>
+      <button onclick="clearAllData()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--red);background:rgba(239,68,68,.15);color:var(--red);font-family:var(--mono);font-size:11px;cursor:pointer;font-weight:600;">🗑 Borrar sesión</button>
     </div>
   </div>
 </div>
