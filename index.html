@@ -145,6 +145,24 @@ tbody tr:hover td{background:var(--s2);}
 .tab.act-nra{color:var(--usd);border-bottom-color:var(--usd);}
 /* ── EVOLUCIÓN TAB ── */
 .tab.act-evol{color:var(--purple);border-bottom-color:var(--purple);}
+/* ── ESPECIES TAB ── */
+.tab.act-especies{color:var(--us);border-bottom-color:var(--us);}
+#esp-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 8px;font-family:var(--mono);font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
+#esp-tbl tbody td{padding:5px 8px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
+#esp-tbl tbody tr:hover td{background:var(--s2);}
+#esp-tbl tfoot td{padding:7px 8px;font-family:var(--mono);font-size:11px;font-weight:600;border-top:2px solid var(--border);background:var(--s2);}
+#esp-tbl th.esp-group-ar{color:var(--ar);border-bottom:2px solid var(--ar)!important;}
+#esp-tbl th.esp-group-us{color:var(--us);border-bottom:2px solid var(--us)!important;}
+#esp-tbl th.esp-group-shared{border-bottom:1px solid var(--border)!important;}
+#esp-tbl td.esp-divider{border-left:1px solid var(--border);padding-left:12px!important;}
+#esp-tbl th.esp-divider{border-left:1px solid var(--border);padding-left:12px!important;}
+.esp-num{text-align:right;}
+.esp-pos{color:var(--green);}
+.esp-neg{color:var(--red);}
+.esp-muted{color:var(--muted);}
+.esp-ars{color:var(--ar);}
+.esp-usd{color:var(--usd);}
+.esp-us{color:var(--us);}
 .evol-rb{padding:4px 10px;font-family:var(--mono);font-size:10px;font-weight:600;border:none;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;letter-spacing:.04em;}
 .evol-rb:hover{color:var(--text);}
 .evol-rb.act{background:var(--border);color:var(--text);}
@@ -213,6 +231,7 @@ tbody tr:hover td{background:var(--s2);}
   <div class="tab" onclick="switchTab(this,'cash')">💵 Saldo Cash</div>
   <div class="tab" onclick="switchTab(this,'nra')">🏛 Ret. NRA</div>
   <div class="tab" onclick="switchTab(this,'evol')">📈 Evolución</div>
+  <div class="tab" onclick="switchTab(this,'especies')">🔍 Especies</div>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
     <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
   </div>
@@ -790,11 +809,14 @@ function getCurrentFX() {
 
 // ══════ TAB SWITCH ══════
 function switchTab(el,key){
+  const panel = document.getElementById('panel-'+key);
+  if(!panel) return;
   document.querySelectorAll('.tab').forEach(t=>t.className='tab');
   el.classList.add('act-'+key);
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
-  document.getElementById('panel-'+key).classList.add('active');
+  panel.classList.add('active');
   localStorage.setItem('active_tab', key);
+  if(key === 'especies') rebuildEspeciesDropdown();
 }
 
 // ══════ PORTFOLIO TABLE ══════
@@ -2308,6 +2330,7 @@ function processAndRefresh(rawMerged) {
   aFilter();
   rebuildYearDropdown();
   renderNRATab();
+  rebuildEspeciesDropdown();
 
   // Cash strips removed — cash is now shown inline in the Portfolio table
   // Options disclaimer is now handled inside renderPortfolioTable()
@@ -2703,6 +2726,315 @@ function exportNRAcsv() {
   a.click();
   URL.revokeObjectURL(url);
 }
+// ══════ ESPECIES TAB ══════
+let _espValMode = 'ars'; // 'ars' | 'usd'
+
+function setEspValMode(mode) {
+  _espValMode = mode;
+  document.getElementById('esp-val-ars')?.classList.toggle('act', mode === 'ars');
+  document.getElementById('esp-val-usd')?.classList.toggle('act', mode === 'usd');
+  renderEspecies();
+}
+
+function rebuildEspeciesDropdown() {
+  const sel = document.getElementById('esp-ticker-select');
+  if(!sel) return;
+  const cur = sel.value;
+  const all = [...new Set([...AR, ...US].map(d => d.ticker))].sort();
+  sel.innerHTML = '<option value="">— Elegir especie —</option>';
+  all.forEach(tk => {
+    const o = document.createElement('option');
+    o.value = o.textContent = tk;
+    sel.appendChild(o);
+  });
+  if(cur && all.includes(cur)) sel.value = cur;
+}
+
+function renderEspecies() {
+  const ticker  = document.getElementById('esp-ticker-select')?.value;
+  const tbody   = document.getElementById('espTbody');
+  const tfoot   = document.getElementById('espTfoot');
+  const empty   = document.getElementById('esp-empty');
+  const sumEl   = document.getElementById('esp-summary');
+  const tbl     = document.getElementById('esp-tbl');
+  const valTog  = document.getElementById('esp-val-toggle');
+  if(!tbody) return;
+
+  if(!ticker) {
+    tbody.innerHTML = '';
+    if(tfoot) tfoot.innerHTML = '';
+    if(tbl) tbl.style.display = 'none';
+    if(empty) empty.style.display = 'block';
+    if(sumEl) sumEl.textContent = '';
+    if(valTog) valTog.style.display = 'none';
+    return;
+  }
+  if(tbl) tbl.style.display = '';
+  if(empty) empty.style.display = 'none';
+  if(valTog) valTog.style.display = '';
+
+  if(!_historicalTxns) {
+    tbody.innerHTML = '<tr><td colspan="20" class="no-r">Sin datos cargados.</td></tr>';
+    return;
+  }
+
+  const BUY_SET  = new Set(BUY_OPS);
+  const SELL_SET = new Set(SELL_OPS);
+  const fmtDate  = d => d&&d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : d||'--';
+
+  // Canonicalize and filter, oldest first
+  const canon = canonicalizeTickers(_historicalTxns);
+  const ops   = canon
+    .filter(t => t.ticker === ticker)
+    .sort((a,b) => {
+      const d = a.fecha.localeCompare(b.fecha);
+      return d !== 0 ? d : (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
+    });
+
+  if(!ops.length) {
+    tbody.innerHTML = '<tr><td colspan="20" class="no-r">Sin operaciones para esta especie.</td></tr>';
+    if(tfoot) tfoot.innerHTML = '';
+    if(sumEl) sumEl.textContent = '';
+    return;
+  }
+
+  // Determine which sides exist
+  const hasAR   = ops.some(t => t.cuenta.includes('Argentina'));
+  const hasEEUU = ops.some(t => t.cuenta.includes('EEUU'));
+
+  // Running VWAP state per slot
+  const slots = {
+    AR_ARS: { balance: 0, costNoComis: 0 },
+    AR_USD: { balance: 0, costNoComis: 0 },
+    EEUU:   { balance: 0, costNoComis: 0 },
+  };
+  const getSlot = cuenta =>
+    cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
+
+  // Process all ops into per-date buckets
+  // Each date bucket: { ar: {compras,ventas,xfer,amort,precioARS,precioUSD,ops[]}, eeuu: {same} }
+  const dateBuckets = {}; // fecha -> {ar, eeuu}
+  const getOrCreate = fecha => {
+    if(!dateBuckets[fecha]) dateBuckets[fecha] = {
+      ar:   { compras:0, ventas:0, xfer:0, amort:0, precioARS:null, precioUSD:null, hasActivity:false },
+      eeuu: { compras:0, ventas:0, xfer:0, amort:0, precioUSD:null, hasActivity:false },
+    };
+    return dateBuckets[fecha];
+  };
+
+  // First pass: fill buckets (without running balance — we need chronological order)
+  for(const t of ops) {
+    const { operacion: op, cantidad: qty, cuenta, precio } = t;
+    const isEEUU = cuenta.includes('EEUU');
+    const isARS  = cuenta.includes('ARS');
+    const bucket = getOrCreate(t.fecha);
+    const side   = isEEUU ? bucket.eeuu : bucket.ar;
+    side.hasActivity = true;
+
+    if(BUY_SET.has(op) && qty > 0) {
+      side.compras += qty;
+      if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
+      else        { if(precio > 0) side.precioUSD = precio; }
+    } else if(SELL_SET.has(op) && qty > 0) {
+      side.ventas += qty;
+      if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
+      else        { if(precio > 0) side.precioUSD = precio; }
+    } else if(op === XFER_IN && qty > 0) {
+      side.xfer += qty;
+    } else if(op === 'Pago de Amortización' && qty < 0) {
+      side.amort += Math.abs(qty);
+    }
+  }
+
+  // Second pass: chronological, update running VWAP and build rows
+  const dates = Object.keys(dateBuckets).sort();
+  const rows  = dates.map(fecha => {
+    const bucket = dateBuckets[fecha];
+    const fx     = getFXForDate(fecha);
+
+    // Update AR slots
+    const arOps = ops.filter(t => t.fecha === fecha && t.cuenta.includes('Argentina'));
+    for(const t of arOps) {
+      const { operacion: op, cantidad: qty, cuenta } = t;
+      const slotKey = getSlot(cuenta);
+      const ac = slots[slotKey];
+      if(BUY_SET.has(op) && qty > 0) {
+        ac.balance += qty; ac.costNoComis += calcBuyCost(t, false);
+      } else if(SELL_SET.has(op) && qty > 0) {
+        if(ac.balance > 0) { const r = Math.max(0,(ac.balance-qty)/ac.balance); ac.costNoComis *= r; }
+        ac.balance -= qty;
+        if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; }
+      } else if(op === XFER_IN && qty > 0) {
+        ac.balance += qty;
+      } else if(op === 'Pago de Amortización' && qty < 0) {
+        ac.balance += qty;
+        if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; }
+      }
+    }
+
+    // Update EEUU slot
+    const usOps = ops.filter(t => t.fecha === fecha && t.cuenta.includes('EEUU'));
+    for(const t of usOps) {
+      const { operacion: op, cantidad: qty } = t;
+      const ac = slots.EEUU;
+      if(BUY_SET.has(op) && qty > 0) {
+        ac.balance += qty; ac.costNoComis += calcBuyCost(t, false);
+      } else if(SELL_SET.has(op) && qty > 0) {
+        if(ac.balance > 0) { const r = Math.max(0,(ac.balance-qty)/ac.balance); ac.costNoComis *= r; }
+        ac.balance -= qty;
+        if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; }
+      } else if(op === XFER_IN && qty > 0) {
+        ac.balance += qty;
+      } else if(op === 'Pago de Amortización' && qty < 0) {
+        ac.balance += qty;
+        if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; }
+      }
+    }
+
+    // Balances
+    const balAR   = Math.round((slots.AR_ARS.balance + slots.AR_USD.balance) * 10000) / 10000;
+    const balEEUU = Math.round(slots.EEUU.balance * 10000) / 10000;
+
+    // Avgs
+    const avgARS  = slots.AR_ARS.balance > 0 ? slots.AR_ARS.costNoComis / slots.AR_ARS.balance : null;
+    const avgARUSD= slots.AR_USD.balance > 0 ? slots.AR_USD.costNoComis / slots.AR_USD.balance : null;
+    const avgEEUU = slots.EEUU.balance   > 0 ? slots.EEUU.costNoComis   / slots.EEUU.balance   : null;
+
+    // Valorización
+    let valAR = null, valEEUU = null;
+    if(_espValMode === 'ars') {
+      const posARS = avgARS   != null ? avgARS   * slots.AR_ARS.balance : 0;
+      const posUSD = avgARUSD != null ? avgARUSD * slots.AR_USD.balance * fx : 0;
+      if(posARS + posUSD > 0) valAR = posARS + posUSD;
+      if(avgEEUU != null && slots.EEUU.balance > 0) valEEUU = avgEEUU * slots.EEUU.balance * fx;
+    } else {
+      const posARS = avgARS   != null && fx > 0 ? (avgARS   * slots.AR_ARS.balance) / fx : 0;
+      const posUSD = avgARUSD != null           ?  avgARUSD * slots.AR_USD.balance        : 0;
+      if(posARS + posUSD > 0) valAR = posARS + posUSD;
+      if(avgEEUU != null && slots.EEUU.balance > 0) valEEUU = avgEEUU * slots.EEUU.balance;
+    }
+
+    // Avg display (single column — show ARS or USD based on mode)
+    const avgARDisplay   = _espValMode === 'ars' ? avgARS   : (avgARUSD ?? (avgARS != null && fx > 0 ? avgARS/fx : null));
+    const avgEEUUDisplay = avgEEUU;
+
+    return { fecha, fx, bucket, balAR, balEEUU, avgARDisplay, avgEEUUDisplay, valAR, valEEUU };
+  });
+
+  // Build column headers
+  const valLabel  = _espValMode === 'ars' ? 'Valoriz. ARS' : 'Valoriz. USD';
+  const avgLabel  = _espValMode === 'ars' ? 'Avg ARS' : 'Avg USD';
+  const pxARLabel = _espValMode === 'ars' ? 'Precio ARS' : 'Precio USD';
+
+  const groupRow = document.getElementById('esp-thead-groups');
+  const colRow   = document.getElementById('esp-thead-cols');
+  if(groupRow) {
+    let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
+    if(hasAR)   gh += `<th class="esp-group-ar" colspan="6" style="text-align:center;">🇦🇷 Argentina</th>`;
+    if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="6" style="text-align:center;">🇺🇸 EEUU</th>`;
+    gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
+    groupRow.innerHTML = gh;
+  }
+  if(colRow) {
+    let ch = `<th style="text-align:left;">Fecha</th><th style="text-align:left;min-width:60px;">Op.</th>`;
+    if(hasAR) ch += `
+      <th class="esp-num esp-group-ar" style="color:var(--green);">Compras</th>
+      <th class="esp-num esp-group-ar" style="color:var(--red);">Ventas</th>
+      <th class="esp-num esp-group-ar" style="color:var(--purple);">Xfer.</th>
+      <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
+      <th class="esp-num esp-group-ar">Bal AR</th>
+      <th class="esp-num esp-group-ar">${pxARLabel}</th>`;
+    if(hasEEUU) ch += `
+      <th class="esp-num esp-group-us esp-divider" style="color:var(--green);">Compras</th>
+      <th class="esp-num esp-group-us" style="color:var(--red);">Ventas</th>
+      <th class="esp-num esp-group-us" style="color:var(--purple);">Xfer.</th>
+      <th class="esp-num esp-group-us" style="color:var(--muted);">Amort.</th>
+      <th class="esp-num esp-group-us">Bal EEUU</th>
+      <th class="esp-num esp-group-us" style="color:var(--usd);">Precio USD</th>`;
+    // Shared avg + val columns
+    if(hasAR)   ch += `<th class="esp-num" style="color:var(--muted);">${avgLabel} AR</th><th class="esp-num" style="color:var(--muted);">${valLabel} AR</th>`;
+    if(hasEEUU) ch += `<th class="esp-num" style="color:var(--muted);">${avgLabel} EEUU</th><th class="esp-num" style="color:var(--muted);">${valLabel} EEUU</th>`;
+    ch += `<th class="esp-num" style="color:var(--muted);">FX</th>`;
+    colRow.innerHTML = ch;
+  }
+
+  // Cell helpers
+  const fmtQ  = n => n > 0 ? N(n,0) : '<span class="esp-muted">—</span>';
+  const fmtQc = n => n > 0 ? `<span class="esp-pos">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtQv = n => n > 0 ? `<span class="esp-neg">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtQx = n => n > 0 ? `<span style="color:var(--purple)">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtQa = n => n > 0 ? `<span class="esp-muted">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtBal= n => { const cls = n>0?'esp-pos':n<0?'esp-neg':'esp-muted'; return `<span class="${cls}">${N(n,0)}</span>`; };
+  const fmtPx = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtAvg= (n,sym) => n!=null ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtVal= (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtFX = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const sym   = _espValMode;
+
+  // Summarize op names for a date+side
+  const opLabel = (arOpsArr) => {
+    const ops = [...new Set(arOpsArr.map(t => {
+      const o = t.operacion;
+      if(o==='Compra'||o==='Compra de Dólares') return 'Compra';
+      if(o==='Venta'||o==='Venta de Dólares')   return 'Venta';
+      if(o===XFER_IN)                            return 'Transf.';
+      if(o==='Pago de Amortización')             return 'Amort.';
+      return o.slice(0,12);
+    }))];
+    return ops.join(' / ');
+  };
+
+  tbody.innerHTML = rows.map(r => {
+    const arDateOps   = ops.filter(t => t.fecha === r.fecha && t.cuenta.includes('Argentina'));
+    const usDateOps   = ops.filter(t => t.fecha === r.fecha && t.cuenta.includes('EEUU'));
+    const opLbl       = opLabel([...arDateOps, ...usDateOps]);
+    const ar = r.bucket.ar, us = r.bucket.eeuu;
+    const pxDisplay   = _espValMode === 'ars' ? ar.precioARS : (ar.precioUSD ?? ar.precioARS);
+
+    let html = `<tr>
+      <td style="white-space:nowrap;">${fmtDate(r.fecha)}</td>
+      <td style="font-size:9px;color:var(--muted);white-space:nowrap;">${opLbl}</td>`;
+    if(hasAR) html += `
+      <td class="esp-num">${fmtQc(ar.compras)}</td>
+      <td class="esp-num">${fmtQv(ar.ventas)}</td>
+      <td class="esp-num">${fmtQx(ar.xfer)}</td>
+      <td class="esp-num">${fmtQa(ar.amort)}</td>
+      <td class="esp-num">${fmtBal(r.balAR)}</td>
+      <td class="esp-num">${fmtPx(pxDisplay, sym)}</td>`;
+    if(hasEEUU) html += `
+      <td class="esp-num esp-divider">${fmtQc(us.compras)}</td>
+      <td class="esp-num">${fmtQv(us.ventas)}</td>
+      <td class="esp-num">${fmtQx(us.xfer)}</td>
+      <td class="esp-num">${fmtQa(us.amort)}</td>
+      <td class="esp-num">${fmtBal(r.balEEUU)}</td>
+      <td class="esp-num">${fmtPx(us.precioUSD, 'usd')}</td>`;
+    if(hasAR)   html += `<td class="esp-num">${fmtAvg(r.avgARDisplay, sym)}</td><td class="esp-num">${fmtVal(r.valAR, sym)}</td>`;
+    if(hasEEUU) html += `<td class="esp-num">${fmtAvg(r.avgEEUUDisplay, 'usd')}</td><td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
+    html += `<td class="esp-num">${fmtFX(r.fx)}</td></tr>`;
+    return html;
+  }).join('');
+
+  // Footer
+  const last = rows[rows.length - 1];
+  if(tfoot) {
+    const ncols = 2 + (hasAR?6:0) + (hasEEUU?6:0) + (hasAR?2:0) + (hasEEUU?2:0) + 1;
+    let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${ops.length} op.</td>`;
+    if(hasAR)   fh += `<td colspan="4"></td><td class="esp-num esp-pos">${N(last.balAR,0)}</td><td></td>`;
+    if(hasEEUU) fh += `<td colspan="4" class="${hasAR?'esp-divider':''}"></td><td class="esp-num esp-pos">${N(last.balEEUU,0)}</td><td></td>`;
+    if(hasAR)   fh += `<td class="esp-num">${fmtAvg(last.avgARDisplay,sym)}</td><td class="esp-num">${fmtVal(last.valAR,sym)}</td>`;
+    if(hasEEUU) fh += `<td class="esp-num">${fmtAvg(last.avgEEUUDisplay,'usd')}</td><td class="esp-num">${fmtVal(last.valEEUU,'usd')}</td>`;
+    fh += `<td></td></tr>`;
+    tfoot.innerHTML = fh;
+  }
+
+  // Summary
+  if(sumEl) {
+    const parts = [];
+    if(hasAR   && last.balAR   > 0) parts.push(`AR: ${N(last.balAR,0)} títulos`);
+    if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU,0)} títulos`);
+    sumEl.textContent = parts.join(' · ');
+  }
+}
 </script>
 
 <!-- NRA Override Popover -->
@@ -2829,6 +3161,39 @@ function exportNRAcsv() {
     </div>
     <!-- Summary row -->
     <div id="evol-summary" style="display:flex;gap:20px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:12px;"></div>
+  </div>
+</div>
+
+<!-- Especies Panel -->
+<div id="panel-especies" class="panel" style="padding:0;">
+  <div class="atb" style="gap:12px;">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--us);white-space:nowrap;">🔍 Especies</span>
+    <select class="fi" id="esp-ticker-select" onchange="renderEspecies()" style="width:160px;">
+      <option value="">— Elegir especie —</option>
+    </select>
+    <!-- Valorización toggle -->
+    <div id="esp-val-toggle" style="display:none;background:var(--s2);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
+      <button class="evol-rb act" id="esp-val-ars" onclick="setEspValMode('ars')">Valoriz. ARS</button>
+      <button class="evol-rb"     id="esp-val-usd" onclick="setEspValMode('usd')">Valoriz. USD</button>
+    </div>
+    <span id="esp-summary" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="esp-tbl" style="min-width:1200px;display:none;">
+      <thead>
+        <tr id="esp-thead-groups">
+          <!-- group headers injected by JS -->
+        </tr>
+        <tr id="esp-thead-cols">
+          <!-- col headers injected by JS -->
+        </tr>
+      </thead>
+      <tbody id="espTbody"></tbody>
+      <tfoot id="espTfoot"></tfoot>
+    </table>
+    <div id="esp-empty" style="padding:60px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--muted);">
+      Elegí una especie del selector para ver su detalle.
+    </div>
   </div>
 </div>
 
