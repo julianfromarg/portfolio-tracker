@@ -1777,11 +1777,13 @@ async function saveNRAOverride() {
     _cashDaily = buildCashDaily(_historicalTxns || [], usdCaucionMovs);
     cData = [..._cashDaily];
     rebuildCashYearDropdown();
-    cSortApply();
+    cFilter();
     renderPortfolioTable();
     aFilter();
     renderNRATab();
     closeNRAPopover();
+    // Deferred re-render ensures Portfolio tab reflects updated cash if it was already visible
+    setTimeout(() => renderPortfolioTable(), 50);
   } catch(e) {
     console.error('saveNRAOverride:', e);
     alert(`Error al guardar: ${e.message}`);
