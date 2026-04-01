@@ -1735,10 +1735,17 @@ async function saveNRAOverride() {
 
   try {
     if(monto_override === null) {
-      // Delete the override row
+      // Clear override: PATCH monto_override to null (anon key may lack DELETE permission)
       const res = await fetch(
         `${SUPABASE_URL}/rest/v1/nra_overrides?nro_mov=eq.${encodeURIComponent(nro_mov)}`,
-        { method: 'DELETE', headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+        {
+          method: 'PATCH',
+          headers: {
+            apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ monto_override: null, excluir: false }),
+        }
       );
       if(!res.ok) throw new Error(`HTTP ${res.status}`);
       _nraOverrides.delete(nro_mov);
@@ -1767,6 +1774,10 @@ async function saveNRAOverride() {
     AUDIT.length = 0; AUDIT.push(...auditRows);
     const {balances} = buildCash(_historicalTxns || [], usdCaucionMovs);
     _cashBalances = balances;
+    _cashDaily = buildCashDaily(_historicalTxns || [], usdCaucionMovs);
+    cData = [..._cashDaily];
+    rebuildCashYearDropdown();
+    cSortApply();
     renderPortfolioTable();
     aFilter();
     renderNRATab();
