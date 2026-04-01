@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 01/04/2026 v1
+## Versión: 01/04/2026 v2
 
 ---
 
@@ -17,9 +17,9 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~2600 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~2780 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
-| `CONTEXTO_PORTFOLIO_DASHBOARD_v01_04_v1.md` | Este archivo |
+| `CONTEXTO_PORTFOLIO_DASHBOARD_v01_04_v2.md` | Este archivo |
 
 ---
 
@@ -27,7 +27,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 ### 5 tabs:
 - **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones abiertas con precios live + caja + totales. Argentina tiene toggle de modo (moneda origen / todo ARS / todo USD) con input de FX.
-- **📋 Transacciones** — Tabla audit completa con filtros, agrupación, columna **Saldo cash** y columna **Ret. NRA**.
+- **📋 Transacciones** — Tabla audit completa con filtros (cuenta, operación, año, **mes**), agrupación, columna **Saldo cash**, columna **Ret. NRA** y botón `↓ CSV`.
 - **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
 - **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
 - **📈 Evolución** — Gráfico de línea con evolución histórica del portfolio (AR en USD, EEUU, Total). Con zoom, pan, selector de rango y botón de recálculo.
@@ -175,6 +175,9 @@ PRIMARY KEY (nro_mov, session_id)
 GET /nra_overrides?select=nro_mov,monto_override&session_id=eq.{sessionId}
 ```
 
+**CRÍTICO — race condition al inicio resuelta:**
+`fetchLatestPrices()` recalcula `buildCash()` y `buildCashDaily()` después de cargar los overrides de Supabase. Sin esto, el cash al abrir la página ignora los overrides (se carga primero `processAndRefresh` con `_nraOverrides` vacío, y los overrides llegan después del fetch asíncrono).
+
 ---
 
 ## Estructura del .xls de Balanz
@@ -221,7 +224,38 @@ Row 2: Headers — columnas por índice:
 
 ---
 
-## Cálculo de precio promedio — `calcBuyCost(t, withComissions)`
+## Cálculo de precio promedio — `buildInstrument()` + `calcBuyCost()`
+
+### Método: VWAP promedio móvil (moving average net of sells)
+
+El precio promedio se calcula con promedio ponderado móvil. Al vender, el costo acumulado se reduce proporcionalmente — las unidades vendidas salen al precio promedio vigente, no al precio de venta. Si el balance llega a 0, el costo acumulado se resetea a 0 (pizarra en blanco para futuras compras).
+
+```javascript
+// En SELL_OPS dentro del loop de buildInstrument:
+const sellQty = Math.min(qty, ac.balance);
+const ratio = Math.max(0, (ac.balance - sellQty) / ac.balance);
+ac.costNoComis   *= ratio;
+ac.costWithComis *= ratio;
+ac.balance -= qty;
+if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; }
+```
+
+### Segregación por cuenta (`acctState`)
+
+**CRÍTICO:** `buildInstrument` trackea balance y costo **por separado para EEUU y Argentina**, porque el mismo ticker canonicalizado puede existir en distintas monedas (ej: MELI como acción directa en USD en cuenta EEUU, y como CEDEAR en ARS en cuenta Argentina). Si se mezclan los montos, el precio promedio queda completamente distorsionado.
+
+```javascript
+const acctState = {}; // 'EEUU' | 'AR' -> {balance, costNoComis, costWithComis}
+const getAcct = cuenta => {
+  const key = cuenta.includes('EEUU') ? 'EEUU' : 'AR';
+  if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0};
+  return acctState[key];
+};
+```
+
+`buildInstrument` retorna `avgByAcct` (además del avg global fallback). `makeCard` usa `avgByAcct[acctKey]` cuando filtra por cuenta.
+
+### `calcBuyCost(t, withComissions)`
 
 Dos versiones del precio promedio:
 
@@ -350,7 +384,7 @@ new Set([
 - **Script:** `update_prices.py` — fetcha Yahoo Finance, upsert en Supabase
 
 ### Fetch en el dashboard (al cargar + botón 🔄):
-- `fetchLatestPrices()` — último EOD + NRA overrides de la sesión activa
+- `fetchLatestPrices()` — último EOD + NRA overrides de la sesión activa + **recálculo de cash post-overrides**
 - `fetchPricesHistory()` — histórico completo
 - `fetchFXHistory()` — histórico FX + pre-carga input
 - `fetchSnapshots()` — snapshots guardados
@@ -414,6 +448,8 @@ new Set([
 | Bonos amortizados con posición abierta | `Pago de Amortización` sin cantidad | Criterio amortización ≥ 80% |
 | Opciones con posición abierta | Vencen sin cierre registrado | `isOption()`: excluir completamente |
 | ADRDOLA no aparece | Cantidad `"677.225"` parseada mal | Fix en `numArg()` para enteros con miles |
+| **Precio promedio incorrecto tras ventas parciales** | **`avg = totalCostNoComis / bought` ignoraba ventas — dividía por total histórico, no por posición actual** | **VWAP móvil: al vender, `costNoComis *= (balance - sellQty) / balance`. Si balance = 0, reset a 0.** |
+| **Precio promedio incorrecto para tickers split AR/EEUU (ej: MELI)** | **`buildInstrument` mezclaba montos ARS y USD en el mismo acumulador** | **`acctState` separado por 'EEUU' vs 'AR'. `buildInstrument` retorna `avgByAcct`. `makeCard` usa el avg de la cuenta correspondiente.** |
 
 ### Cash
 
@@ -424,6 +460,7 @@ new Set([
 | Cash Argentina USD negativo | SheetJS trunca `"10.000,00"` | Usar `DOMParser` |
 | Cash EEUU incorrecto (factor ~10x) | NRA no descontada | `calcNRA()` en `buildCash()` y `buildCashDaily()` |
 | Override NRA no impacta cash | `cFilter()` no se llamaba tras guardar override | Llamar `cFilter()` en lugar de `cSortApply()` en `saveNRAOverride()` |
+| **Cash incorrecto al abrir (overrides ignorados)** | **Race condition: `processAndRefresh` corre antes de que `fetchLatestPrices` cargue los overrides de Supabase** | **`fetchLatestPrices()` recalcula `buildCash()` + `buildCashDaily()` + `cFilter()` después de cargar los overrides** |
 
 ### NRA overrides
 
@@ -451,6 +488,7 @@ new Set([
 - ADRDOLA posición abierta: ~297.952 cuotapartes ✅
 - BDC20: cerrada (stale) ✅
 - SPY dividendo 5/8/20: monto neto 20,32 → NRA estimada 6,15 ✅
+- **MELI precio promedio s/comis (cuenta EEUU): ~2.006,50 USD ✅**
 
 ---
 
@@ -476,3 +514,6 @@ Pegá este documento + el HTML al inicio del chat. Ejemplos:
 - El dashboard NO funciona en el sandbox de Claude (CSP bloquea Supabase). Siempre testear desde GitHub Pages
 - Los NRA overrides se filtran por `session_id` — cada sesión tiene sus propios overrides
 - El PATCH (no DELETE) es intencional para limpiar overrides — RLS no permite DELETE con anon key
+- **`buildInstrument` trackea `acctState` separado por EEUU/AR — nunca mezclar montos de distintas monedas en el avg**
+- **El avg en `makeCard` viene de `d.avgByAcct[acctKey]`, no de `d.avg` global — no cambiar esto**
+- **`fetchLatestPrices()` recalcula cash post-overrides — este recálculo es intencional, no eliminarlo**
