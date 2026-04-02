@@ -2796,10 +2796,14 @@ function renderEspecies() {
     if(tbl) tbl.style.display = 'none';
     if(empty) empty.style.display = 'block';
     if(sumEl) sumEl.textContent = '';
+    const expBtn = document.getElementById('esp-export-btn');
+    if(expBtn) expBtn.style.display = 'none';
     return;
   }
   if(tbl) tbl.style.display = '';
   if(empty) empty.style.display = 'none';
+  const expBtn = document.getElementById('esp-export-btn');
+  if(expBtn) expBtn.style.display = '';
 
   if(!_historicalTxns) {
     tbody.innerHTML = '<tr><td colspan="20" class="no-r">Sin datos cargados.</td></tr>';
@@ -3071,6 +3075,78 @@ function renderEspecies() {
   }
 }
 
+// ══════ ESPECIES XLS EXPORT ══════
+function exportEspeciesXLS() {
+  const ticker = document.getElementById('esp-ticker-select')?.value;
+  if(!ticker) return;
+
+  const tbl = document.getElementById('esp-tbl');
+  if(!tbl || tbl.style.display === 'none') return;
+
+  // Build data rows from the rendered table, stripping HTML tags
+  const stripHtml = s => {
+    const d = document.createElement('div');
+    d.innerHTML = s;
+    return d.textContent.trim();
+  };
+
+  // Header rows (two levels: group + column)
+  const groupRow  = document.getElementById('esp-thead-groups');
+  const colRow    = document.getElementById('esp-thead-cols');
+  const tfoot     = document.getElementById('espTfoot');
+  const tbody     = document.getElementById('espTbody');
+
+  const wsData = [];
+
+  // Group header row — expand colspans
+  if(groupRow) {
+    const groupCells = [];
+    for(const th of groupRow.querySelectorAll('th')) {
+      const span = parseInt(th.getAttribute('colspan') || '1');
+      const text = stripHtml(th.innerHTML);
+      groupCells.push(text);
+      for(let i = 1; i < span; i++) groupCells.push('');
+    }
+    wsData.push(groupCells);
+  }
+
+  // Column header row
+  if(colRow) {
+    wsData.push([...colRow.querySelectorAll('th')].map(th => stripHtml(th.innerHTML)));
+  }
+
+  // Body rows
+  for(const tr of tbody.querySelectorAll('tr')) {
+    const cells = [...tr.querySelectorAll('td')].map(td => {
+      const raw = stripHtml(td.innerHTML);
+      // Try to parse as number (remove thousands sep, convert decimal comma)
+      const cleaned = raw.replace(/\./g,'').replace(',','.');
+      const num = parseFloat(cleaned);
+      return (!isNaN(num) && raw !== '' && raw !== '—') ? num : (raw === '—' ? '' : raw);
+    });
+    wsData.push(cells);
+  }
+
+  // Footer row
+  if(tfoot) {
+    for(const tr of tfoot.querySelectorAll('tr')) {
+      wsData.push([...tr.querySelectorAll('td')].map(td => stripHtml(td.innerHTML)));
+    }
+  }
+
+  // Build workbook
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, ticker.slice(0, 31));
+
+  // Column widths
+  ws['!cols'] = wsData[1]
+    ? wsData[1].map(() => ({ wch: 14 }))
+    : [];
+
+  XLSX.writeFile(wb, `Especies_${ticker}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 // ══════ FX TAB ══════
 let _fxTabSort = 'date', _fxTabDir = -1; // default: fecha desc
 
@@ -3312,7 +3388,7 @@ function renderFXTab() {
     <select class="fi" id="esp-ticker-select" onchange="renderEspecies()" style="width:160px;">
       <option value="">— Elegir especie —</option>
     </select>
-
+    <button class="fb" id="esp-export-btn" onclick="exportEspeciesXLS()" style="display:none;color:var(--green);border-color:rgba(34,197,94,.3);">↓ XLS</button>
     <span id="esp-summary" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
   </div>
   <div class="audit-wrap">
