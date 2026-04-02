@@ -705,8 +705,8 @@ async function fetchPricesHistory() {
 async function fetchFXHistory() {
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.asc&limit=5000`,
-      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.asc&limit=10000`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`, 'Range-Unit': 'items', 'Range': '0-9999' } }
     );
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
     const rows = await r.json();
@@ -729,8 +729,8 @@ async function fetchFXHistory() {
 async function fetchSnapshots() {
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate&order=date.asc&limit=5000`,
-      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate&order=date.asc&limit=10000`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`, 'Range-Unit': 'items', 'Range': '0-9999' } }
     );
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
     _snapshots = await r.json();
