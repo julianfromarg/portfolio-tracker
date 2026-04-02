@@ -2737,14 +2737,48 @@ function rebuildEspeciesDropdown() {
   const sel = document.getElementById('esp-ticker-select');
   if(!sel) return;
   const cur = sel.value;
-  const all = [...new Set([...AR, ...US].map(d => d.ticker))].sort();
+
+  // Tickers con balance abierto (net > 0)
+  const openTickers = new Map(); // ticker -> net total
+  for(const d of [...AR, ...US]) {
+    if(d.net > 0) {
+      openTickers.set(d.ticker, (openTickers.get(d.ticker) || 0) + d.net);
+    }
+  }
+
+  // Todos los tickers con historial
+  const allTickers = [...new Set([...AR, ...US].map(d => d.ticker))].sort();
+  const closedTickers = allTickers.filter(tk => !openTickers.has(tk));
+  const openSorted    = [...openTickers.keys()].sort();
+
   sel.innerHTML = '<option value="">— Elegir especie —</option>';
-  all.forEach(tk => {
-    const o = document.createElement('option');
-    o.value = o.textContent = tk;
-    sel.appendChild(o);
-  });
-  if(cur && all.includes(cur)) sel.value = cur;
+
+  if(openSorted.length) {
+    const grpOpen = document.createElement('optgroup');
+    grpOpen.label = `● Posiciones abiertas (${openSorted.length})`;
+    openSorted.forEach(tk => {
+      const o = document.createElement('option');
+      const net = openTickers.get(tk);
+      o.value = tk;
+      o.textContent = `${tk}  (${new Intl.NumberFormat('es-AR').format(Math.round(net))})`;
+      grpOpen.appendChild(o);
+    });
+    sel.appendChild(grpOpen);
+  }
+
+  if(closedTickers.length) {
+    const grpClosed = document.createElement('optgroup');
+    grpClosed.label = `○ Históricas / cerradas (${closedTickers.length})`;
+    closedTickers.forEach(tk => {
+      const o = document.createElement('option');
+      o.value = o.textContent = tk;
+      grpClosed.appendChild(o);
+    });
+    sel.appendChild(grpClosed);
+  }
+
+  // Restore selection — value still works even inside optgroup
+  if(cur) sel.value = cur;
 }
 
 function renderEspecies() {
