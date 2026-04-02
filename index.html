@@ -2727,14 +2727,6 @@ function exportNRAcsv() {
   URL.revokeObjectURL(url);
 }
 // ══════ ESPECIES TAB ══════
-let _espValMode = 'ars'; // 'ars' | 'usd'
-
-function setEspValMode(mode) {
-  _espValMode = mode;
-  document.getElementById('esp-val-ars')?.classList.toggle('act', mode === 'ars');
-  document.getElementById('esp-val-usd')?.classList.toggle('act', mode === 'usd');
-  renderEspecies();
-}
 
 function rebuildEspeciesDropdown() {
   const sel = document.getElementById('esp-ticker-select');
@@ -2757,7 +2749,6 @@ function renderEspecies() {
   const empty   = document.getElementById('esp-empty');
   const sumEl   = document.getElementById('esp-summary');
   const tbl     = document.getElementById('esp-tbl');
-  const valTog  = document.getElementById('esp-val-toggle');
   if(!tbody) return;
 
   if(!ticker) {
@@ -2766,12 +2757,10 @@ function renderEspecies() {
     if(tbl) tbl.style.display = 'none';
     if(empty) empty.style.display = 'block';
     if(sumEl) sumEl.textContent = '';
-    if(valTog) valTog.style.display = 'none';
     return;
   }
   if(tbl) tbl.style.display = '';
   if(empty) empty.style.display = 'none';
-  if(valTog) valTog.style.display = '';
 
   if(!_historicalTxns) {
     tbody.innerHTML = '<tr><td colspan="20" class="no-r">Sin datos cargados.</td></tr>';
@@ -2900,38 +2889,32 @@ function renderEspecies() {
     const avgARUSD= slots.AR_USD.balance > 0 ? slots.AR_USD.costNoComis / slots.AR_USD.balance : null;
     const avgEEUU = slots.EEUU.balance   > 0 ? slots.EEUU.costNoComis   / slots.EEUU.balance   : null;
 
-    // Valorización
-    let valAR = null, valEEUU = null;
-    if(_espValMode === 'ars') {
-      const posARS = avgARS   != null ? avgARS   * slots.AR_ARS.balance : 0;
-      const posUSD = avgARUSD != null ? avgARUSD * slots.AR_USD.balance * fx : 0;
-      if(posARS + posUSD > 0) valAR = posARS + posUSD;
-      if(avgEEUU != null && slots.EEUU.balance > 0) valEEUU = avgEEUU * slots.EEUU.balance * fx;
-    } else {
-      const posARS = avgARS   != null && fx > 0 ? (avgARS   * slots.AR_ARS.balance) / fx : 0;
-      const posUSD = avgARUSD != null           ?  avgARUSD * slots.AR_USD.balance        : 0;
-      if(posARS + posUSD > 0) valAR = posARS + posUSD;
-      if(avgEEUU != null && slots.EEUU.balance > 0) valEEUU = avgEEUU * slots.EEUU.balance;
-    }
+    // Valorización — siempre fija: AR en ARS + conversión a USD; EEUU en USD
+    let valAR_ARS = null, valAR_USD = null, valEEUU = null;
+    const posARS_ars = avgARS   != null ? avgARS   * slots.AR_ARS.balance : 0;
+    const posUSD_ars = avgARUSD != null ? avgARUSD * slots.AR_USD.balance * fx : 0;
+    if(posARS_ars + posUSD_ars > 0) valAR_ARS = posARS_ars + posUSD_ars;
 
-    // Avg display (single column — show ARS or USD based on mode)
-    const avgARDisplay   = _espValMode === 'ars' ? avgARS   : (avgARUSD ?? (avgARS != null && fx > 0 ? avgARS/fx : null));
+    const posARS_usd = avgARS   != null && fx > 0 ? (avgARS * slots.AR_ARS.balance) / fx : 0;
+    const posUSD_usd = avgARUSD != null            ?  avgARUSD * slots.AR_USD.balance     : 0;
+    if(posARS_usd + posUSD_usd > 0) valAR_USD = posARS_usd + posUSD_usd;
+
+    if(avgEEUU != null && slots.EEUU.balance > 0) valEEUU = avgEEUU * slots.EEUU.balance;
+
+    // Avg display: AR siempre en ARS; EEUU en USD
+    const avgARDisplay   = avgARS;   // ARS nativo (null si no hay posición ARS)
     const avgEEUUDisplay = avgEEUU;
 
-    return { fecha, fx, bucket, balAR, balEEUU, avgARDisplay, avgEEUUDisplay, valAR, valEEUU };
+    return { fecha, fx, bucket, balAR, balEEUU, avgARDisplay, avgEEUUDisplay, valAR_ARS, valAR_USD, valEEUU };
   });
 
-  // Build column headers
-  const valLabel  = _espValMode === 'ars' ? 'Valoriz. ARS' : 'Valoriz. USD';
-  const avgLabel  = _espValMode === 'ars' ? 'Avg ARS' : 'Avg USD';
-  const pxARLabel = _espValMode === 'ars' ? 'Precio ARS' : 'Precio USD';
-
+  // Build column headers — static layout (no toggle)
   const groupRow = document.getElementById('esp-thead-groups');
   const colRow   = document.getElementById('esp-thead-cols');
   if(groupRow) {
     let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
-    if(hasAR)   gh += `<th class="esp-group-ar" colspan="6" style="text-align:center;">🇦🇷 Argentina</th>`;
-    if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="6" style="text-align:center;">🇺🇸 EEUU</th>`;
+    if(hasAR)   gh += `<th class="esp-group-ar" colspan="9" style="text-align:center;">🇦🇷 Argentina</th>`;
+    if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="8" style="text-align:center;">🇺🇸 EEUU</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
   }
@@ -2943,17 +2926,19 @@ function renderEspecies() {
       <th class="esp-num esp-group-ar" style="color:var(--purple);">Xfer.</th>
       <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
       <th class="esp-num esp-group-ar">Bal AR</th>
-      <th class="esp-num esp-group-ar">${pxARLabel}</th>`;
+      <th class="esp-num esp-group-ar">Precio ARS</th>
+      <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg ARS AR</th>
+      <th class="esp-num esp-group-ar" style="color:var(--ar);">Valoriz. ARS AR</th>
+      <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD AR</th>`;
     if(hasEEUU) ch += `
       <th class="esp-num esp-group-us esp-divider" style="color:var(--green);">Compras</th>
       <th class="esp-num esp-group-us" style="color:var(--red);">Ventas</th>
       <th class="esp-num esp-group-us" style="color:var(--purple);">Xfer.</th>
       <th class="esp-num esp-group-us" style="color:var(--muted);">Amort.</th>
       <th class="esp-num esp-group-us">Bal EEUU</th>
-      <th class="esp-num esp-group-us" style="color:var(--usd);">Precio USD</th>`;
-    // Shared avg + val columns
-    if(hasAR)   ch += `<th class="esp-num" style="color:var(--muted);">${avgLabel} AR</th><th class="esp-num" style="color:var(--muted);">${valLabel} AR</th>`;
-    if(hasEEUU) ch += `<th class="esp-num" style="color:var(--muted);">${avgLabel} EEUU</th><th class="esp-num" style="color:var(--muted);">${valLabel} EEUU</th>`;
+      <th class="esp-num esp-group-us" style="color:var(--usd);">Precio USD</th>
+      <th class="esp-num esp-group-us" style="color:var(--us);">Avg USD EEUU</th>
+      <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD EEUU</th>`;
     ch += `<th class="esp-num" style="color:var(--muted);">FX</th>`;
     colRow.innerHTML = ch;
   }
@@ -2969,7 +2954,6 @@ function renderEspecies() {
   const fmtAvg= (n,sym) => n!=null ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
   const fmtVal= (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
   const fmtFX = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
-  const sym   = _espValMode;
 
   // Summarize op names for a date+side
   const opLabel = (arOpsArr) => {
@@ -2989,7 +2973,6 @@ function renderEspecies() {
     const usDateOps   = ops.filter(t => t.fecha === r.fecha && t.cuenta.includes('EEUU'));
     const opLbl       = opLabel([...arDateOps, ...usDateOps]);
     const ar = r.bucket.ar, us = r.bucket.eeuu;
-    const pxDisplay   = _espValMode === 'ars' ? ar.precioARS : (ar.precioUSD ?? ar.precioARS);
 
     let html = `<tr>
       <td style="white-space:nowrap;">${fmtDate(r.fecha)}</td>
@@ -3000,16 +2983,19 @@ function renderEspecies() {
       <td class="esp-num">${fmtQx(ar.xfer)}</td>
       <td class="esp-num">${fmtQa(ar.amort)}</td>
       <td class="esp-num">${fmtBal(r.balAR)}</td>
-      <td class="esp-num">${fmtPx(pxDisplay, sym)}</td>`;
+      <td class="esp-num">${fmtPx(ar.precioARS, 'ars')}</td>
+      <td class="esp-num">${fmtAvg(r.avgARDisplay, 'ars')}</td>
+      <td class="esp-num">${fmtVal(r.valAR_ARS, 'ars')}</td>
+      <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
     if(hasEEUU) html += `
       <td class="esp-num esp-divider">${fmtQc(us.compras)}</td>
       <td class="esp-num">${fmtQv(us.ventas)}</td>
       <td class="esp-num">${fmtQx(us.xfer)}</td>
       <td class="esp-num">${fmtQa(us.amort)}</td>
       <td class="esp-num">${fmtBal(r.balEEUU)}</td>
-      <td class="esp-num">${fmtPx(us.precioUSD, 'usd')}</td>`;
-    if(hasAR)   html += `<td class="esp-num">${fmtAvg(r.avgARDisplay, sym)}</td><td class="esp-num">${fmtVal(r.valAR, sym)}</td>`;
-    if(hasEEUU) html += `<td class="esp-num">${fmtAvg(r.avgEEUUDisplay, 'usd')}</td><td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
+      <td class="esp-num">${fmtPx(us.precioUSD, 'usd')}</td>
+      <td class="esp-num">${fmtAvg(r.avgEEUUDisplay, 'usd')}</td>
+      <td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
     html += `<td class="esp-num">${fmtFX(r.fx)}</td></tr>`;
     return html;
   }).join('');
@@ -3017,12 +3003,22 @@ function renderEspecies() {
   // Footer
   const last = rows[rows.length - 1];
   if(tfoot) {
-    const ncols = 2 + (hasAR?6:0) + (hasEEUU?6:0) + (hasAR?2:0) + (hasEEUU?2:0) + 1;
+    // AR: 9 cols (Compras+Ventas+Xfer+Amort+Bal+PrecioARS+AvgARS+ValARS+ValUSD)
+    // EEUU: 8 cols (Compras+Ventas+Xfer+Amort+Bal+PrecioUSD+AvgUSD+ValUSD)
     let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${ops.length} op.</td>`;
-    if(hasAR)   fh += `<td colspan="4"></td><td class="esp-num esp-pos">${N(last.balAR,0)}</td><td></td>`;
-    if(hasEEUU) fh += `<td colspan="4" class="${hasAR?'esp-divider':''}"></td><td class="esp-num esp-pos">${N(last.balEEUU,0)}</td><td></td>`;
-    if(hasAR)   fh += `<td class="esp-num">${fmtAvg(last.avgARDisplay,sym)}</td><td class="esp-num">${fmtVal(last.valAR,sym)}</td>`;
-    if(hasEEUU) fh += `<td class="esp-num">${fmtAvg(last.avgEEUUDisplay,'usd')}</td><td class="esp-num">${fmtVal(last.valEEUU,'usd')}</td>`;
+    if(hasAR) fh += `
+      <td colspan="4"></td>
+      <td class="esp-num esp-pos">${N(last.balAR,0)}</td>
+      <td></td>
+      <td class="esp-num">${fmtAvg(last.avgARDisplay,'ars')}</td>
+      <td class="esp-num">${fmtVal(last.valAR_ARS,'ars')}</td>
+      <td class="esp-num">${fmtVal(last.valAR_USD,'usd')}</td>`;
+    if(hasEEUU) fh += `
+      <td colspan="4" class="${hasAR?'esp-divider':''}"></td>
+      <td class="esp-num esp-pos">${N(last.balEEUU,0)}</td>
+      <td></td>
+      <td class="esp-num">${fmtAvg(last.avgEEUUDisplay,'usd')}</td>
+      <td class="esp-num">${fmtVal(last.valEEUU,'usd')}</td>`;
     fh += `<td></td></tr>`;
     tfoot.innerHTML = fh;
   }
@@ -3171,11 +3167,7 @@ function renderEspecies() {
     <select class="fi" id="esp-ticker-select" onchange="renderEspecies()" style="width:160px;">
       <option value="">— Elegir especie —</option>
     </select>
-    <!-- Valorización toggle -->
-    <div id="esp-val-toggle" style="display:none;background:var(--s2);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
-      <button class="evol-rb act" id="esp-val-ars" onclick="setEspValMode('ars')">Valoriz. ARS</button>
-      <button class="evol-rb"     id="esp-val-usd" onclick="setEspValMode('usd')">Valoriz. USD</button>
-    </div>
+
     <span id="esp-summary" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
   </div>
   <div class="audit-wrap">
