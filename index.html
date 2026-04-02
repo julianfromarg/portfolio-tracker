@@ -147,6 +147,7 @@ tbody tr:hover td{background:var(--s2);}
 .tab.act-evol{color:var(--purple);border-bottom-color:var(--purple);}
 /* ── ESPECIES TAB ── */
 .tab.act-especies{color:var(--us);border-bottom-color:var(--us);}
+.tab.act-fx{color:var(--ar);border-bottom-color:var(--ar);}
 #esp-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 8px;font-family:var(--mono);font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
 #esp-tbl tbody td{padding:5px 8px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
 #esp-tbl tbody tr:hover td{background:var(--s2);}
@@ -232,6 +233,7 @@ tbody tr:hover td{background:var(--s2);}
   <div class="tab" onclick="switchTab(this,'nra')">🏛 Ret. NRA</div>
   <div class="tab" onclick="switchTab(this,'evol')">📈 Evolución</div>
   <div class="tab" onclick="switchTab(this,'especies')">🔍 Especies</div>
+  <div class="tab" onclick="switchTab(this,'fx')">💱 Tipo de Cambio</div>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
     <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
   </div>
@@ -718,6 +720,8 @@ async function fetchFXHistory() {
       if(inp && !inp.value) inp.value = _fxLatest;
     }
     console.log(`Loaded FX history: ${rows.length} rows`);
+    rebuildFXYearDropdown();
+    renderFXTab();
   } catch(e) { console.warn('fetchFXHistory failed:', e); }
 }
 
@@ -817,6 +821,7 @@ function switchTab(el,key){
   panel.classList.add('active');
   localStorage.setItem('active_tab', key);
   if(key === 'especies') rebuildEspeciesDropdown();
+  if(key === 'fx') renderFXTab();
 }
 
 // ══════ PORTFOLIO TABLE ══════
@@ -3031,6 +3036,112 @@ function renderEspecies() {
     sumEl.textContent = parts.join(' · ');
   }
 }
+
+// ══════ FX TAB ══════
+let _fxTabSort = 'date', _fxTabDir = -1; // default: fecha desc
+
+function fxTabSort(col) {
+  if(col === _fxTabSort) _fxTabDir *= -1;
+  else { _fxTabSort = col; _fxTabDir = -1; }
+  renderFXTab();
+}
+
+function fxTabClear() {
+  const s = document.getElementById('fx-tab-search'); if(s) s.value = '';
+  const y = document.getElementById('fx-tab-year');   if(y) y.value = '';
+  renderFXTab();
+}
+
+function rebuildFXYearDropdown() {
+  const sel = document.getElementById('fx-tab-year');
+  if(!sel || !_fxHistory) return;
+  const years = [...new Set(Object.keys(_fxHistory).map(d => d.slice(0,4)))].sort().reverse();
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Todos los años</option>';
+  years.forEach(y => {
+    const o = document.createElement('option');
+    o.value = o.textContent = y;
+    sel.appendChild(o);
+  });
+  if(cur && years.includes(cur)) sel.value = cur;
+}
+
+function renderFXTab() {
+  const tbody   = document.getElementById('fxTbody');
+  const countEl = document.getElementById('fx-tab-count');
+  if(!tbody) return;
+
+  if(!_fxHistory || !Object.keys(_fxHistory).length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="no-r">Sin datos de tipo de cambio.</td></tr>';
+    if(countEl) countEl.textContent = '';
+    return;
+  }
+
+  const search = (document.getElementById('fx-tab-search')?.value || '').trim();
+  const year   = document.getElementById('fx-tab-year')?.value  || '';
+
+  // Build display rows with filters
+  let rows = Object.entries(_fxHistory)
+    .map(([date, rate]) => ({ date, rate }))
+    .filter(r => {
+      if(year   && !r.date.startsWith(year)) return false;
+      if(search && !r.date.includes(search)) return false;
+      return true;
+    });
+
+  // Sort for display
+  rows.sort((a, b) => {
+    if(_fxTabSort === 'date') return a.date.localeCompare(b.date) * _fxTabDir;
+    return (a.rate - b.rate) * _fxTabDir;
+  });
+
+  // Chronological lookup for computing variations (always vs unfiltered history)
+  const chronological = Object.entries(_fxHistory)
+    .map(([date, rate]) => ({ date, rate }))
+    .sort((a,b) => a.date.localeCompare(b.date));
+  const rateByDate = {};
+  chronological.forEach(r => rateByDate[r.date] = r.rate);
+  const allDates = chronological.map(r => r.date);
+
+  const fmtDate = d => d && d.length >= 10
+    ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : d;
+  const fmtRate = n => new Intl.NumberFormat('es-AR',
+    {minimumFractionDigits:2, maximumFractionDigits:2}).format(n);
+  const fmtVar = (pct, show) => {
+    if(!show || pct === null) return '<span style="color:var(--muted)">—</span>';
+    const sign = pct >= 0 ? '+' : '';
+    const cls  = pct >= 0 ? 'mp' : 'mn';
+    return `<span class="${cls}">${sign}${pct.toFixed(2)}%</span>`;
+  };
+
+  tbody.innerHTML = rows.map(r => {
+    const idx = allDates.indexOf(r.date);
+    // Var. diaria: vs entrada anterior en el histórico completo
+    let varDay = null;
+    if(idx > 0) {
+      const prev = rateByDate[allDates[idx - 1]];
+      if(prev > 0) varDay = ((r.rate - prev) / prev) * 100;
+    }
+    // Var. 30d: vs entrada más cercana hace 30 días o más
+    let var30 = null;
+    const d30 = new Date(r.date); d30.setDate(d30.getDate() - 30);
+    const d30str = d30.toISOString().slice(0,10);
+    const prior = allDates.filter(d => d <= d30str);
+    if(prior.length) {
+      const p30 = rateByDate[prior[prior.length - 1]];
+      if(p30 > 0) var30 = ((r.rate - p30) / p30) * 100;
+    }
+
+    return `<tr>
+      <td style="color:var(--muted);font-size:11px;">${fmtDate(r.date)}</td>
+      <td class="num" style="font-size:13px;font-weight:600;color:var(--ar);">$ ${fmtRate(r.rate)}</td>
+      <td class="num">${fmtVar(varDay, idx > 0)}</td>
+      <td class="num">${fmtVar(var30,  prior.length > 0)}</td>
+    </tr>`;
+  }).join('');
+
+  if(countEl) countEl.textContent = `${rows.length.toLocaleString('es-AR')} registros`;
+}
 </script>
 
 <!-- NRA Override Popover -->
@@ -3186,6 +3297,28 @@ function renderEspecies() {
     <div id="esp-empty" style="padding:60px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--muted);">
       Elegí una especie del selector para ver su detalle.
     </div>
+  </div>
+</div>
+
+<!-- FX Panel -->
+<div id="panel-fx" class="panel" style="padding:0;">
+  <div class="atb" style="gap:12px;">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ar);white-space:nowrap;">💱 Tipo de Cambio · USD/ARS</span>
+    <input class="fi" id="fx-tab-search" type="text" placeholder="🔍  Filtrar fecha..." style="width:180px" oninput="renderFXTab()">
+    <select class="fi" id="fx-tab-year" onchange="renderFXTab()"><option value="">Todos los años</option></select>
+    <button class="fb" onclick="fxTabClear()">✕ Limpiar</button>
+    <span class="a-count" id="fx-tab-count"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="fx-tab-tbl" style="min-width:320px;">
+      <thead><tr>
+        <th style="text-align:left;cursor:pointer;user-select:none;" onclick="fxTabSort('date')">Fecha</th>
+        <th class="num" style="cursor:pointer;user-select:none;" onclick="fxTabSort('rate')">ARS / USD</th>
+        <th class="num" style="color:var(--muted);">Var. diaria</th>
+        <th class="num" style="color:var(--muted);">Var. 30d</th>
+      </tr></thead>
+      <tbody id="fxTbody"></tbody>
+    </table>
   </div>
 </div>
 
