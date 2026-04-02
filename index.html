@@ -374,6 +374,8 @@ const US=[];
 const AR=[];
 let _cashBalances = null;   // {account: balance} — set in processAndRefresh
 let _optionsExcluded = 0;   // count of excluded option contracts
+let _especiesRows  = [];    // last rendered rows from renderEspecies (for XLS export)
+let _especiesState = {};    // {ticker, hasAR, hasEEUU, opsLen} — export metadata
 
 // ══════ UTILS ══════
 const N=(n,d=2)=>n!=null&&!isNaN(n)?new Intl.NumberFormat('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d}).format(n):'—';
@@ -3073,77 +3075,170 @@ function renderEspecies() {
     if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU,0)} títulos`);
     sumEl.textContent = parts.join(' · ');
   }
+
+  // Save for XLS export
+  _especiesRows  = rows;
+  _especiesState = { ticker, hasAR, hasEEUU, opsLen: ops.length };
 }
 
 // ══════ ESPECIES XLS EXPORT ══════
 function exportEspeciesXLS() {
-  const ticker = document.getElementById('esp-ticker-select')?.value;
-  if(!ticker) return;
+  if(!_especiesRows.length || !_especiesState.ticker) return;
+  const { ticker, hasAR, hasEEUU, opsLen } = _especiesState;
 
-  const tbl = document.getElementById('esp-tbl');
-  if(!tbl || tbl.style.display === 'none') return;
-
-  // Build data rows from the rendered table, stripping HTML tags
-  const stripHtml = s => {
-    const d = document.createElement('div');
-    d.innerHTML = s;
-    return d.textContent.trim();
-  };
-
-  // Header rows (two levels: group + column)
-  const groupRow  = document.getElementById('esp-thead-groups');
-  const colRow    = document.getElementById('esp-thead-cols');
-  const tfoot     = document.getElementById('espTfoot');
-  const tbody     = document.getElementById('espTbody');
-
-  const wsData = [];
-
-  // Group header row — expand colspans
-  if(groupRow) {
-    const groupCells = [];
-    for(const th of groupRow.querySelectorAll('th')) {
-      const span = parseInt(th.getAttribute('colspan') || '1');
-      const text = stripHtml(th.innerHTML);
-      groupCells.push(text);
-      for(let i = 1; i < span; i++) groupCells.push('');
-    }
-    wsData.push(groupCells);
+  // ── Column definitions ──────────────────────────────────────────────────
+  // Each col: { header, group, getValue(row), fmt }
+  // fmt: 'date' | 'num0' | 'num2' | 'text'
+  const cols = [
+    { header:'Fecha',    group:'',          fmt:'date', get: r => r.fecha },
+    { header:'Op.',      group:'',          fmt:'text', get: r => {
+        const arOps = r.bucket.ar, usOps = r.bucket.eeuu;
+        const parts = [];
+        if(arOps.compras > 0 || arOps.ventas > 0 || arOps.xfer > 0 || arOps.amort > 0) {
+          if(arOps.compras > 0) parts.push('Compra');
+          if(arOps.ventas  > 0) parts.push('Venta');
+          if(arOps.xfer    > 0) parts.push('Transf.');
+          if(arOps.amort   > 0) parts.push('Amort.');
+        }
+        if(usOps.compras > 0 || usOps.ventas > 0 || usOps.xfer > 0 || usOps.amort > 0) {
+          if(usOps.compras > 0) parts.push('Compra');
+          if(usOps.ventas  > 0) parts.push('Venta');
+          if(usOps.xfer    > 0) parts.push('Transf.');
+          if(usOps.amort   > 0) parts.push('Amort.');
+        }
+        return [...new Set(parts)].join(' / ') || '';
+    }},
+  ];
+  if(hasAR) {
+    cols.push(
+      { header:'Compras AR',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar.compras  || null },
+      { header:'Ventas AR',       group:'Argentina', fmt:'num0', get: r => r.bucket.ar.ventas   || null },
+      { header:'Xfer. AR',        group:'Argentina', fmt:'num0', get: r => r.bucket.ar.xfer     || null },
+      { header:'Amort. AR',       group:'Argentina', fmt:'num0', get: r => r.bucket.ar.amort    || null },
+      { header:'Bal AR',          group:'Argentina', fmt:'num0', get: r => r.balAR },
+      { header:'Precio ARS',      group:'Argentina', fmt:'num2', get: r => r.bucket.ar.precioARS || null },
+      { header:'Avg ARS AR',      group:'Argentina', fmt:'num2', get: r => r.avgARDisplay },
+      { header:'Valoriz. ARS AR', group:'Argentina', fmt:'num2', get: r => r.valAR_ARS },
+      { header:'Valoriz. USD AR', group:'Argentina', fmt:'num2', get: r => r.valAR_USD },
+    );
   }
-
-  // Column header row
-  if(colRow) {
-    wsData.push([...colRow.querySelectorAll('th')].map(th => stripHtml(th.innerHTML)));
+  if(hasEEUU) {
+    cols.push(
+      { header:'Compras EEUU',      group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.compras || null },
+      { header:'Ventas EEUU',       group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.ventas  || null },
+      { header:'Xfer. EEUU',        group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.xfer    || null },
+      { header:'Amort. EEUU',       group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.amort   || null },
+      { header:'Bal EEUU',          group:'EEUU', fmt:'num0', get: r => r.balEEUU },
+      { header:'Precio USD',        group:'EEUU', fmt:'num2', get: r => r.bucket.eeuu.precioUSD || null },
+      { header:'Avg USD EEUU',      group:'EEUU', fmt:'num2', get: r => r.avgEEUUDisplay },
+      { header:'Valoriz. USD EEUU', group:'EEUU', fmt:'num2', get: r => r.valEEUU },
+    );
   }
+  cols.push({ header:'FX', group:'', fmt:'num2', get: r => r.fx });
 
-  // Body rows
-  for(const tr of tbody.querySelectorAll('tr')) {
-    const cells = [...tr.querySelectorAll('td')].map(td => {
-      const raw = stripHtml(td.innerHTML);
-      // Try to parse as number (remove thousands sep, convert decimal comma)
-      const cleaned = raw.replace(/\./g,'').replace(',','.');
-      const num = parseFloat(cleaned);
-      return (!isNaN(num) && raw !== '' && raw !== '—') ? num : (raw === '—' ? '' : raw);
-    });
-    wsData.push(cells);
-  }
+  // ── Build AOA ───────────────────────────────────────────────────────────
+  // Row 1: group headers (merge labels across their columns)
+  const groupRow = cols.map(c => c.group);
+  // Deduplicate consecutive same-group labels (keep first, blank the rest)
+  const groupRowDeduped = groupRow.map((g, i) =>
+    (g && g !== groupRow[i-1]) ? (g === 'Argentina' ? '🇦🇷 Argentina' : '🇺🇸 EEUU') : ''
+  );
+
+  // Row 2: column headers
+  const headerRow = cols.map(c => c.header);
+
+  // Data rows
+  const dataRows = _especiesRows.map(r => cols.map(c => {
+    const v = c.get(r);
+    if(v === null || v === undefined) return null;
+    return v;
+  }));
 
   // Footer row
-  if(tfoot) {
-    for(const tr of tfoot.querySelectorAll('tr')) {
-      wsData.push([...tr.querySelectorAll('td')].map(td => stripHtml(td.innerHTML)));
+  const last = _especiesRows[_especiesRows.length - 1];
+  const footerRow = cols.map(c => {
+    if(c.header === 'Fecha') return `POSICIÓN FINAL · ${opsLen} op.`;
+    if(c.header === 'Bal AR')          return last.balAR;
+    if(c.header === 'Avg ARS AR')      return last.avgARDisplay;
+    if(c.header === 'Valoriz. ARS AR') return last.valAR_ARS;
+    if(c.header === 'Valoriz. USD AR') return last.valAR_USD;
+    if(c.header === 'Bal EEUU')        return last.balEEUU;
+    if(c.header === 'Avg USD EEUU')    return last.avgEEUUDisplay;
+    if(c.header === 'Valoriz. USD EEUU') return last.valEEUU;
+    return null;
+  });
+
+  const aoa = [groupRowDeduped, headerRow, ...dataRows, footerRow];
+
+  // ── Create worksheet ────────────────────────────────────────────────────
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const nRows = aoa.length;
+  const nCols = cols.length;
+
+  // Helper to get cell address
+  const addr = (r, c) => XLSX.utils.encode_cell({r, c});
+
+  // ── Merge group header cells ────────────────────────────────────────────
+  ws['!merges'] = ws['!merges'] || [];
+  let mergeStart = null, mergeGroup = null;
+  groupRowDeduped.forEach((g, ci) => {
+    const rawGroup = groupRow[ci];
+    if(rawGroup && rawGroup !== mergeGroup) {
+      if(mergeStart !== null && ci - mergeStart > 1)
+        ws['!merges'].push({s:{r:0,c:mergeStart}, e:{r:0,c:ci-1}});
+      mergeStart = ci; mergeGroup = rawGroup;
+    } else if(!rawGroup && mergeGroup) {
+      // end of group
+      if(mergeStart !== null && ci - mergeStart > 1)
+        ws['!merges'].push({s:{r:0,c:mergeStart}, e:{r:0,c:ci-1}});
+      mergeStart = null; mergeGroup = null;
+    }
+  });
+  if(mergeStart !== null && nCols - mergeStart > 1)
+    ws['!merges'].push({s:{r:0,c:mergeStart}, e:{r:0,c:nCols-1}});
+
+  // ── Cell styles ─────────────────────────────────────────────────────────
+  // Note: SheetJS free (XLSX.js CDN) doesn't support cell styles — we skip
+  // styling here. The structure, merges, number formats, and col widths work
+  // without the paid version.
+
+  // ── Number formats ──────────────────────────────────────────────────────
+  // Apply to data rows + footer (rows 2..nRows-1, 0-indexed)
+  for(let ri = 2; ri < nRows; ri++) {
+    for(let ci = 0; ci < nCols; ci++) {
+      const cell = ws[addr(ri, ci)];
+      if(!cell || cell.v === null || cell.v === undefined) continue;
+      const fmt = cols[ci].fmt;
+      if(fmt === 'date') {
+        // Store as string dd/mm/yyyy — already formatted in r.fecha as YYYY-MM-DD
+        const iso = cell.v; // "YYYY-MM-DD"
+        if(typeof iso === 'string' && iso.length === 10) {
+          cell.v = `${iso.slice(8,10)}/${iso.slice(5,7)}/${iso.slice(0,4)}`;
+          cell.t = 's';
+        }
+      } else if(fmt === 'num0' && typeof cell.v === 'number') {
+        cell.z = '#,##0';
+      } else if(fmt === 'num2' && typeof cell.v === 'number') {
+        cell.z = '#,##0.00';
+      }
     }
   }
 
-  // Build workbook
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  // ── Column widths ───────────────────────────────────────────────────────
+  ws['!cols'] = cols.map(c => {
+    if(c.header === 'Fecha')  return { wch: 12 };
+    if(c.header === 'Op.')    return { wch: 10 };
+    if(c.fmt === 'num0')      return { wch: 11 };
+    if(c.fmt === 'num2')      return { wch: 14 };
+    return { wch: 12 };
+  });
+
+  // ── Freeze header rows ──────────────────────────────────────────────────
+  ws['!freeze'] = { xSplit: 0, ySplit: 2 };
+
+  // ── Build and download ──────────────────────────────────────────────────
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, ticker.slice(0, 31));
-
-  // Column widths
-  ws['!cols'] = wsData[1]
-    ? wsData[1].map(() => ({ wch: 14 }))
-    : [];
-
   XLSX.writeFile(wb, `Especies_${ticker}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
