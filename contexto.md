@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 01/04/2026 v3
+## Versión: 02/04/2026 v1
 
 ---
 
@@ -17,21 +17,22 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3100 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3450 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
-| `CONTEXTO_PORTFOLIO_DASHBOARD_v01_04_v3.md` | Este archivo |
+| `CONTEXTO_PORTFOLIO_DASHBOARD_v02_04_v1.md` | Este archivo |
 
 ---
 
 ## Estructura del dashboard
 
-### 6 tabs:
+### 8 tabs:
 - **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones abiertas con precios live + caja + totales. Argentina tiene toggle de modo (moneda origen / todo ARS / todo USD). FX siempre desde `fx_rates` en Supabase — sin input manual.
 - **📋 Transacciones** — Tabla audit completa con filtros (cuenta, operación, año, mes), agrupación, columna Saldo cash, columna Ret. NRA y botón `↓ CSV`.
 - **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
 - **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
 - **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
 - **🔍 Especies** — Tab de auditoría por instrumento. Ver más abajo.
+- **💱 Tipo de Cambio** — Tabla con la serie histórica de FX USD/ARS desde Supabase. Columnas: Fecha · ARS/USD · Var. diaria · Var. 30d. Filtros por año y texto. Orden clickeable por fecha o tasa.
 - **Botones fijos:** `↑ Importar .xls` (en tabs bar)
 - **Header:** selector de sesiones con `＋ Nueva`, `✎ Renombrar`, `🗑 Borrar`
 
@@ -57,7 +58,7 @@ Cada "sesión" representa una cuenta de Balanz independiente. Las sesiones son l
 ```
 sessions_index        → [{id, name, createdAt}]
 active_session_id     → id de la sesión activa
-active_tab            → tab activo (portfolio/audit/cash/nra/evol/especies)
+active_tab            → tab activo (portfolio/audit/cash/nra/evol/especies/fx)
 portfolio_txns_{id}   → transacciones de esa sesión
 ```
 
@@ -400,7 +401,7 @@ new Set([
 ### Fetch en el dashboard (al cargar + botón 🔄):
 - `fetchLatestPrices()` — último EOD + NRA overrides de la sesión activa + **recálculo de cash post-overrides**
 - `fetchPricesHistory()` — histórico completo
-- `fetchFXHistory()` — histórico FX + setea `_fxLatest`
+- `fetchFXHistory()` — histórico FX + setea `_fxLatest`. **Orden `date.desc`, limit 10000, Range 0-9999** — Supabase cappea en 1000 filas por defecto; con `desc` trae las 1000 más recientes.
 - `fetchSnapshots()` — snapshots guardados
 
 **CRÍTICO — orden de carga:** `fetchFXHistory()` debe completar antes de `recalcSnapshots()`.
@@ -431,34 +432,84 @@ new Set([
 
 Tab de auditoría de precio promedio por instrumento. Permite ver la evolución fila por fila del VWAP.
 
-### UX:
-- Dropdown con todos los tickers de AR + US, ordenados alfabéticamente
-- Se repuebla automáticamente al cambiar de tab (en `switchTab`) y al cargar datos (`processAndRefresh`)
-- Toggle **Valoriz. ARS / USD** — afecta columnas Avg y Valorización de ambos grupos
-- Una fila por fecha (si hay actividad en AR y EEUU el mismo día, se consolidan en una fila)
+### Dropdown con agrupación:
+El selector de ticker usa `<optgroup>` para separar posiciones abiertas de cerradas:
+- **● Posiciones abiertas (N)** — tickers con `net > 0`, muestra el balance entre paréntesis (suma AR + EEUU)
+- **○ Históricas / cerradas (N)** — tickers con historial pero sin balance
 
 ### Estructura de la tabla:
-Dos grupos de columnas generados dinámicamente según qué cuentas tenga la especie:
+Dos grupos de columnas generados dinámicamente según qué cuentas tenga la especie. Layout fijo (sin toggle):
 
-**Grupo 🇦🇷 Argentina** (si tiene ops en cuentas Argentina):
-- Compras · Ventas · Xfer. · Amort. · Bal AR · Precio ARS/USD (según modo)
+**Grupo 🇦🇷 Argentina** (colspan 9, si tiene ops en cuentas Argentina):
+- Compras · Ventas · Xfer. · Amort. · Bal AR · Precio ARS · **Avg ARS AR** · **Valoriz. ARS AR** · **Valoriz. USD AR**
 
-**Grupo 🇺🇸 EEUU** (si tiene ops en cuenta EEUU):
-- Compras · Ventas · Xfer. · Amort. · Bal EEUU · Precio USD
+**Grupo 🇺🇸 EEUU** (colspan 8, si tiene ops en cuenta EEUU):
+- Compras · Ventas · Xfer. · Amort. · Bal EEUU · Precio USD · **Avg USD EEUU** · **Valoriz. USD EEUU**
 
-**Columnas compartidas al final:**
-- Avg AR · Valoriz. AR · Avg EEUU · Valoriz. EEUU · FX
+**FX** — columna final compartida
 
-Si la especie solo existe en un lado, solo aparece ese grupo de columnas.
+Si la especie solo existe en un lado, solo aparece ese grupo.
+
+### Lógica de valorización (fija, sin toggle):
+- **Valoriz. ARS AR** = posición AR_ARS × avgARS + posición AR_USD × avgARUSD × FX (todo en pesos)
+- **Valoriz. USD AR** = posición AR_ARS × avgARS / FX + posición AR_USD × avgARUSD (todo en dólares)
+- **Valoriz. USD EEUU** = posición EEUU × avgEEUU (en dólares)
+- **Avg ARS AR** = avgARS del slot AR_ARS (nativo en pesos)
+- **Avg USD EEUU** = avgEEUU del slot EEUU (nativo en dólares)
 
 ### Lógica VWAP en Especies:
 Mismo algoritmo que `buildInstrument()` pero recalculado fila por fila en `renderEspecies()` para mostrar la evolución. Usa los mismos slots `AR_ARS`, `AR_USD`, `EEUU`.
 
+### Export XLS (`exportEspeciesXLS()`):
+- Botón `↓ XLS` aparece en la toolbar solo cuando hay ticker seleccionado
+- **Lee de `_especiesRows` y `_especiesState`** (globals guardados al final de `renderEspecies`) — NO scrapea el DOM
+- Formato del archivo:
+  - Fila 1: headers de grupo con merge de celdas (🇦🇷 Argentina / 🇺🇸 EEUU)
+  - Fila 2: headers de columna
+  - Filas de datos: fechas como `dd/mm/yyyy` (string), números como valores numéricos con formato `#,##0` o `#,##0.00`
+  - Fila de footer con posición final
+  - Freeze de primeras 2 filas
+  - Anchos de columna ajustados por tipo
+  - Celdas vacías (compras/ventas que no aplican) como `null`, no como `0`
+- Nombre del archivo: `Especies_TICKER_YYYY-MM-DD.xlsx`
+
+### Globals de estado para export:
+```javascript
+let _especiesRows  = [];  // rows del último renderEspecies (para XLS export)
+let _especiesState = {};  // {ticker, hasAR, hasEEUU, opsLen}
+```
+
 ### Funciones clave:
-- `rebuildEspeciesDropdown()` — repuebla el selector
-- `renderEspecies()` — renderiza la tabla para el ticker seleccionado
-- `setEspValMode(mode)` — toggle ARS/USD para la valorización
-- `_espValMode` — estado global `'ars'` | `'usd'`
+- `rebuildEspeciesDropdown()` — repuebla el selector con optgroups
+- `renderEspecies()` — renderiza la tabla y guarda `_especiesRows` / `_especiesState`
+- `exportEspeciesXLS()` — genera y descarga el XLSX desde `_especiesRows`
+
+---
+
+## Tab 💱 Tipo de Cambio
+
+Tab con la serie histórica de FX USD/ARS desde la tabla `fx_rates` de Supabase.
+
+### Columnas:
+- **Fecha** — `dd/mm/yyyy`
+- **ARS / USD** — tasa de cambio
+- **Var. diaria** — variación % vs. la entrada anterior en el histórico completo
+- **Var. 30d** — variación % vs. la entrada más cercana hace 30 días o más
+
+### UX:
+- Filtro por año (dropdown) y búsqueda por texto en fecha
+- Orden clickeable por Fecha o ARS/USD, con toggle asc/desc
+- Contador de registros
+- Se popula automáticamente cuando `fetchFXHistory()` termina y al hacer click en el tab
+
+### Funciones clave:
+- `rebuildFXYearDropdown()` — popula el dropdown de años desde `_fxHistory`
+- `renderFXTab()` — renderiza la tabla con filtros y variaciones
+- `fxTabSort(col)` — toggle de orden
+- `fxTabClear()` — limpia filtros
+
+### CRÍTICO — límite de filas Supabase:
+Supabase cappea en 1000 filas por request independientemente del `limit` enviado. `fetchFXHistory` usa `order=date.desc` para traer las 1000 entradas **más recientes** (no las más antiguas). Las variaciones se calculan siempre contra el histórico completo cargado (`allDates`), no contra el subconjunto filtrado.
 
 ---
 
@@ -539,6 +590,19 @@ Mismo algoritmo que `buildInstrument()` pero recalculado fila por fila en `rende
 | `switchTab` explota si panel no existe | `getElementById(...).classList` sobre null | Guard: `const panel = getElementById(...); if(!panel) return;` |
 | Dropdown Especies vacío al abrir tab | `rebuildEspeciesDropdown` solo se llamaba en `processAndRefresh` | También se llama en `switchTab` cuando key === `'especies'` |
 
+### FX / Supabase
+
+| Bug | Causa | Fix |
+|---|---|---|
+| Tab FX solo mostraba hasta 2023 | `fetchFXHistory` con `order=date.asc&limit=5000` — Supabase cappea en 1000 filas, traía las más antiguas | Cambiar a `order=date.desc` con `limit=10000` y `Range: 0-9999` — trae las 1000 más recientes |
+
+### Export Especies XLS
+
+| Bug | Causa | Fix |
+|---|---|---|
+| Fechas exportadas como número entero (solo el día) | `exportEspeciesXLS` scrapeaba el DOM y `parseFloat` convertía `"28/03/2026"` → `28` | Reescribir para leer de `_especiesRows` directamente; fechas como string `dd/mm/yyyy` |
+| Montos exportados como texto con prefijo | `"U$S 1.789,74"` no parseaba a número | Leer valores numéricos crudos desde `_especiesRows`, aplicar formato Excel nativo |
+
 ---
 
 ## Checkpoints de validación
@@ -581,3 +645,6 @@ Pegá este documento + el HTML al inicio del chat. Ejemplos:
 - **El avg en `makeCard` viene de `d.avgByAcct[acctKey]`, no de `d.avg` global — no cambiar esto**
 - **`fetchLatestPrices()` recalcula cash post-overrides — este recálculo es intencional, no eliminarlo**
 - **FX siempre desde `_fxHistory`/`_fxLatest` — no agregar inputs manuales de FX en el Portfolio tab**
+- **`exportEspeciesXLS()` lee de `_especiesRows`/`_especiesState`, no del DOM — no cambiar esto**
+- **Tab Especies: no hay toggle ARS/USD — el layout es fijo. No agregar `_espValMode` de vuelta**
+- **`fetchFXHistory` usa `order=date.desc` — intencional para traer los más recientes dentro del cap de Supabase**
