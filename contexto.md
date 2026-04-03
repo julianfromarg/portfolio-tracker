@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 02/04/2026 v1
+## Versión: 02/04/2026 v2
 
 ---
 
@@ -17,9 +17,9 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3450 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3510 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
-| `CONTEXTO_PORTFOLIO_DASHBOARD_v02_04_v1.md` | Este archivo |
+| `CONTEXTO_PORTFOLIO_DASHBOARD_v02_04_v2.md` | Este archivo |
 
 ---
 
@@ -432,6 +432,17 @@ new Set([
 
 Tab de auditoría de precio promedio por instrumento. Permite ver la evolución fila por fila del VWAP.
 
+### Arquitectura — fuente de verdad única:
+**CRÍTICO:** El tab Especies consume los datos precalculados de `buildInstrument()` a través del global `_instruments[ticker]`. **No recalcula VWAP ni balances.** Esto garantiza que los balances y precios promedio mostrados en Especies coincidan exactamente con los del tab Portfolio, ya que ambos leen de la misma fuente.
+
+`buildInstrument()` guarda en cada txn un `_slotSnap` con el estado de los 3 slots (`AR_ARS`, `AR_USD`, `EEUU`) en ese punto de la historia — balance y avg por slot. `renderEspecies()` agrupa esas txns por fecha y lee los snapshots para construir las filas de la tabla.
+
+### Global `_instruments`:
+```javascript
+let _instruments = {};  // { ticker: buildInstrument() result } — canonical source
+```
+Se setea en `processAndRefresh()` desde el return de `buildPortfolio()`. Se resetea a `{}` en: `newSessionPrompt`, `switchSession` (caso vacío), `clearAllData`, `showEmptyState`.
+
 ### Dropdown con agrupación:
 El selector de ticker usa `<optgroup>` para separar posiciones abiertas de cerradas:
 - **● Posiciones abiertas (N)** — tickers con `net > 0`, muestra el balance entre paréntesis (suma AR + EEUU)
@@ -457,8 +468,16 @@ Si la especie solo existe en un lado, solo aparece ese grupo.
 - **Avg ARS AR** = avgARS del slot AR_ARS (nativo en pesos)
 - **Avg USD EEUU** = avgEEUU del slot EEUU (nativo en dólares)
 
-### Lógica VWAP en Especies:
-Mismo algoritmo que `buildInstrument()` pero recalculado fila por fila en `renderEspecies()` para mostrar la evolución. Usa los mismos slots `AR_ARS`, `AR_USD`, `EEUU`.
+### `_slotSnap` — snapshot por txn en `buildInstrument()`:
+Cada txn retornada por `buildInstrument()` incluye:
+```javascript
+_slotSnap: {
+  AR_ARS: { balance, avg },  // estado del slot AR_ARS después de esta txn
+  AR_USD: { balance, avg },  // estado del slot AR_USD después de esta txn
+  EEUU:   { balance, avg },  // estado del slot EEUU después de esta txn
+}
+```
+`renderEspecies()` agrupa txns por fecha y toma el `_slotSnap` de la última txn de cada fecha para mostrar balance y avg en la fila.
 
 ### Export XLS (`exportEspeciesXLS()`):
 - Botón `↓ XLS` aparece en la toolbar solo cuando hay ticker seleccionado
@@ -481,7 +500,7 @@ let _especiesState = {};  // {ticker, hasAR, hasEEUU, opsLen}
 
 ### Funciones clave:
 - `rebuildEspeciesDropdown()` — repuebla el selector con optgroups
-- `renderEspecies()` — renderiza la tabla y guarda `_especiesRows` / `_especiesState`
+- `renderEspecies()` — lee de `_instruments[ticker].txns`, agrupa por fecha, renderiza tabla y guarda `_especiesRows` / `_especiesState`
 - `exportEspeciesXLS()` — genera y descarga el XLSX desde `_especiesRows`
 
 ---
@@ -555,6 +574,7 @@ Supabase cappea en 1000 filas por request independientemente del `limit` enviado
 | Precio promedio incorrecto tras ventas parciales | `avg = totalCostNoComis / bought` ignoraba ventas | VWAP móvil: al vender, `costNoComis *= (balance - sellQty) / balance`. Si balance = 0, reset a 0. |
 | Precio promedio incorrecto para tickers split AR/EEUU (ej: MELI) | `buildInstrument` mezclaba montos ARS y USD en el mismo acumulador `'AR'` | 3 slots: `'EEUU'`, `'AR_ARS'`, `'AR_USD'`. `avgByAcct` incluye `balance` por slot. `makeCard` preserva `avgByAcct`. Footer y columnas usan slots directamente. |
 | Total Argentina (USD) mostraba ~U$S 32M | Footer filtraba por `accounts.includes('USD')` capturando CEDEARs con avg en pesos | `calcArSlots()` itera `avgByAcct.AR_ARS` y `avgByAcct.AR_USD` directamente — sin filtro por `accounts` |
+| Tab Especies: balance AR de MELI mostraba 892 en vez de 787 (+105 fantasma) y avg AR incorrecto | `renderEspecies()` reimplementaba VWAP desde cero sobre `_historicalTxns` sin `deduplicateMEP()` — la fila MELID (boleto 20912042, nro_mov 147492434) aparece en dos cuentas (AR Pesos + AR Dólares) como facturación split de una sola compra de 105 unidades; sin dedup se contaban 210 | Refactor: `renderEspecies()` ya no recalcula — consume `_instruments[ticker].txns` (que ya pasaron por dedup+canonicalización). `buildInstrument()` ahora guarda `_slotSnap` en cada txn con estado de los 3 slots. `buildPortfolio()` retorna `instruments`, guardado en global `_instruments`. Fuente de verdad única para balances y avgs en todo el dashboard. |
 
 ### Cash
 
@@ -641,10 +661,13 @@ Pegá este documento + el HTML al inicio del chat. Ejemplos:
 - Los NRA overrides se filtran por `session_id` — cada sesión tiene sus propios overrides
 - El PATCH (no DELETE) es intencional para limpiar overrides — RLS no permite DELETE con anon key
 - **`buildInstrument` trackea `acctState` con 3 slots: `EEUU`, `AR_ARS`, `AR_USD` — nunca mezclar montos de distintas monedas**
+- **`buildInstrument` guarda `_slotSnap` en cada txn — es la fuente de verdad para la evolución por fecha en Especies**
 - **`avgByAcct` incluye `balance` por slot — usarlo siempre para footer y columnas de precio en AR**
 - **El avg en `makeCard` viene de `d.avgByAcct[acctKey]`, no de `d.avg` global — no cambiar esto**
+- **`_instruments` es el global canónico de instrumentos — `renderEspecies()` lo consume directamente, NUNCA recalcular VWAP en Especies**
 - **`fetchLatestPrices()` recalcula cash post-overrides — este recálculo es intencional, no eliminarlo**
 - **FX siempre desde `_fxHistory`/`_fxLatest` — no agregar inputs manuales de FX en el Portfolio tab**
 - **`exportEspeciesXLS()` lee de `_especiesRows`/`_especiesState`, no del DOM — no cambiar esto**
 - **Tab Especies: no hay toggle ARS/USD — el layout es fijo. No agregar `_espValMode` de vuelta**
 - **`fetchFXHistory` usa `order=date.desc` — intencional para traer los más recientes dentro del cap de Supabase**
+- **Principio general: un solo cálculo, múltiples vistas. Balances y avgs se calculan en `buildInstrument()` y se consumen desde `_instruments` / `AR` / `US` — no reimplementar la lógica en otros tabs**
