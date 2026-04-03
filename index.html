@@ -1146,8 +1146,8 @@ function calcBuyCost(t, withComissions) {
   if(withComissions) {
     return Math.abs(t.monto || 0);
   } else {
-    // Sin comisiones: descontar comision + iva del monto
-    return Math.abs(t.monto || 0) - Math.abs(t.comision || 0) - Math.abs(t.iva || 0);
+    // Sin comisiones: descontar comision + iva + otros_imp del monto
+    return Math.abs(t.monto || 0) - Math.abs(t.comision || 0) - Math.abs(t.iva || 0) - Math.abs(t.otros_imp || 0);
   }
 }
 
@@ -2811,10 +2811,14 @@ function renderEspecies() {
     if(sumEl) sumEl.textContent = '';
     const expBtn = document.getElementById('esp-export-btn');
     if(expBtn) expBtn.style.display = 'none';
+    const fn = document.getElementById('esp-footnote');
+    if(fn) fn.style.display = 'none';
     return;
   }
   if(tbl) tbl.style.display = '';
   if(empty) empty.style.display = 'none';
+  const fn = document.getElementById('esp-footnote');
+  if(fn) fn.style.display = 'block';
   const expBtn = document.getElementById('esp-export-btn');
   if(expBtn) expBtn.style.display = '';
 
@@ -2857,14 +2861,14 @@ function renderEspecies() {
       side.compras += qty;
       if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
       else        { if(precio > 0) side.precioUSD = precio; }
-      const costo = calcBuyCost(t, false);
+      const costo = calcBuyCost(t, true);
       if(!isEEUU) { if(isARS) side.montoARS += costo; else side.montoUSD += costo; }
       else        { side.montoUSD += costo; }
     } else if(SELL_SET.has(op) && qty > 0) {
       side.ventas += qty;
       if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
       else        { if(precio > 0) side.precioUSD = precio; }
-      const costo = Math.abs(t.monto || 0) - Math.abs(t.comision || 0) - Math.abs(t.iva || 0);
+      const costo = Math.abs(t.monto || 0);
       if(!isEEUU) { if(isARS) side.montoARS += costo; else side.montoUSD += costo; }
       else        { side.montoUSD += costo; }
     } else if(op === XFER_IN && qty > 0) {
@@ -3473,6 +3477,11 @@ function renderFXTab() {
       <tbody id="espTbody"></tbody>
       <tfoot id="espTfoot"></tfoot>
     </table>
+    <div id="esp-footnote" style="display:none;padding:10px 12px;font-family:var(--mono);font-size:9px;color:var(--muted);border-top:1px solid var(--border);line-height:1.7;">
+      * <b style="color:var(--text)">Precio</b>: precio unitario del broker, sin comisiones ni impuestos. &nbsp;·&nbsp;
+      <b style="color:var(--text)">Monto</b>: monto total de la operación tal como lo reporta el broker (incluye comisión, IVA y otros impuestos). &nbsp;·&nbsp;
+      <b style="color:var(--text)">Avg</b>: costo promedio ponderado (VWAP) sin comisiones ni impuestos, comparable con el precio de mercado.
+    </div>
     <div id="esp-empty" style="padding:60px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--muted);">
       Elegí una especie del selector para ver su detalle.
     </div>
