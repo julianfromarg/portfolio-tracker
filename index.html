@@ -2985,6 +2985,10 @@ function renderEspecies() {
   // ar_usd: operaciones en Argentina (USD) — montos en dólares
   // eeuu:   operaciones en EEUU (USD)
   const dateBuckets = {};
+
+  // Running VWAP accumulators for blended avg (rebuilt here using _fxHistory)
+  const blend = { arARS_bal:0, arARS_costUSD:0, arUSD_bal:0, arUSD_cost:0 };
+
   for(const t of ops) {
     const { operacion: op, cantidad: qty, cuenta, precio, fecha } = t;
     if(!dateBuckets[fecha]) dateBuckets[fecha] = {
@@ -2997,6 +3001,7 @@ function renderEspecies() {
     const bucket = dateBuckets[fecha];
     const isEEUU = cuenta.includes('EEUU');
     const isARS  = cuenta.includes('ARS');
+    const isARG  = cuenta.includes('Argentina');
     // Route to the correct sub-bucket
     const side = isEEUU ? bucket.eeuu : (isARS ? bucket.ar_ars : bucket.ar_usd);
 
@@ -3004,10 +3009,38 @@ function renderEspecies() {
       side.compras += qty;
       if(precio > 0) side.precio = precio;
       side.monto += calcBuyCost(t, true);
+      // Update blended accumulators
+      if(!isEEUU) {
+        const cost = calcBuyCost(t, false);
+        if(isARS) {
+          const fx = getFXForDate(fecha);
+          blend.arARS_bal     += qty;
+          blend.arARS_costUSD += fx > 0 ? cost / fx : 0;
+        } else if(isARG) {
+          blend.arUSD_bal  += qty;
+          blend.arUSD_cost += cost;
+        }
+      }
     } else if(SELL_SET.has(op) && qty > 0) {
       side.ventas += qty;
       if(precio > 0) side.precio = precio;
       side.monto += Math.abs(t.monto || 0);
+      // Reduce blended accumulators proportionally
+      if(!isEEUU) {
+        if(isARS && blend.arARS_bal > 0) {
+          const sellQty = Math.min(qty, blend.arARS_bal);
+          const ratio = Math.max(0, (blend.arARS_bal - sellQty) / blend.arARS_bal);
+          blend.arARS_costUSD *= ratio;
+          blend.arARS_bal -= qty;
+          if(blend.arARS_bal <= 0) { blend.arARS_bal = 0; blend.arARS_costUSD = 0; }
+        } else if(isARG && !isARS && blend.arUSD_bal > 0) {
+          const sellQty = Math.min(qty, blend.arUSD_bal);
+          const ratio = Math.max(0, (blend.arUSD_bal - sellQty) / blend.arUSD_bal);
+          blend.arUSD_cost *= ratio;
+          blend.arUSD_bal -= qty;
+          if(blend.arUSD_bal <= 0) { blend.arUSD_bal = 0; blend.arUSD_cost = 0; }
+        }
+      }
     } else if(op === XFER_IN && qty > 0) {
       bucket.xfer += qty;
     } else if(op === 'Pago de Amortización' && qty < 0) {
@@ -3015,6 +3048,9 @@ function renderEspecies() {
     }
 
     bucket.lastSnap = t._slotSnap;
+    // Snapshot current blended state for this date
+    const totalBlendBal = blend.arARS_bal + blend.arUSD_bal;
+    bucket.blendedUSD = totalBlendBal > 0 ? (blend.arARS_costUSD + blend.arUSD_cost) / totalBlendBal : null;
   }
 
   // Layout flags — which sub-sections to show
@@ -3036,8 +3072,8 @@ function renderEspecies() {
     const balAR   = Math.round((sAR_ARS.balance + sAR_USD.balance) * 10000) / 10000;
     const balEEUU = Math.round(sEEUU.balance * 10000) / 10000;
 
-    // Blended avg in USD (from snapshot — uses historical FX per purchase)
-    const avgBlendedUSD = sBlended?.avg > 0 ? sBlended.avg : null;
+    // Blended avg in USD (calculated progressively in bucket loop using _fxHistory)
+    const avgBlendedUSD = bucket.blendedUSD > 0 ? bucket.blendedUSD : null;
 
     // Blended avg in ARS = blended USD × FX at this date
     const avgBlendedARS = avgBlendedUSD != null && fxDate > 0 ? avgBlendedUSD * fxDate : null;
