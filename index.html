@@ -912,14 +912,27 @@ function renderPortfolioTable() {
         avgFmt    = blended  > 0 ? '$ ' + fmtP(blended,  blended)  : '—';
         avgComFmt = blendedC > 0 ? '$ ' + fmtP(blendedC, blendedC) : '—';
       } else { // usd
-        // Convert ARS slot to USD
-        let totalCost = 0, totalCostC = 0, totalBal = 0;
-        if(hasARS) { totalCost += (ab.AR_ARS.avg / fx) * ab.AR_ARS.balance; totalCostC += (ab.AR_ARS.avgWithCom / fx) * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
-        if(hasUSD) { totalCost += ab.AR_USD.avg * ab.AR_USD.balance; totalCostC += ab.AR_USD.avgWithCom * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
-        const blended  = totalBal > 0 ? totalCost  / totalBal : 0;
-        const blendedC = totalBal > 0 ? totalCostC / totalBal : 0;
-        avgFmt    = blended  > 0 ? 'U$S ' + fmtP(blended,  blended)  : '—';
-        avgComFmt = blendedC > 0 ? 'U$S ' + fmtP(blendedC, blendedC) : '—';
+        // Use pre-calculated blended avg if available (uses historical FX per purchase date)
+        // Fall back to converting with current FX only if blended not available
+        const blendedSlot = ab.AR_BLENDED_USD;
+        if(blendedSlot && blendedSlot.balance > 0 && blendedSlot.avg > 0) {
+          avgFmt    = 'U$S ' + fmtP(blendedSlot.avg, blendedSlot.avg);
+          // avgWithCom not yet tracked in blended — fall back to current-FX conversion
+          let totalCostC = 0, totalBal = 0;
+          if(hasARS) { totalCostC += (ab.AR_ARS.avgWithCom / fx) * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
+          if(hasUSD) { totalCostC += ab.AR_USD.avgWithCom * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
+          const blendedC = totalBal > 0 ? totalCostC / totalBal : 0;
+          avgComFmt = blendedC > 0 ? 'U$S ' + fmtP(blendedC, blendedC) : '—';
+        } else {
+          // Convert ARS slot to USD using current FX (single-currency AR instruments)
+          let totalCost = 0, totalCostC = 0, totalBal = 0;
+          if(hasARS) { totalCost += (ab.AR_ARS.avg / fx) * ab.AR_ARS.balance; totalCostC += (ab.AR_ARS.avgWithCom / fx) * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
+          if(hasUSD) { totalCost += ab.AR_USD.avg * ab.AR_USD.balance; totalCostC += ab.AR_USD.avgWithCom * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
+          const blended  = totalBal > 0 ? totalCost  / totalBal : 0;
+          const blendedC = totalBal > 0 ? totalCostC / totalBal : 0;
+          avgFmt    = blended  > 0 ? 'U$S ' + fmtP(blended,  blended)  : '—';
+          avgComFmt = blendedC > 0 ? 'U$S ' + fmtP(blendedC, blendedC) : '—';
+        }
       }
     } else {
       avgFmt    = d.avg > 0        ? fmtP(d.avg, d.avg)               : '—';
@@ -1425,7 +1438,7 @@ function netForAcct(ticker, acctFilter, clean) {
   return bal;
 }
 
-function buildInstrument(ticker, clean) {
+function buildInstrument(ticker, clean, fxHistory = {}) {
   const ops = clean.filter(t=>t.ticker===ticker).sort((a,b)=>a.fecha.localeCompare(b.fecha));
   if(IMPLICIT_CLOSED.has(ticker) || isEffectivelyClosed(ticker, ops)) {
     return {ticker, net:0, bought:0, sold:0, amort:0, xfer_in:0, avg:0,
@@ -1439,8 +1452,17 @@ function buildInstrument(ticker, clean) {
   const acctState = {};
   const getAcct = cuenta => {
     const key = cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
-    if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0};
+    if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0, costNoComis_usd:0};
     return acctState[key];
+  };
+
+  // Helper: get FX for a date from fxHistory (same logic as getFXForDate but local)
+  const getFX = fecha => {
+    if(!fecha || !Object.keys(fxHistory).length) return null;
+    const dates = Object.keys(fxHistory).filter(d => d <= fecha).sort();
+    if(dates.length) return fxHistory[dates[dates.length-1]];
+    const all = Object.keys(fxHistory).sort();
+    return all.length ? fxHistory[all[0]] : null;
   };
 
   let balance=0, bought=0, sold=0, amort=0, xfer_in=0;
@@ -1451,17 +1473,24 @@ function buildInstrument(ticker, clean) {
       ac.balance       += qty;
       ac.costWithComis += calcBuyCost(t, true);
       ac.costNoComis   += calcBuyCost(t, false);
+      // For AR_ARS slot: also track cost in USD using FX at purchase date
+      const acctKey = cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
+      if(acctKey === 'AR_ARS') {
+        const fx = getFX(t.fecha);
+        if(fx && fx > 0) ac.costNoComis_usd += calcBuyCost(t, false) / fx;
+      }
       balance += qty; bought += qty;
     }
     else if(SELL_OPS.includes(op) && qty>0) {
       const sellQty = Math.min(qty, ac.balance);
       if(ac.balance > 0) {
         const ratio = Math.max(0, (ac.balance - sellQty) / ac.balance);
-        ac.costNoComis   *= ratio;
-        ac.costWithComis *= ratio;
+        ac.costNoComis     *= ratio;
+        ac.costWithComis   *= ratio;
+        ac.costNoComis_usd *= ratio;
       }
       ac.balance -= qty;
-      if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; }
+      if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; ac.costNoComis_usd = 0; }
       balance -= qty; sold += qty;
     }
     else if(op==='Pago de Amortización' && qty<0) { ac.balance+=qty; balance+=qty; amort+=Math.abs(qty); }
@@ -1473,6 +1502,18 @@ function buildInstrument(ticker, clean) {
       _slotSnap[sk] = {
         balance: sv.balance,
         avg:     sv.balance > 0 ? sv.costNoComis / sv.balance : 0,
+        costNoComis_usd: sv.costNoComis_usd || 0,
+      };
+    }
+    // Blended AR in USD snapshot
+    const snapARS = _slotSnap['AR_ARS'], snapARUSD = _slotSnap['AR_USD'];
+    const snapBlendedBal = (snapARS?.balance||0) + (snapARUSD?.balance||0);
+    if(snapBlendedBal > 0) {
+      const snapCostUSD = (snapARS?.costNoComis_usd||0) + (snapARUSD ? (snapARUSD.balance>0 ? acctState['AR_USD'].costNoComis : 0) : 0);
+      _slotSnap['AR_BLENDED_USD'] = {
+        balance: snapBlendedBal,
+        avg: snapCostUSD / snapBlendedBal,
+        hasBothLegs: (snapARS?.balance||0) > 0 && (snapARUSD?.balance||0) > 0,
       };
     }
     return {...t, balance:Math.round(balance*100)/100, avg_compra:Math.round(avgNoComis*10000)/10000, _slotSnap};
@@ -1486,6 +1527,24 @@ function buildInstrument(ticker, clean) {
       avg:        ac.balance>0 ? ac.costNoComis/ac.balance   : 0,
       avgWithCom: ac.balance>0 ? ac.costWithComis/ac.balance : 0,
       balance:    ac.balance,
+    };
+  }
+
+  // Blended avg in USD for AR — only when both AR_ARS and AR_USD slots have balance
+  // AR_ARS cost is tracked in USD via costNoComis_usd (using FX at purchase date)
+  // AR_USD cost is already in USD via costNoComis
+  const arARS = acctState['AR_ARS'];
+  const arUSD = acctState['AR_USD'];
+  const hasARBlended = (arARS?.balance > 0 || arUSD?.balance > 0);
+  if(hasARBlended) {
+    const costUSD_fromARS = arARS?.costNoComis_usd || 0;
+    const costUSD_fromUSD = arUSD  ? (arUSD.balance > 0 ? arUSD.costNoComis : 0) : 0;
+    const totalBal = (arARS?.balance || 0) + (arUSD?.balance || 0);
+    const totalCostUSD = costUSD_fromARS + costUSD_fromUSD;
+    avgByAcct['AR_BLENDED_USD'] = {
+      avg:     totalBal > 0 ? totalCostUSD / totalBal : 0,
+      balance: totalBal,
+      hasBothLegs: (arARS?.balance > 0) && (arUSD?.balance > 0),
     };
   }
   // Global fallback (instruments in a single account)
@@ -1651,10 +1710,10 @@ function renderCashStrip(containerId, accounts) {
   }).join('');
 }
 
-function buildPortfolio(clean) {
+function buildPortfolio(clean, fxHistory = {}) {
   const allTickers = [...new Set(clean.map(t=>t.ticker))].sort();
   const instruments = {};
-  for(const tk of allTickers) instruments[tk] = buildInstrument(tk, clean);
+  for(const tk of allTickers) instruments[tk] = buildInstrument(tk, clean, fxHistory);
 
   const usCards=[], arCards=[];
   let optionsExcluded = 0;
@@ -2126,7 +2185,7 @@ async function recalcSnapshots() {
     const clean    = canonicalizeTickers(deduped);
 
     // buildPortfolio is pure (doesn't mutate globals — globals are set in processAndRefresh)
-    const {usCards, arCards} = buildPortfolio(clean);
+    const {usCards, arCards} = buildPortfolio(clean, _fxHistory);
 
     // Cash up to this date
     const {balances} = buildCash(txnsUpTo, usdCaucionMovs);
@@ -2321,7 +2380,7 @@ function processAndRefresh(rawMerged) {
   _historicalTxns = rawMerged;
   const deduped = deduplicateMEP(rawMerged);
   const clean   = canonicalizeTickers(deduped);
-  const {usCards, arCards, optionsExcluded, instruments} = buildPortfolio(clean);
+  const {usCards, arCards, optionsExcluded, instruments} = buildPortfolio(clean, _fxHistory);
   // Build cash balances from raw (pre-dedup) transactions
   const usdCaucionMovs = buildUsdCaucionMovs(rawMerged);
   const rawClean  = canonicalizeTickers(rawMerged); // canonical tickers, pre-dedup, for cash
@@ -2913,34 +2972,60 @@ function renderEspecies() {
     if(avgEEUU != null && sEEUU.balance > 0) valEEUU = avgEEUU * sEEUU.balance;
 
     const avgARDisplay   = avgARS;
+    const avgARUSDDisplay = avgARUSD;
     const avgEEUUDisplay = avgEEUU;
 
-    return { fecha, fx, bucket, balAR, balEEUU, avgARDisplay, avgEEUUDisplay, valAR_ARS, valAR_USD, valEEUU };
+    // Blended avg in USD from snapshot
+    const sBlended = snap.AR_BLENDED_USD;
+    const avgBlendedUSD = sBlended?.avg > 0 ? sBlended.avg : null;
+    const hasBothLegs   = sBlended?.hasBothLegs || false;
+
+    // Whether this instrument has AR_USD activity at all (for column layout)
+    const hasARUSD = sAR_USD.balance > 0 || ops.some(t => t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
+
+    return { fecha, fx, bucket, balAR, balEEUU, avgARDisplay, avgARUSDDisplay, avgEEUUDisplay,
+             avgBlendedUSD, hasBothLegs, hasARUSD, valAR_ARS, valAR_USD, valEEUU };
   });
+
+  // Whether this instrument has activity in both AR_ARS and AR_USD sub-accounts
+  const hasARMixed = ops.some(t => t.cuenta.includes('Argentina') && t.cuenta.includes('ARS')) &&
+                     ops.some(t => t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
 
   // Build column headers — static layout (no toggle)
   const groupRow = document.getElementById('esp-thead-groups');
   const colRow   = document.getElementById('esp-thead-cols');
+  // AR colspan: base 10 cols, +3 extra if mixed (compras USD, precio USD, monto USD)
+  const arColspan = hasAR ? (hasARMixed ? 13 : 10) : 0;
+
   if(groupRow) {
     let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
-    if(hasAR)   gh += `<th class="esp-group-ar" colspan="10" style="text-align:center;">🇦🇷 Argentina</th>`;
+    if(hasAR)   gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">🇦🇷 Argentina${hasARMixed ? ' · <span style="font-size:9px;opacity:.7">$ y U$S</span>' : ''}</th>`;
     if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
   }
   if(colRow) {
     let ch = `<th style="text-align:left;">Fecha</th><th style="text-align:left;min-width:60px;">Op.</th>`;
-    if(hasAR) ch += `
-      <th class="esp-num esp-group-ar" style="color:var(--green);">Compras</th>
-      <th class="esp-num esp-group-ar" style="color:var(--red);">Ventas</th>
-      <th class="esp-num esp-group-ar" style="color:var(--purple);">Xfer.</th>
-      <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
-      <th class="esp-num esp-group-ar">Bal AR</th>
-      <th class="esp-num esp-group-ar">Precio ARS</th>
-      <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto ARS</th>
-      <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg ARS AR</th>
-      <th class="esp-num esp-group-ar" style="color:var(--ar);">Valoriz. ARS AR</th>
-      <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD AR</th>`;
+    if(hasAR) {
+      ch += `
+        <th class="esp-num esp-group-ar" style="color:var(--green);">Compras $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">Ventas $</th>`;
+      if(hasARMixed) ch += `
+        <th class="esp-num esp-group-ar" style="color:var(--green);opacity:.7;">Compras U$S</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);opacity:.7;">Ventas U$S</th>`;
+      ch += `
+        <th class="esp-num esp-group-ar" style="color:var(--purple);">Xfer.</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
+        <th class="esp-num esp-group-ar">Bal AR</th>
+        <th class="esp-num esp-group-ar">Precio AR</th>`;
+      if(hasARMixed) ch += `
+        <th class="esp-num esp-group-ar" style="opacity:.7;">Precio U$S</th>`;
+      ch += `
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto AR</th>
+        <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg AR</th>
+        <th class="esp-num esp-group-ar" style="color:var(--ar);">Valoriz. ARS</th>
+        <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD</th>`;
+    }
     if(hasEEUU) ch += `
       <th class="esp-num esp-group-us esp-divider" style="color:var(--green);">Compras</th>
       <th class="esp-num esp-group-us" style="color:var(--red);">Ventas</th>
@@ -2963,7 +3048,7 @@ function renderEspecies() {
   const fmtQa = n => n > 0 ? `<span class="esp-muted">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
   const fmtBal= n => { const cls = n>0?'esp-pos':n<0?'esp-neg':'esp-muted'; return `<span class="${cls}">${N(n,0)}</span>`; };
   const fmtPx = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtAvg= (n,sym) => n!=null ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtAvg= (n,sym) => n!=null ? `<span class="${sym==='ars'?'esp-ars':sym==='usd'?'esp-usd':'esp-us'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
   const fmtVal= (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
   const fmtFX = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
 
@@ -2985,20 +3070,59 @@ function renderEspecies() {
     const opLbl   = opLabel(dateOps);
     const ar = r.bucket.ar, us = r.bucket.eeuu;
 
+    // AR avg display: if mixed show ARS avg / USD avg / blended; otherwise just ARS avg
+    let avgARCell;
+    if(hasARMixed) {
+      const parts = [];
+      if(r.avgARDisplay   != null) parts.push(fmtAvg(r.avgARDisplay,   'ars'));
+      if(r.avgARUSDDisplay != null) parts.push(fmtAvg(r.avgARUSDDisplay, 'usd'));
+      if(r.avgBlendedUSD  != null && r.hasBothLegs)
+        parts.push(`<span style="color:var(--purple);font-size:9px;">blend U$S ${N(r.avgBlendedUSD,2)}</span>`);
+      avgARCell = parts.join('<br>') || '<span class="esp-muted">—</span>';
+    } else {
+      avgARCell = fmtAvg(r.avgARDisplay, 'ars');
+    }
+
+    // AR monto display
+    let montoARCell;
+    if(hasARMixed) {
+      const parts = [];
+      if(ar.montoARS > 0) parts.push(fmtVal(ar.montoARS, 'ars'));
+      if(ar.montoUSD > 0) parts.push(fmtVal(ar.montoUSD, 'usd'));
+      montoARCell = parts.join('<br>') || '<span class="esp-muted">—</span>';
+    } else {
+      montoARCell = ar.montoARS > 0 ? fmtVal(ar.montoARS, 'ars') : (ar.montoUSD > 0 ? fmtVal(ar.montoUSD, 'usd') : '<span class="esp-muted">—</span>');
+    }
+
     let html = `<tr>
       <td style="white-space:nowrap;">${fmtDate(r.fecha)}</td>
       <td style="font-size:9px;color:var(--muted);white-space:nowrap;">${opLbl}</td>`;
-    if(hasAR) html += `
-      <td class="esp-num">${fmtQc(ar.compras)}</td>
-      <td class="esp-num">${fmtQv(ar.ventas)}</td>
-      <td class="esp-num">${fmtQx(ar.xfer)}</td>
-      <td class="esp-num">${fmtQa(ar.amort)}</td>
-      <td class="esp-num">${fmtBal(r.balAR)}</td>
-      <td class="esp-num">${fmtPx(ar.precioARS, 'ars')}</td>
-      <td class="esp-num">${ar.montoARS > 0 ? fmtVal(ar.montoARS, 'ars') : (ar.montoUSD > 0 ? fmtVal(ar.montoUSD, 'usd') : '<span class="esp-muted">—</span>')}</td>
-      <td class="esp-num">${fmtAvg(r.avgARDisplay, 'ars')}</td>
-      <td class="esp-num">${fmtVal(r.valAR_ARS, 'ars')}</td>
-      <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
+    if(hasAR) {
+      // Split compras/ventas by sub-account for mixed instruments
+      const comprasARS = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('ARS') && BUY_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : ar.compras;
+      const ventasARS  = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('ARS') && SELL_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : ar.ventas;
+      const comprasARUSD = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS') && BUY_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : 0;
+      const ventasARUSD  = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS') && SELL_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : 0;
+
+      html += `
+        <td class="esp-num">${fmtQc(comprasARS)}</td>
+        <td class="esp-num">${fmtQv(ventasARS)}</td>`;
+      if(hasARMixed) html += `
+        <td class="esp-num">${fmtQc(comprasARUSD)}</td>
+        <td class="esp-num">${fmtQv(ventasARUSD)}</td>`;
+      html += `
+        <td class="esp-num">${fmtQx(ar.xfer)}</td>
+        <td class="esp-num">${fmtQa(ar.amort)}</td>
+        <td class="esp-num">${fmtBal(r.balAR)}</td>
+        <td class="esp-num">${fmtPx(ar.precioARS, 'ars')}</td>`;
+      if(hasARMixed) html += `
+        <td class="esp-num">${fmtPx(ar.precioUSD, 'usd')}</td>`;
+      html += `
+        <td class="esp-num">${montoARCell}</td>
+        <td class="esp-num">${avgARCell}</td>
+        <td class="esp-num">${fmtVal(r.valAR_ARS, 'ars')}</td>
+        <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
+    }
     if(hasEEUU) html += `
       <td class="esp-num esp-divider">${fmtQc(us.compras)}</td>
       <td class="esp-num">${fmtQv(us.ventas)}</td>
@@ -3017,14 +3141,24 @@ function renderEspecies() {
   const last = rows[rows.length - 1];
   if(tfoot) {
     let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${ops.length} op.</td>`;
-    if(hasAR) fh += `
-      <td colspan="4"></td>
-      <td class="esp-num esp-pos">${N(last.balAR,0)}</td>
-      <td></td>
-      <td></td>
-      <td class="esp-num">${fmtAvg(last.avgARDisplay,'ars')}</td>
-      <td class="esp-num">${fmtVal(last.valAR_ARS,'ars')}</td>
-      <td class="esp-num">${fmtVal(last.valAR_USD,'usd')}</td>`;
+    if(hasAR) {
+      const footerAvgAR = hasARMixed
+        ? [last.avgARDisplay != null ? fmtAvg(last.avgARDisplay,'ars') : null,
+           last.avgARUSDDisplay != null ? fmtAvg(last.avgARUSDDisplay,'usd') : null,
+           last.avgBlendedUSD != null && last.hasBothLegs ? `<span style="color:var(--purple);font-size:9px;">blend U$S ${N(last.avgBlendedUSD,2)}</span>` : null]
+          .filter(Boolean).join('<br>')
+        : fmtAvg(last.avgARDisplay,'ars');
+      const extraCols = hasARMixed ? '<td colspan="2"></td><td></td>' : '';  // comprasUSD+ventasUSD + precioUSD
+      fh += `
+        <td colspan="2"></td>
+        ${extraCols}
+        <td colspan="2"></td>
+        <td class="esp-num esp-pos">${N(last.balAR,0)}</td>
+        <td></td>
+        <td class="esp-num">${footerAvgAR}</td>
+        <td class="esp-num">${fmtVal(last.valAR_ARS,'ars')}</td>
+        <td class="esp-num">${fmtVal(last.valAR_USD,'usd')}</td>`;
+    }
     if(hasEEUU) fh += `
       <td colspan="4" class="${hasAR?'esp-divider':''}"></td>
       <td class="esp-num esp-pos">${N(last.balEEUU,0)}</td>
@@ -3036,23 +3170,27 @@ function renderEspecies() {
     tfoot.innerHTML = fh;
   }
 
-  // Summary
+  // Summary — include blended if available
   if(sumEl) {
     const parts = [];
-    if(hasAR   && last.balAR   > 0) parts.push(`AR: ${N(last.balAR,0)} títulos`);
+    if(hasAR   && last.balAR   > 0) {
+      let arPart = `AR: ${N(last.balAR,0)} títulos`;
+      if(hasARMixed && last.avgBlendedUSD) arPart += ` · avg blend U$S ${N(last.avgBlendedUSD,2)}`;
+      parts.push(arPart);
+    }
     if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU,0)} títulos`);
     sumEl.textContent = parts.join(' · ');
   }
 
   // Save for XLS export
   _especiesRows  = rows;
-  _especiesState = { ticker, hasAR, hasEEUU, opsLen: ops.length };
+  _especiesState = { ticker, hasAR, hasEEUU, hasARMixed, opsLen: ops.length };
 }
 
 // ══════ ESPECIES XLS EXPORT ══════
 function exportEspeciesXLS() {
   if(!_especiesRows.length || !_especiesState.ticker) return;
-  const { ticker, hasAR, hasEEUU, opsLen } = _especiesState;
+  const { ticker, hasAR, hasEEUU, hasARMixed, opsLen } = _especiesState;
 
   // ── Column definitions ──────────────────────────────────────────────────
   // Each col: { header, group, getValue(row), fmt }
