@@ -2902,127 +2902,130 @@ function renderEspecies() {
   const hasEEUU = ops.some(t => t.cuenta.includes('EEUU'));
 
   // Group txns by date into buckets for display
-  const dateBuckets = {}; // fecha -> { ar: {...}, eeuu: {...}, lastSnap }
+  // ar_ars: operaciones en Argentina (ARS) — montos en pesos
+  // ar_usd: operaciones en Argentina (USD) — montos en dólares
+  // eeuu:   operaciones en EEUU (USD)
+  const dateBuckets = {};
   for(const t of ops) {
     const { operacion: op, cantidad: qty, cuenta, precio, fecha } = t;
     if(!dateBuckets[fecha]) dateBuckets[fecha] = {
-      ar:   { compras:0, ventas:0, xfer:0, amort:0, precioARS:null, precioUSD:null, montoARS:0, montoUSD:0, hasActivity:false },
-      eeuu: { compras:0, ventas:0, xfer:0, amort:0, precioUSD:null, montoUSD:0, hasActivity:false },
+      ar_ars: { compras:0, ventas:0, precio:null, monto:0 },
+      ar_usd: { compras:0, ventas:0, precio:null, monto:0 },
+      eeuu:   { compras:0, ventas:0, precio:null, monto:0 },
+      xfer:0, amort:0,
       lastSnap: null,
     };
     const bucket = dateBuckets[fecha];
     const isEEUU = cuenta.includes('EEUU');
     const isARS  = cuenta.includes('ARS');
-    const side   = isEEUU ? bucket.eeuu : bucket.ar;
-    side.hasActivity = true;
+    // Route to the correct sub-bucket
+    const side = isEEUU ? bucket.eeuu : (isARS ? bucket.ar_ars : bucket.ar_usd);
 
     if(BUY_SET.has(op) && qty > 0) {
       side.compras += qty;
-      if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
-      else        { if(precio > 0) side.precioUSD = precio; }
-      const costo = calcBuyCost(t, true);
-      if(!isEEUU) { if(isARS) side.montoARS += costo; else side.montoUSD += costo; }
-      else        { side.montoUSD += costo; }
+      if(precio > 0) side.precio = precio;
+      side.monto += calcBuyCost(t, true);
     } else if(SELL_SET.has(op) && qty > 0) {
       side.ventas += qty;
-      if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
-      else        { if(precio > 0) side.precioUSD = precio; }
-      const costo = Math.abs(t.monto || 0);
-      if(!isEEUU) { if(isARS) side.montoARS += costo; else side.montoUSD += costo; }
-      else        { side.montoUSD += costo; }
+      if(precio > 0) side.precio = precio;
+      side.monto += Math.abs(t.monto || 0);
     } else if(op === XFER_IN && qty > 0) {
-      side.xfer += qty;
+      bucket.xfer += qty;
     } else if(op === 'Pago de Amortización' && qty < 0) {
-      side.amort += Math.abs(qty);
+      bucket.amort += Math.abs(qty);
     }
 
-    // Keep the last snapshot for this date (last txn in chronological order)
     bucket.lastSnap = t._slotSnap;
   }
 
-  // Build rows from date buckets, reading balances/avgs from _slotSnap
+  // Layout flags — which sub-sections to show
+  const hasAR_ARS  = ops.some(t => t.cuenta.includes('Argentina') && t.cuenta.includes('ARS'));
+  const hasAR_USD  = ops.some(t => t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
+
+  // Build rows from date buckets
   const dates = Object.keys(dateBuckets).sort();
   const rows  = dates.map(fecha => {
-    const bucket = dateBuckets[fecha];
-    const fx     = getFXForDate(fecha);
-    const snap   = bucket.lastSnap || {};
-    const sAR_ARS = snap.AR_ARS || { balance: 0, avg: 0 };
-    const sAR_USD = snap.AR_USD || { balance: 0, avg: 0 };
-    const sEEUU   = snap.EEUU   || { balance: 0, avg: 0 };
+    const bucket  = dateBuckets[fecha];
+    const fxDate  = getFXForDate(fecha);
+    const snap    = bucket.lastSnap || {};
+    const sAR_ARS = snap.AR_ARS || { balance:0, avg:0, costNoComis_usd:0 };
+    const sAR_USD = snap.AR_USD || { balance:0, avg:0 };
+    const sEEUU   = snap.EEUU   || { balance:0, avg:0 };
+    const sBlended = snap.AR_BLENDED_USD || null;
 
-    // Balances from snapshot
+    // Balances
     const balAR   = Math.round((sAR_ARS.balance + sAR_USD.balance) * 10000) / 10000;
     const balEEUU = Math.round(sEEUU.balance * 10000) / 10000;
 
-    // Avgs from snapshot
-    const avgARS   = sAR_ARS.balance > 0 ? sAR_ARS.avg : null;
-    const avgARUSD = sAR_USD.balance > 0 ? sAR_USD.avg : null;
-    const avgEEUU  = sEEUU.balance   > 0 ? sEEUU.avg   : null;
-
-    // Valorización — same logic as before, but from snapshot data
-    let valAR_ARS = null, valAR_USD = null, valEEUU = null;
-    const posARS_ars = avgARS   != null ? avgARS   * sAR_ARS.balance : 0;
-    const posUSD_ars = avgARUSD != null ? avgARUSD * sAR_USD.balance * fx : 0;
-    if(posARS_ars + posUSD_ars > 0) valAR_ARS = posARS_ars + posUSD_ars;
-
-    const posARS_usd = avgARS   != null && fx > 0 ? (avgARS * sAR_ARS.balance) / fx : 0;
-    const posUSD_usd = avgARUSD != null            ?  avgARUSD * sAR_USD.balance     : 0;
-    if(posARS_usd + posUSD_usd > 0) valAR_USD = posARS_usd + posUSD_usd;
-
-    if(avgEEUU != null && sEEUU.balance > 0) valEEUU = avgEEUU * sEEUU.balance;
-
-    const avgARDisplay   = avgARS;
-    const avgARUSDDisplay = avgARUSD;
-    const avgEEUUDisplay = avgEEUU;
-
-    // Blended avg in USD from snapshot
-    const sBlended = snap.AR_BLENDED_USD;
+    // Blended avg in USD (from snapshot — uses historical FX per purchase)
     const avgBlendedUSD = sBlended?.avg > 0 ? sBlended.avg : null;
-    const hasBothLegs   = sBlended?.hasBothLegs || false;
 
-    // Whether this instrument has AR_USD activity at all (for column layout)
-    const hasARUSD = sAR_USD.balance > 0 || ops.some(t => t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
+    // Blended avg in ARS = blended USD × FX at this date
+    const avgBlendedARS = avgBlendedUSD != null && fxDate > 0 ? avgBlendedUSD * fxDate : null;
 
-    return { fecha, fx, bucket, balAR, balEEUU, avgARDisplay, avgARUSDDisplay, avgEEUUDisplay,
-             avgBlendedUSD, hasBothLegs, hasARUSD, valAR_ARS, valAR_USD, valEEUU };
+    // EEUU avg
+    const avgEEUU = sEEUU.balance > 0 ? sEEUU.avg : null;
+
+    // Valorización AR — same as before
+    let valAR_ARS = null, valAR_USD = null, valEEUU = null;
+    const avgARS_val   = sAR_ARS.balance > 0 ? sAR_ARS.avg : null;
+    const avgARUSD_val = sAR_USD.balance > 0 ? sAR_USD.avg : null;
+    const posARS_ars = avgARS_val   != null ? avgARS_val   * sAR_ARS.balance : 0;
+    const posUSD_ars = avgARUSD_val != null ? avgARUSD_val * sAR_USD.balance * fxDate : 0;
+    if(posARS_ars + posUSD_ars > 0) valAR_ARS = posARS_ars + posUSD_ars;
+    const posARS_usd = avgARS_val   != null && fxDate > 0 ? (avgARS_val * sAR_ARS.balance) / fxDate : 0;
+    const posUSD_usd = avgARUSD_val != null                ?  avgARUSD_val * sAR_USD.balance         : 0;
+    if(posARS_usd + posUSD_usd > 0) valAR_USD = posARS_usd + posUSD_usd;
+    if(sEEUU.balance > 0 && avgEEUU != null) valEEUU = avgEEUU * sEEUU.balance;
+
+    return { fecha, fx:fxDate, bucket, balAR, balEEUU,
+             avgBlendedUSD, avgBlendedARS, avgEEUU,
+             valAR_ARS, valAR_USD, valEEUU };
   });
-
-  // Whether this instrument has activity in both AR_ARS and AR_USD sub-accounts
-  const hasARMixed = ops.some(t => t.cuenta.includes('Argentina') && t.cuenta.includes('ARS')) &&
-                     ops.some(t => t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
 
   // Build column headers — static layout (no toggle)
   const groupRow = document.getElementById('esp-thead-groups');
   const colRow   = document.getElementById('esp-thead-cols');
-  // AR colspan: base 10 cols, +3 extra if mixed (compras USD, precio USD, monto USD)
-  const arColspan = hasAR ? (hasARMixed ? 13 : 10) : 0;
+  // ── Column counts for colspan ──────────────────────────────────────────
+  // AR section: [ARS: C+V+P+M] + [USD: C+V+P+M] + Xfer + Amort + Bal + Avg$ + AvgU$S + ValARS + ValUSD
+  const arARS_cols  = hasAR_ARS ? 4 : 0;
+  const arUSD_cols  = hasAR_USD ? 4 : 0;
+  const arBase_cols = 7; // Xfer + Amort + Bal + Avg$ + AvgU$S + ValARS + ValUSD
+  const arColspan   = hasAR ? arARS_cols + arUSD_cols + arBase_cols : 0;
 
+  // ── Group headers ───────────────────────────────────────────────────────
   if(groupRow) {
     let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
-    if(hasAR)   gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">🇦🇷 Argentina${hasARMixed ? ' · <span style="font-size:9px;opacity:.7">$ y U$S</span>' : ''}</th>`;
+    if(hasAR) {
+      let arLabel = '🇦🇷 Argentina';
+      if(hasAR_ARS && hasAR_USD) arLabel += ' <span style="font-size:9px;opacity:.6">· $ y U$S</span>';
+      gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">${arLabel}</th>`;
+    }
     if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
   }
+
+  // ── Column headers ──────────────────────────────────────────────────────
   if(colRow) {
     let ch = `<th style="text-align:left;">Fecha</th><th style="text-align:left;min-width:60px;">Op.</th>`;
     if(hasAR) {
-      ch += `
-        <th class="esp-num esp-group-ar" style="color:var(--green);">Compras $</th>
-        <th class="esp-num esp-group-ar" style="color:var(--red);">Ventas $</th>`;
-      if(hasARMixed) ch += `
-        <th class="esp-num esp-group-ar" style="color:var(--green);opacity:.7;">Compras U$S</th>
-        <th class="esp-num esp-group-ar" style="color:var(--red);opacity:.7;">Ventas U$S</th>`;
+      if(hasAR_ARS) ch += `
+        <th class="esp-num esp-group-ar" style="color:var(--green);">C $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">V $</th>
+        <th class="esp-num esp-group-ar">Precio $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto $</th>`;
+      if(hasAR_USD) ch += `
+        <th class="esp-num esp-group-ar${hasAR_ARS?' esp-divider':''}" style="color:var(--green);">C U$S</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">V U$S</th>
+        <th class="esp-num esp-group-ar">Precio U$S</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto U$S</th>`;
       ch += `
         <th class="esp-num esp-group-ar" style="color:var(--purple);">Xfer.</th>
         <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
         <th class="esp-num esp-group-ar">Bal AR</th>
-        <th class="esp-num esp-group-ar">Precio AR</th>`;
-      if(hasARMixed) ch += `
-        <th class="esp-num esp-group-ar" style="opacity:.7;">Precio U$S</th>`;
-      ch += `
-        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto AR</th>
-        <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg AR</th>
+        <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--usd);">Avg U$S</th>
         <th class="esp-num esp-group-ar" style="color:var(--ar);">Valoriz. ARS</th>
         <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD</th>`;
     }
@@ -3034,26 +3037,25 @@ function renderEspecies() {
       <th class="esp-num esp-group-us">Bal EEUU</th>
       <th class="esp-num esp-group-us" style="color:var(--usd);">Precio USD</th>
       <th class="esp-num esp-group-us" style="color:var(--muted);">Monto USD</th>
-      <th class="esp-num esp-group-us" style="color:var(--us);">Avg USD EEUU</th>
-      <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD EEUU</th>`;
+      <th class="esp-num esp-group-us" style="color:var(--us);">Avg USD</th>
+      <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD</th>`;
     ch += `<th class="esp-num" style="color:var(--muted);">FX</th>`;
     colRow.innerHTML = ch;
   }
 
-  // Cell helpers
-  const fmtQ  = n => n > 0 ? N(n,0) : '<span class="esp-muted">—</span>';
-  const fmtQc = n => n > 0 ? `<span class="esp-pos">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtQv = n => n > 0 ? `<span class="esp-neg">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtQx = n => n > 0 ? `<span style="color:var(--purple)">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtQa = n => n > 0 ? `<span class="esp-muted">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtBal= n => { const cls = n>0?'esp-pos':n<0?'esp-neg':'esp-muted'; return `<span class="${cls}">${N(n,0)}</span>`; };
-  const fmtPx = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtAvg= (n,sym) => n!=null ? `<span class="${sym==='ars'?'esp-ars':sym==='usd'?'esp-usd':'esp-us'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtVal= (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtFX = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  // ── Cell helpers ────────────────────────────────────────────────────────
+  const fmtQc  = n => n > 0 ? `<span class="esp-pos">${N(n,0)}</span>`  : '<span class="esp-muted">—</span>';
+  const fmtQv  = n => n > 0 ? `<span class="esp-neg">${N(n,0)}</span>`  : '<span class="esp-muted">—</span>';
+  const fmtQx  = n => n > 0 ? `<span style="color:var(--purple)">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtQa  = n => n > 0 ? `<span class="esp-muted">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtBal = n => { const cls = n>0?'esp-pos':n<0?'esp-neg':'esp-muted'; return `<span class="${cls}">${N(n,0)}</span>`; };
+  const fmtPx  = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtAvg = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtVal = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtFX  = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
 
-  // Summarize op names for a date
-  const opLabel = (dateOps) => {
+  // ── Op label ────────────────────────────────────────────────────────────
+  const opLabel = dateOps => {
     const opNames = [...new Set(dateOps.map(t => {
       const o = t.operacion;
       if(o==='Compra'||o==='Compra de Dólares') return 'Compra';
@@ -3065,189 +3067,150 @@ function renderEspecies() {
     return opNames.join(' / ');
   };
 
+  // ── Tbody ───────────────────────────────────────────────────────────────
   tbody.innerHTML = rows.map(r => {
-    const dateOps = ops.filter(t => t.fecha === r.fecha);
-    const opLbl   = opLabel(dateOps);
-    const ar = r.bucket.ar, us = r.bucket.eeuu;
-
-    // AR avg display: if mixed show ARS avg / USD avg / blended; otherwise just ARS avg
-    let avgARCell;
-    if(hasARMixed) {
-      const parts = [];
-      if(r.avgARDisplay   != null) parts.push(fmtAvg(r.avgARDisplay,   'ars'));
-      if(r.avgARUSDDisplay != null) parts.push(fmtAvg(r.avgARUSDDisplay, 'usd'));
-      if(r.avgBlendedUSD  != null && r.hasBothLegs)
-        parts.push(`<span style="color:var(--purple);font-size:9px;">blend U$S ${N(r.avgBlendedUSD,2)}</span>`);
-      avgARCell = parts.join('<br>') || '<span class="esp-muted">—</span>';
-    } else {
-      avgARCell = fmtAvg(r.avgARDisplay, 'ars');
-    }
-
-    // AR monto display
-    let montoARCell;
-    if(hasARMixed) {
-      const parts = [];
-      if(ar.montoARS > 0) parts.push(fmtVal(ar.montoARS, 'ars'));
-      if(ar.montoUSD > 0) parts.push(fmtVal(ar.montoUSD, 'usd'));
-      montoARCell = parts.join('<br>') || '<span class="esp-muted">—</span>';
-    } else {
-      montoARCell = ar.montoARS > 0 ? fmtVal(ar.montoARS, 'ars') : (ar.montoUSD > 0 ? fmtVal(ar.montoUSD, 'usd') : '<span class="esp-muted">—</span>');
-    }
+    const { bucket } = r;
+    const ars  = bucket.ar_ars;
+    const ausd = bucket.ar_usd;
+    const us   = bucket.eeuu;
+    const opLbl = opLabel(ops.filter(t => t.fecha === r.fecha));
 
     let html = `<tr>
       <td style="white-space:nowrap;">${fmtDate(r.fecha)}</td>
       <td style="font-size:9px;color:var(--muted);white-space:nowrap;">${opLbl}</td>`;
-    if(hasAR) {
-      // Split compras/ventas by sub-account for mixed instruments
-      const comprasARS = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('ARS') && BUY_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : ar.compras;
-      const ventasARS  = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('ARS') && SELL_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : ar.ventas;
-      const comprasARUSD = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS') && BUY_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : 0;
-      const ventasARUSD  = hasARMixed ? ops.filter(t=>t.fecha===r.fecha && t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS') && SELL_SET.has(t.operacion)).reduce((s,t)=>s+t.cantidad,0) : 0;
 
+    if(hasAR) {
+      if(hasAR_ARS) html += `
+        <td class="esp-num">${fmtQc(ars.compras)}</td>
+        <td class="esp-num">${fmtQv(ars.ventas)}</td>
+        <td class="esp-num">${fmtPx(ars.precio, 'ars')}</td>
+        <td class="esp-num">${fmtVal(ars.monto > 0 ? ars.monto : null, 'ars')}</td>`;
+      if(hasAR_USD) html += `
+        <td class="esp-num${hasAR_ARS?' esp-divider':''}">${fmtQc(ausd.compras)}</td>
+        <td class="esp-num">${fmtQv(ausd.ventas)}</td>
+        <td class="esp-num">${fmtPx(ausd.precio, 'usd')}</td>
+        <td class="esp-num">${fmtVal(ausd.monto > 0 ? ausd.monto : null, 'usd')}</td>`;
       html += `
-        <td class="esp-num">${fmtQc(comprasARS)}</td>
-        <td class="esp-num">${fmtQv(ventasARS)}</td>`;
-      if(hasARMixed) html += `
-        <td class="esp-num">${fmtQc(comprasARUSD)}</td>
-        <td class="esp-num">${fmtQv(ventasARUSD)}</td>`;
-      html += `
-        <td class="esp-num">${fmtQx(ar.xfer)}</td>
-        <td class="esp-num">${fmtQa(ar.amort)}</td>
+        <td class="esp-num">${fmtQx(bucket.xfer)}</td>
+        <td class="esp-num">${fmtQa(bucket.amort)}</td>
         <td class="esp-num">${fmtBal(r.balAR)}</td>
-        <td class="esp-num">${fmtPx(ar.precioARS, 'ars')}</td>`;
-      if(hasARMixed) html += `
-        <td class="esp-num">${fmtPx(ar.precioUSD, 'usd')}</td>`;
-      html += `
-        <td class="esp-num">${montoARCell}</td>
-        <td class="esp-num">${avgARCell}</td>
+        <td class="esp-num">${fmtAvg(r.avgBlendedARS, 'ars')}</td>
+        <td class="esp-num">${fmtAvg(r.avgBlendedUSD, 'usd')}</td>
         <td class="esp-num">${fmtVal(r.valAR_ARS, 'ars')}</td>
         <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
     }
     if(hasEEUU) html += `
       <td class="esp-num esp-divider">${fmtQc(us.compras)}</td>
       <td class="esp-num">${fmtQv(us.ventas)}</td>
-      <td class="esp-num">${fmtQx(us.xfer)}</td>
-      <td class="esp-num">${fmtQa(us.amort)}</td>
+      <td class="esp-num">${fmtQx(hasAR ? 0 : bucket.xfer)}</td>
+      <td class="esp-num">${fmtQa(hasAR ? 0 : bucket.amort)}</td>
       <td class="esp-num">${fmtBal(r.balEEUU)}</td>
-      <td class="esp-num">${fmtPx(us.precioUSD, 'usd')}</td>
-      <td class="esp-num">${us.montoUSD > 0 ? fmtVal(us.montoUSD, 'usd') : '<span class="esp-muted">—</span>'}</td>
-      <td class="esp-num">${fmtAvg(r.avgEEUUDisplay, 'usd')}</td>
+      <td class="esp-num">${fmtPx(us.precio, 'usd')}</td>
+      <td class="esp-num">${fmtVal(us.monto > 0 ? us.monto : null, 'usd')}</td>
+      <td class="esp-num">${fmtAvg(r.avgEEUU, 'usd')}</td>
       <td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
     html += `<td class="esp-num">${fmtFX(r.fx)}</td></tr>`;
     return html;
   }).join('');
 
-  // Footer
+  // ── Footer ──────────────────────────────────────────────────────────────
   const last = rows[rows.length - 1];
   if(tfoot) {
+    const arDataCols = arARS_cols + arUSD_cols; // cols before Xfer
     let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${ops.length} op.</td>`;
     if(hasAR) {
-      const footerAvgAR = hasARMixed
-        ? [last.avgARDisplay != null ? fmtAvg(last.avgARDisplay,'ars') : null,
-           last.avgARUSDDisplay != null ? fmtAvg(last.avgARUSDDisplay,'usd') : null,
-           last.avgBlendedUSD != null && last.hasBothLegs ? `<span style="color:var(--purple);font-size:9px;">blend U$S ${N(last.avgBlendedUSD,2)}</span>` : null]
-          .filter(Boolean).join('<br>')
-        : fmtAvg(last.avgARDisplay,'ars');
-      const extraCols = hasARMixed ? '<td colspan="2"></td><td></td>' : '';  // comprasUSD+ventasUSD + precioUSD
+      fh += `<td colspan="${arDataCols + 2}"></td>`; // data cols + Xfer + Amort
       fh += `
-        <td colspan="2"></td>
-        ${extraCols}
-        <td colspan="2"></td>
-        <td class="esp-num esp-pos">${N(last.balAR,0)}</td>
-        <td></td>
-        <td class="esp-num">${footerAvgAR}</td>
-        <td class="esp-num">${fmtVal(last.valAR_ARS,'ars')}</td>
-        <td class="esp-num">${fmtVal(last.valAR_USD,'usd')}</td>`;
+        <td class="esp-num esp-pos">${N(last.balAR, 0)}</td>
+        <td class="esp-num">${fmtAvg(last.avgBlendedARS, 'ars')}</td>
+        <td class="esp-num">${fmtAvg(last.avgBlendedUSD, 'usd')}</td>
+        <td class="esp-num">${fmtVal(last.valAR_ARS, 'ars')}</td>
+        <td class="esp-num">${fmtVal(last.valAR_USD, 'usd')}</td>`;
     }
-    if(hasEEUU) fh += `
-      <td colspan="4" class="${hasAR?'esp-divider':''}"></td>
-      <td class="esp-num esp-pos">${N(last.balEEUU,0)}</td>
-      <td></td>
-      <td></td>
-      <td class="esp-num">${fmtAvg(last.avgEEUUDisplay,'usd')}</td>
-      <td class="esp-num">${fmtVal(last.valEEUU,'usd')}</td>`;
+    if(hasEEUU) {
+      fh += `<td colspan="4" class="${hasAR?'esp-divider':''}"></td>`;
+      fh += `
+        <td class="esp-num esp-pos">${N(last.balEEUU, 0)}</td>
+        <td></td><td></td>
+        <td class="esp-num">${fmtAvg(last.avgEEUU, 'usd')}</td>
+        <td class="esp-num">${fmtVal(last.valEEUU, 'usd')}</td>`;
+    }
     fh += `<td></td></tr>`;
     tfoot.innerHTML = fh;
   }
 
-  // Summary — include blended if available
+  // ── Summary ─────────────────────────────────────────────────────────────
   if(sumEl) {
     const parts = [];
-    if(hasAR   && last.balAR   > 0) {
-      let arPart = `AR: ${N(last.balAR,0)} títulos`;
-      if(hasARMixed && last.avgBlendedUSD) arPart += ` · avg blend U$S ${N(last.avgBlendedUSD,2)}`;
-      parts.push(arPart);
+    if(hasAR && last.balAR > 0) {
+      let p = `AR: ${N(last.balAR, 0)} títulos`;
+      if(last.avgBlendedUSD) p += ` · avg U$S ${N(last.avgBlendedUSD, 2)}`;
+      parts.push(p);
     }
-    if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU,0)} títulos`);
+    if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU, 0)} títulos`);
     sumEl.textContent = parts.join(' · ');
   }
 
   // Save for XLS export
   _especiesRows  = rows;
-  _especiesState = { ticker, hasAR, hasEEUU, hasARMixed, opsLen: ops.length };
+  _especiesState = { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen: ops.length };
 }
 
 // ══════ ESPECIES XLS EXPORT ══════
 function exportEspeciesXLS() {
   if(!_especiesRows.length || !_especiesState.ticker) return;
-  const { ticker, hasAR, hasEEUU, hasARMixed, opsLen } = _especiesState;
+  const { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen } = _especiesState;
 
   // ── Column definitions ──────────────────────────────────────────────────
   // Each col: { header, group, getValue(row), fmt }
   // fmt: 'date' | 'num0' | 'num2' | 'text'
   const cols = [
-    { header:'Fecha',    group:'',          fmt:'date', get: r => r.fecha },
-    { header:'Op.',      group:'',          fmt:'text', get: r => {
-        const arOps = r.bucket.ar, usOps = r.bucket.eeuu;
+    { header:'Fecha', group:'', fmt:'date', get: r => r.fecha },
+    { header:'Op.',   group:'', fmt:'text', get: r => {
         const parts = [];
-        if(arOps.compras > 0 || arOps.ventas > 0 || arOps.xfer > 0 || arOps.amort > 0) {
-          if(arOps.compras > 0) parts.push('Compra');
-          if(arOps.ventas  > 0) parts.push('Venta');
-          if(arOps.xfer    > 0) parts.push('Transf.');
-          if(arOps.amort   > 0) parts.push('Amort.');
-        }
-        if(usOps.compras > 0 || usOps.ventas > 0 || usOps.xfer > 0 || usOps.amort > 0) {
-          if(usOps.compras > 0) parts.push('Compra');
-          if(usOps.ventas  > 0) parts.push('Venta');
-          if(usOps.xfer    > 0) parts.push('Transf.');
-          if(usOps.amort   > 0) parts.push('Amort.');
-        }
+        const ars = r.bucket.ar_ars, ausd = r.bucket.ar_usd, us = r.bucket.eeuu;
+        if(ars.compras>0||ars.ventas>0) { if(ars.compras>0) parts.push('Compra $'); if(ars.ventas>0) parts.push('Venta $'); }
+        if(ausd.compras>0||ausd.ventas>0) { if(ausd.compras>0) parts.push('Compra U$S'); if(ausd.ventas>0) parts.push('Venta U$S'); }
+        if(us.compras>0||us.ventas>0) { if(us.compras>0) parts.push('Compra'); if(us.ventas>0) parts.push('Venta'); }
+        if(r.bucket.xfer>0) parts.push('Transf.');
+        if(r.bucket.amort>0) parts.push('Amort.');
         return [...new Set(parts)].join(' / ') || '';
     }},
   ];
   if(hasAR) {
+    if(hasAR_ARS) cols.push(
+      { header:'C $',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_ars.compras || null },
+      { header:'V $',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_ars.ventas  || null },
+      { header:'Precio $', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_ars.precio  || null },
+      { header:'Monto $',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_ars.monto > 0 ? r.bucket.ar_ars.monto : null },
+    );
+    if(hasAR_USD) cols.push(
+      { header:'C U$S',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.compras || null },
+      { header:'V U$S',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.ventas  || null },
+      { header:'Precio U$S', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.precio  || null },
+      { header:'Monto U$S',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.monto > 0 ? r.bucket.ar_usd.monto : null },
+    );
     cols.push(
-      { header:'Compras AR',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar.compras  || null },
-      { header:'Ventas AR',       group:'Argentina', fmt:'num0', get: r => r.bucket.ar.ventas   || null },
-      { header:'Xfer. AR',        group:'Argentina', fmt:'num0', get: r => r.bucket.ar.xfer     || null },
-      { header:'Amort. AR',       group:'Argentina', fmt:'num0', get: r => r.bucket.ar.amort    || null },
-      { header:'Bal AR',          group:'Argentina', fmt:'num0', get: r => r.balAR },
-      { header:'Precio ARS',      group:'Argentina', fmt:'num2', get: r => r.bucket.ar.precioARS || null },
-      { header:'Monto ARS',       group:'Argentina', fmt:'num2', get: r => {
-          const ar = r.bucket.ar;
-          if(ar.montoARS > 0) return ar.montoARS;
-          if(ar.montoUSD > 0) return ar.montoUSD;
-          return null;
-      }},
-      { header:'Avg ARS AR',      group:'Argentina', fmt:'num2', get: r => r.avgARDisplay },
-      { header:'Valoriz. ARS AR', group:'Argentina', fmt:'num2', get: r => r.valAR_ARS },
-      { header:'Valoriz. USD AR', group:'Argentina', fmt:'num2', get: r => r.valAR_USD },
+      { header:'Xfer.',        group:'Argentina', fmt:'num0', get: r => r.bucket.xfer  || null },
+      { header:'Amort.',       group:'Argentina', fmt:'num0', get: r => r.bucket.amort || null },
+      { header:'Bal AR',       group:'Argentina', fmt:'num0', get: r => r.balAR },
+      { header:'Avg $',        group:'Argentina', fmt:'num2', get: r => r.avgBlendedARS },
+      { header:'Avg U$S',      group:'Argentina', fmt:'num2', get: r => r.avgBlendedUSD },
+      { header:'Valoriz. ARS', group:'Argentina', fmt:'num2', get: r => r.valAR_ARS },
+      { header:'Valoriz. USD', group:'Argentina', fmt:'num2', get: r => r.valAR_USD },
     );
   }
   if(hasEEUU) {
     cols.push(
-      { header:'Compras EEUU',      group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.compras || null },
-      { header:'Ventas EEUU',       group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.ventas  || null },
-      { header:'Xfer. EEUU',        group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.xfer    || null },
-      { header:'Amort. EEUU',       group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.amort   || null },
-      { header:'Bal EEUU',          group:'EEUU', fmt:'num0', get: r => r.balEEUU },
-      { header:'Precio USD',        group:'EEUU', fmt:'num2', get: r => r.bucket.eeuu.precioUSD || null },
-      { header:'Monto USD',         group:'EEUU', fmt:'num2', get: r => {
-          const us = r.bucket.eeuu;
-          return us.montoUSD > 0 ? us.montoUSD : null;
-      }},
-      { header:'Avg USD EEUU',      group:'EEUU', fmt:'num2', get: r => r.avgEEUUDisplay },
-      { header:'Valoriz. USD EEUU', group:'EEUU', fmt:'num2', get: r => r.valEEUU },
+      { header:'Compras',      group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.compras || null },
+      { header:'Ventas',       group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.ventas  || null },
+      { header:'Xfer.',        group:'EEUU', fmt:'num0', get: r => !hasAR ? (r.bucket.xfer  || null) : null },
+      { header:'Amort.',       group:'EEUU', fmt:'num0', get: r => !hasAR ? (r.bucket.amort || null) : null },
+      { header:'Bal EEUU',     group:'EEUU', fmt:'num0', get: r => r.balEEUU },
+      { header:'Precio USD',   group:'EEUU', fmt:'num2', get: r => r.bucket.eeuu.precio || null },
+      { header:'Monto USD',    group:'EEUU', fmt:'num2', get: r => r.bucket.eeuu.monto > 0 ? r.bucket.eeuu.monto : null },
+      { header:'Avg USD',      group:'EEUU', fmt:'num2', get: r => r.avgEEUU },
+      { header:'Valoriz. USD', group:'EEUU', fmt:'num2', get: r => r.valEEUU },
     );
   }
   cols.push({ header:'FX', group:'', fmt:'num2', get: r => r.fx });
@@ -3273,14 +3236,15 @@ function exportEspeciesXLS() {
   // Footer row
   const last = _especiesRows[_especiesRows.length - 1];
   const footerRow = cols.map(c => {
-    if(c.header === 'Fecha') return `POSICIÓN FINAL · ${opsLen} op.`;
-    if(c.header === 'Bal AR')          return last.balAR;
-    if(c.header === 'Avg ARS AR')      return last.avgARDisplay;
-    if(c.header === 'Valoriz. ARS AR') return last.valAR_ARS;
-    if(c.header === 'Valoriz. USD AR') return last.valAR_USD;
-    if(c.header === 'Bal EEUU')        return last.balEEUU;
-    if(c.header === 'Avg USD EEUU')    return last.avgEEUUDisplay;
-    if(c.header === 'Valoriz. USD EEUU') return last.valEEUU;
+    if(c.header === 'Fecha')        return `POSICIÓN FINAL · ${opsLen} op.`;
+    if(c.header === 'Bal AR')        return last.balAR;
+    if(c.header === 'Avg $')         return last.avgBlendedARS;
+    if(c.header === 'Avg U$S')       return last.avgBlendedUSD;
+    if(c.header === 'Valoriz. ARS')  return last.valAR_ARS;
+    if(c.header === 'Valoriz. USD' && c.group === 'Argentina') return last.valAR_USD;
+    if(c.header === 'Bal EEUU')      return last.balEEUU;
+    if(c.header === 'Avg USD')       return last.avgEEUU;
+    if(c.header === 'Valoriz. USD' && c.group === 'EEUU') return last.valEEUU;
     return null;
   });
 
