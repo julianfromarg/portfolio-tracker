@@ -3142,10 +3142,10 @@ function renderEspecies() {
       ch += `
         <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--purple);">Xfer.</th>
         <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
-        <th class="esp-num esp-group-ar esp-divider-soft">Bal AR</th>
-        <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg $</th>
-        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--usd);">Avg U$S</th>
-        <th class="esp-num esp-group-ar" style="color:var(--ar);">Valoriz. ARS</th>
+        <th class="esp-num esp-group-ar">Bal AR</th>
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--ar);">Avg $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--usd);">Avg U$S</th>
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--ar);">Valoriz. ARS</th>
         <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD</th>`;
     }
     if(hasEEUU) ch += `
@@ -3154,11 +3154,11 @@ function renderEspecies() {
       <th class="esp-num esp-group-us" style="color:var(--purple);">Xfer.</th>
       <th class="esp-num esp-group-us" style="color:var(--muted);">Amort.</th>
       <th class="esp-num esp-group-us">Bal EEUU</th>
-      <th class="esp-num esp-group-us" style="color:var(--usd);">Precio USD</th>
+      <th class="esp-num esp-group-us esp-divider-soft" style="color:var(--usd);">Precio USD</th>
       <th class="esp-num esp-group-us" style="color:var(--muted);">Monto USD</th>
-      <th class="esp-num esp-group-us" style="color:var(--us);">Avg USD</th>
+      <th class="esp-num esp-group-us esp-divider-soft" style="color:var(--us);">Avg USD</th>
       <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD</th>`;
-    ch += `<th class="esp-num" style="color:var(--muted);">FX</th>`;
+    ch += `<th class="esp-num esp-divider-strong" style="color:var(--muted);">FX</th>`;
     colRow.innerHTML = ch;
   }
 
@@ -3212,10 +3212,10 @@ function renderEspecies() {
       html += `
         <td class="esp-num esp-divider-soft">${fmtQx(bucket.xfer)}</td>
         <td class="esp-num">${fmtQa(bucket.amort)}</td>
-        <td class="esp-num esp-divider-soft">${fmtBal(r.balAR)}</td>
-        <td class="esp-num">${fmtAvg(r.avgBlendedARS, 'ars')}</td>
-        <td class="esp-num esp-divider-soft">${fmtAvg(r.avgBlendedUSD, 'usd')}</td>
-        <td class="esp-num">${fmtVal(r.valAR_ARS, 'ars')}</td>
+        <td class="esp-num">${fmtBal(r.balAR)}</td>
+        <td class="esp-num esp-divider-soft">${fmtAvg(r.avgBlendedARS, 'ars')}</td>
+        <td class="esp-num">${fmtAvg(r.avgBlendedUSD, 'usd')}</td>
+        <td class="esp-num esp-divider-soft">${fmtVal(r.valAR_ARS, 'ars')}</td>
         <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
     }
     if(hasEEUU) html += `
@@ -3224,11 +3224,11 @@ function renderEspecies() {
       <td class="esp-num">${fmtQx(hasAR ? 0 : bucket.xfer)}</td>
       <td class="esp-num">${fmtQa(hasAR ? 0 : bucket.amort)}</td>
       <td class="esp-num">${fmtBal(r.balEEUU)}</td>
-      <td class="esp-num">${fmtPx(us.precio, 'usd')}</td>
+      <td class="esp-num esp-divider-soft">${fmtPx(us.precio, 'usd')}</td>
       <td class="esp-num">${fmtVal(us.monto > 0 ? us.monto : null, 'usd')}</td>
-      <td class="esp-num">${fmtAvg(r.avgEEUU, 'usd')}</td>
+      <td class="esp-num esp-divider-soft">${fmtAvg(r.avgEEUU, 'usd')}</td>
       <td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
-    html += `<td class="esp-num">${fmtFX(r.fx)}</td></tr>`;
+    html += `<td class="esp-num esp-divider-strong">${fmtFX(r.fx)}</td></tr>`;
     return html;
   }).join('');
 
@@ -3250,11 +3250,11 @@ function renderEspecies() {
       fh += `<td colspan="4" class="${hasAR?'esp-divider-strong':''}"></td>`;
       fh += `
         <td class="esp-num esp-pos">${N(last.balEEUU, 0)}</td>
-        <td></td><td></td>
-        <td class="esp-num">${fmtAvg(last.avgEEUU, 'usd')}</td>
+        <td class="esp-divider-soft"></td><td></td>
+        <td class="esp-num esp-divider-soft">${fmtAvg(last.avgEEUU, 'usd')}</td>
         <td class="esp-num">${fmtVal(last.valEEUU, 'usd')}</td>`;
     }
-    fh += `<td></td></tr>`;
+    fh += `<td class="esp-divider-strong"></td></tr>`;
     tfoot.innerHTML = fh;
   }
 
