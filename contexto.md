@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 02/04/2026 v2
+## Versión: 03/04/2026 v3
 
 ---
 
@@ -17,9 +17,9 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3510 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3760 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
-| `CONTEXTO_PORTFOLIO_DASHBOARD_v02_04_v2.md` | Este archivo |
+| `CONTEXTO_PORTFOLIO_DASHBOARD_v03_04_v3.md` | Este archivo |
 
 ---
 
@@ -89,8 +89,8 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 |---|---|
 | Instrumento | Ticker canonicalizado |
 | Cantidad | Posición neta (solo abiertas, net > 0) |
-| P. Prom. s/comis. | Precio promedio sin comisiones, en la moneda del modo activo |
-| P. Prom. c/comis. | Precio promedio con comisiones, en la moneda del modo activo |
+| P. Prom. s/comis. | Precio promedio sin comisiones ni impuestos, en la moneda del modo activo |
+| P. Prom. c/comis. | Precio promedio con comisiones e impuestos, en la moneda del modo activo |
 | Precio Actual | Precio de mercado EOD desde Supabase, o precio promedio s/comis si no hay precio (marcado con `*` en naranja) |
 | Gan./Pérd. | (Precio actual − P. Prom. s/comis.) × cantidad + % (solo cuando hay precio de mercado) |
 | Valor Tenencia | Precio actual × cantidad |
@@ -108,7 +108,7 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 ### Total Argentina — toggle 3 modos:
 - **Moneda origen:** ARS en ARS + USD en USD (dos líneas separadas)
 - **Todo ARS:** todo convertido a pesos al FX de `_fxLatest`
-- **Todo USD:** todo convertido a dólares al FX de `_fxLatest`
+- **Todo USD:** usa `AR_BLENDED_USD.avg` (FX histórico por compra) cuando está disponible; fallback a conversión con FX actual para instrumentos de moneda única
 - FX siempre tomado de `_fxHistory` / `_fxLatest` desde Supabase — no hay input manual
 - Posiciones AR valuadas al costo (P. Prom. s/comis.) hasta tener precios BYMA
 
@@ -120,7 +120,7 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 Las columnas de precio promedio varían según el modo activo (ARS/USD), usando `avgByAcct` por slot:
 - **Moneda origen:** muestra cada slot en su moneda nativa (`$ X` / `U$S Y`) separados por `/` si hay ambos
 - **Todo ARS:** convierte slot USD multiplicando por FX, promedio ponderado por balance
-- **Todo USD:** convierte slot ARS dividiendo por FX, promedio ponderado por balance
+- **Todo USD:** usa `AR_BLENDED_USD` cuando hay mezcla de monedas (histórico); fallback a FX actual para moneda única
 
 ---
 
@@ -211,7 +211,7 @@ Row 2: Headers — columnas por índice:
   [8]  Comis.         → comisión
   [9]  Iva Com.       → IVA
   [10] Otros Imp.     → otros impuestos
-  [11] Monto          → monto neto (ya incluye comisiones, con signo: negativo=egreso)
+  [11] Monto          → monto neto (ya descuenta comisión e IVA pero incluye otros_imp, con signo: negativo=egreso)
   [12] Observaciones
   [13] Tipo Cuenta    → "Inversion Estados Unidos Dolares" / "Inversion Argentina Pesos" / "Inversion Argentina Dolares"
 ```
@@ -231,7 +231,7 @@ Row 2: Headers — columnas por índice:
 
 **CRÍTICO — campo Monto:**
 - Siempre en la moneda de la cuenta
-- Ya incluye comisiones (neto)
+- Ya descuenta comisión e IVA, pero **incluye `otros_imp`**
 - Negativo = egreso de caja
 
 ---
@@ -246,10 +246,11 @@ El precio promedio se calcula con promedio ponderado móvil. Al vender, el costo
 // En SELL_OPS dentro del loop de buildInstrument:
 const sellQty = Math.min(qty, ac.balance);
 const ratio = Math.max(0, (ac.balance - sellQty) / ac.balance);
-ac.costNoComis   *= ratio;
-ac.costWithComis *= ratio;
+ac.costNoComis     *= ratio;
+ac.costWithComis   *= ratio;
+ac.costNoComis_usd *= ratio;  // para slot AR_ARS
 ac.balance -= qty;
-if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; }
+if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; ac.costNoComis_usd = 0; }
 ```
 
 ### Segregación por cuenta (`acctState`) — 3 slots
@@ -258,28 +259,28 @@ if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; 
 
 ```javascript
 // 'EEUU'   → cuenta EEUU (USD)       -- avg en USD
-// 'AR_ARS' → cuenta Argentina (ARS)  -- avg en ARS
+// 'AR_ARS' → cuenta Argentina (ARS)  -- avg en ARS + costNoComis_usd en USD (histórico)
 // 'AR_USD' → cuenta Argentina (USD)  -- avg en USD
 const acctState = {};
 const getAcct = cuenta => {
   const key = cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
-  if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0};
+  if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0, costNoComis_usd:0};
   return acctState[key];
 };
 ```
 
-`buildInstrument` retorna `avgByAcct` con hasta 3 entradas, cada una con `{avg, avgWithCom, balance}`. `makeCard` preserva `avgByAcct` en el objeto final. El footer y las columnas de precio promedio usan `avgByAcct` directamente — **nunca el `avg` global mezclado**.
+El slot `AR_ARS` además acumula `costNoComis_usd`: el costo en USD de cada compra usando el FX del día de la compra (tomado de `fxHistory` que se pasa como parámetro). Esto permite calcular el avg blended en USD sin depender del FX actual.
+
+`buildInstrument` retorna `avgByAcct` con hasta 4 entradas: `AR_ARS`, `AR_USD`, `EEUU`, y `AR_BLENDED_USD` (si hay balance en slots AR). `makeCard` preserva `avgByAcct`. Footer y columnas usan `avgByAcct` directamente.
 
 ### `calcBuyCost(t, withComissions)`
 
-Dos versiones del precio promedio:
-
 **Sin comisiones** (= precio del broker, comparable con precio de mercado):
-- Acciones/CEDEARs: `(|monto| - comision - iva) / cantidad`
-- Bonos: `precio × cantidad / 100` (el precio ya es sin comisiones en los bonos)
+- Acciones/CEDEARs: `|monto| - comision - iva - otros_imp`
+- Bonos: `precio × cantidad / 100`
 
-**Con comisiones** (= costo real de adquisición):
-- Acciones/CEDEARs: `|monto| / cantidad`
+**Con comisiones** (= monto total tal como reporta el broker):
+- Acciones/CEDEARs: `|monto|` (ya descuenta comis+IVA pero incluye otros_imp)
 - Bonos: igual que sin comisiones
 
 **Detección de bonos — `isBond(ticker)`:**
@@ -290,6 +291,26 @@ const BOND_TICKERS = new Set([
   'AL30C','AY24C',
 ]);
 ```
+
+### `AR_BLENDED_USD` — precio promedio blended en USD para AR
+
+Cuando un instrumento tiene operaciones en AR_ARS y/o AR_USD, `buildInstrument` calcula un avg blended en USD usando FX histórico por compra:
+
+```javascript
+// En avgByAcct al final de buildInstrument:
+const costUSD_fromARS = arARS?.costNoComis_usd || 0;  // costo ARS convertido a USD al FX de cada compra
+const costUSD_fromUSD = arUSD?.costNoComis || 0;       // costo USD ya en dólares
+const totalBal = (arARS?.balance || 0) + (arUSD?.balance || 0);
+avgByAcct['AR_BLENDED_USD'] = {
+  avg: totalBal > 0 ? (costUSD_fromARS + costUSD_fromUSD) / totalBal : 0,
+  balance: totalBal,
+  hasBothLegs: arARS?.balance > 0 && arUSD?.balance > 0,
+};
+```
+
+**CRÍTICO — race condition del blended:** `processAndRefresh` corre antes de que `fetchFXHistory` resuelva, por lo que `buildInstrument` se ejecuta con `_fxHistory = {}` vacío y `costNoComis_usd = 0` para todas las compras ARS. La función `rebuildBlendedAvgs()` se llama al final de `fetchFXHistory` para recalcular `AR_BLENDED_USD` en todos los `_instruments` usando el historial ya cargado. Luego re-renderiza Portfolio y Especies si están visibles.
+
+**`buildPortfolio(clean, fxHistory = {})`** — recibe `fxHistory` y lo pasa a `buildInstrument`. Los dos call sites (`processAndRefresh` y `recalcSnapshots`) pasan `_fxHistory`.
 
 ---
 
@@ -335,7 +356,7 @@ const INSTRUMENT_GROUPS = {
 };
 ```
 
-### 5. Cálculo de posiciones — `buildPortfolio()`
+### 5. Cálculo de posiciones — `buildPortfolio(clean, fxHistory = {})`
 
 **BUY_OPS:** `Compra`, `Suscripción Primaria`, `Suscripción FCI`, `Transferencia de Titulos IN -`
 **SELL_OPS:** `Venta`, `Rescate FCI`, `Pago de Amortización` (cantidad < 0)
@@ -401,7 +422,7 @@ new Set([
 ### Fetch en el dashboard (al cargar + botón 🔄):
 - `fetchLatestPrices()` — último EOD + NRA overrides de la sesión activa + **recálculo de cash post-overrides**
 - `fetchPricesHistory()` — histórico completo
-- `fetchFXHistory()` — histórico FX + setea `_fxLatest`. **Orden `date.desc`, limit 10000, Range 0-9999** — Supabase cappea en 1000 filas por defecto; con `desc` trae las 1000 más recientes.
+- `fetchFXHistory()` — histórico FX + setea `_fxLatest` + llama `rebuildBlendedAvgs()`. **Orden `date.desc`, limit 10000, Range 0-9999** — Supabase cappea en 1000 filas por defecto; con `desc` trae las 1000 más recientes.
 - `fetchSnapshots()` — snapshots guardados
 
 **CRÍTICO — orden de carga:** `fetchFXHistory()` debe completar antes de `recalcSnapshots()`.
@@ -433,9 +454,7 @@ new Set([
 Tab de auditoría de precio promedio por instrumento. Permite ver la evolución fila por fila del VWAP.
 
 ### Arquitectura — fuente de verdad única:
-**CRÍTICO:** El tab Especies consume los datos precalculados de `buildInstrument()` a través del global `_instruments[ticker]`. **No recalcula VWAP ni balances.** Esto garantiza que los balances y precios promedio mostrados en Especies coincidan exactamente con los del tab Portfolio, ya que ambos leen de la misma fuente.
-
-`buildInstrument()` guarda en cada txn un `_slotSnap` con el estado de los 3 slots (`AR_ARS`, `AR_USD`, `EEUU`) en ese punto de la historia — balance y avg por slot. `renderEspecies()` agrupa esas txns por fecha y lee los snapshots para construir las filas de la tabla.
+**CRÍTICO:** El tab Especies consume los datos precalculados de `buildInstrument()` a través del global `_instruments[ticker]`. El VWAP y los balances se leen de `inst.txns` y sus `_slotSnap`. El avg blended se recalcula en tiempo de render dentro de `renderEspecies()` usando `getFXForDate()` — **no** se lee de `_slotSnap` porque los snapshots se generaron con `_fxHistory` vacío (race condition).
 
 ### Global `_instruments`:
 ```javascript
@@ -445,63 +464,70 @@ Se setea en `processAndRefresh()` desde el return de `buildPortfolio()`. Se rese
 
 ### Dropdown con agrupación:
 El selector de ticker usa `<optgroup>` para separar posiciones abiertas de cerradas:
-- **● Posiciones abiertas (N)** — tickers con `net > 0`, muestra el balance entre paréntesis (suma AR + EEUU)
+- **● Posiciones abiertas (N)** — tickers con `net > 0`, muestra el balance entre paréntesis
 - **○ Históricas / cerradas (N)** — tickers con historial pero sin balance
 
-### Estructura de la tabla:
-Dos grupos de columnas generados dinámicamente según qué cuentas tenga la especie. Layout fijo (sin toggle):
+### Layout de la tabla — columnas dinámicas:
 
-**Grupo 🇦🇷 Argentina** (colspan 9, si tiene ops en cuentas Argentina):
-- Compras · Ventas · Xfer. · Amort. · Bal AR · Precio ARS · **Avg ARS AR** · **Valoriz. ARS AR** · **Valoriz. USD AR**
+El layout se adapta según qué sub-cuentas tenga el instrumento. Flags de layout: `hasAR`, `hasEEUU`, `hasAR_ARS`, `hasAR_USD`.
 
-**Grupo 🇺🇸 EEUU** (colspan 8, si tiene ops en cuenta EEUU):
-- Compras · Ventas · Xfer. · Amort. · Bal EEUU · Precio USD · **Avg USD EEUU** · **Valoriz. USD EEUU**
+**Grupo 🇦🇷 Argentina** (solo si `hasAR`):
+- Sub-sección **$** (solo si `hasAR_ARS`): C $ · V $ · Precio $ · Monto $
+- Sub-sección **U$S** (solo si `hasAR_USD`): C U$S · V U$S · Precio U$S · Monto U$S
+- Columnas compartidas: Xfer. · Amort. · Bal AR · **Avg $** · **Avg U$S** · Valoriz. ARS · Valoriz. USD
 
-**FX** — columna final compartida
+**Grupo 🇺🇸 EEUU** (solo si `hasEEUU`):
+- Compras · Ventas · Xfer. · Amort. · Bal EEUU · Precio USD · Monto USD · Avg USD · Valoriz. USD
 
-Si la especie solo existe en un lado, solo aparece ese grupo.
+**FX** — columna final
 
-### Lógica de valorización (fija, sin toggle):
-- **Valoriz. ARS AR** = posición AR_ARS × avgARS + posición AR_USD × avgARUSD × FX (todo en pesos)
-- **Valoriz. USD AR** = posición AR_ARS × avgARS / FX + posición AR_USD × avgARUSD (todo en dólares)
-- **Valoriz. USD EEUU** = posición EEUU × avgEEUU (en dólares)
-- **Avg ARS AR** = avgARS del slot AR_ARS (nativo en pesos)
-- **Avg USD EEUU** = avgEEUU del slot EEUU (nativo en dólares)
+Si el instrumento solo tiene operaciones en un lado, ese grupo no aparece. Si AR solo tiene una moneda (solo ARS o solo AR_USD), la sub-sección de la otra moneda no aparece.
 
-### `_slotSnap` — snapshot por txn en `buildInstrument()`:
-Cada txn retornada por `buildInstrument()` incluye:
+### Separadores visuales:
+- **`esp-divider-soft`** (`1px rgba(107,122,153,.35)`): entre sub-secciones internas de AR y entre Bal AR/Avg$/AvgU$S/Valoriz en AR; entre Bal EEUU/Precio/Monto en EEUU
+- **`esp-divider-strong`** (`2px solid var(--muted)`): entre grupo Argentina y grupo EEUU; entre Valoriz. USD y FX
+
+### Avg blended — lógica de cálculo en `renderEspecies()`:
+
+El avg blended se recalcula progresivamente en el loop de `dateBuckets`, manteniendo acumuladores:
 ```javascript
-_slotSnap: {
-  AR_ARS: { balance, avg },  // estado del slot AR_ARS después de esta txn
-  AR_USD: { balance, avg },  // estado del slot AR_USD después de esta txn
-  EEUU:   { balance, avg },  // estado del slot EEUU después de esta txn
-}
+const blend = { arARS_bal:0, arARS_costUSD:0, arARS_costARS:0, arUSD_bal:0, arUSD_cost:0 };
 ```
-`renderEspecies()` agrupa txns por fecha y toma el `_slotSnap` de la última txn de cada fecha para mostrar balance y avg en la fila.
+- Por cada compra ARS: `blend.arARS_costUSD += calcBuyCost(t,false) / getFXForDate(fecha)`; `blend.arARS_costARS += calcBuyCost(t,false)`
+- Por cada compra AR_USD: `blend.arUSD_cost += calcBuyCost(t,false)`
+- Al vender: reducción proporcional (VWAP móvil)
+- Cada bucket guarda `blendedUSD` y `blendedARS`:
+  - `blendedUSD = (arARS_costUSD + arUSD_cost) / totalBal`
+  - `blendedARS` = `arARS_costARS / arARS_bal` cuando solo hay pata ARS (evita distorsión por FX); `blendedUSD × fxDate` cuando hay mezcla
+
+**CRÍTICO — `Avg $` para instrumentos solo-ARS:** NO usar `avgBlendedUSD × fxActual`. Usar `costNoComis_ARS / balance` directamente. De lo contrario instrumentos como GLOB (solo AR_ARS, con operaciones en EEUU en el mismo ticker canonicalizado) muestran avg distorsionado por el FX histórico.
+
+### Monto en Especies:
+- **Compras:** `calcBuyCost(t, true)` = `|monto|` del broker (incluye comisión, IVA y otros impuestos)
+- **Ventas:** `Math.abs(t.monto)` directamente
+- El campo `monto` del broker ya descuenta comisión e IVA pero incluye `otros_imp` — es el monto neto que impacta la caja
+
+### Footnote:
+Debajo de la tabla aparece un footnote explicando: Precio = precio unitario sin comisiones ni impuestos; Monto = monto total reportado por el broker (incluye comisión, IVA y otros impuestos); Avg = VWAP sin comisiones ni impuestos, comparable con precio de mercado.
 
 ### Export XLS (`exportEspeciesXLS()`):
 - Botón `↓ XLS` aparece en la toolbar solo cuando hay ticker seleccionado
-- **Lee de `_especiesRows` y `_especiesState`** (globals guardados al final de `renderEspecies`) — NO scrapea el DOM
-- Formato del archivo:
-  - Fila 1: headers de grupo con merge de celdas (🇦🇷 Argentina / 🇺🇸 EEUU)
-  - Fila 2: headers de columna
-  - Filas de datos: fechas como `dd/mm/yyyy` (string), números como valores numéricos con formato `#,##0` o `#,##0.00`
-  - Fila de footer con posición final
-  - Freeze de primeras 2 filas
-  - Anchos de columna ajustados por tipo
-  - Celdas vacías (compras/ventas que no aplican) como `null`, no como `0`
+- **Lee de `_especiesRows` y `_especiesState`** — NO scrapea el DOM
+- Columnas condicionales según `hasAR_ARS`, `hasAR_USD`, `hasEEUU`
+- Formato: grupo headers con merge, col headers, datos numéricos nativos, footer con posición final
 - Nombre del archivo: `Especies_TICKER_YYYY-MM-DD.xlsx`
 
-### Globals de estado para export:
+### Globals de estado:
 ```javascript
 let _especiesRows  = [];  // rows del último renderEspecies (para XLS export)
-let _especiesState = {};  // {ticker, hasAR, hasEEUU, opsLen}
+let _especiesState = {};  // {ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen}
 ```
 
 ### Funciones clave:
 - `rebuildEspeciesDropdown()` — repuebla el selector con optgroups
-- `renderEspecies()` — lee de `_instruments[ticker].txns`, agrupa por fecha, renderiza tabla y guarda `_especiesRows` / `_especiesState`
+- `renderEspecies()` — lee de `_instruments[ticker].txns`, agrupa por fecha en `dateBuckets` con sub-buckets `ar_ars`/`ar_usd`/`eeuu`, calcula blended progresivamente, renderiza tabla
 - `exportEspeciesXLS()` — genera y descarga el XLSX desde `_especiesRows`
+- `rebuildBlendedAvgs()` — recalcula `AR_BLENDED_USD` en `_instruments` tras `fetchFXHistory`
 
 ---
 
@@ -574,7 +600,11 @@ Supabase cappea en 1000 filas por request independientemente del `limit` enviado
 | Precio promedio incorrecto tras ventas parciales | `avg = totalCostNoComis / bought` ignoraba ventas | VWAP móvil: al vender, `costNoComis *= (balance - sellQty) / balance`. Si balance = 0, reset a 0. |
 | Precio promedio incorrecto para tickers split AR/EEUU (ej: MELI) | `buildInstrument` mezclaba montos ARS y USD en el mismo acumulador `'AR'` | 3 slots: `'EEUU'`, `'AR_ARS'`, `'AR_USD'`. `avgByAcct` incluye `balance` por slot. `makeCard` preserva `avgByAcct`. Footer y columnas usan slots directamente. |
 | Total Argentina (USD) mostraba ~U$S 32M | Footer filtraba por `accounts.includes('USD')` capturando CEDEARs con avg en pesos | `calcArSlots()` itera `avgByAcct.AR_ARS` y `avgByAcct.AR_USD` directamente — sin filtro por `accounts` |
-| Tab Especies: balance AR de MELI mostraba 892 en vez de 787 (+105 fantasma) y avg AR incorrecto | `renderEspecies()` reimplementaba VWAP desde cero sobre `_historicalTxns` sin `deduplicateMEP()` — la fila MELID (boleto 20912042, nro_mov 147492434) aparece en dos cuentas (AR Pesos + AR Dólares) como facturación split de una sola compra de 105 unidades; sin dedup se contaban 210 | Refactor: `renderEspecies()` ya no recalcula — consume `_instruments[ticker].txns` (que ya pasaron por dedup+canonicalización). `buildInstrument()` ahora guarda `_slotSnap` en cada txn con estado de los 3 slots. `buildPortfolio()` retorna `instruments`, guardado en global `_instruments`. Fuente de verdad única para balances y avgs en todo el dashboard. |
+| Tab Especies: balance AR de MELI mostraba 892 en vez de 787 (+105 fantasma) y avg AR incorrecto | `renderEspecies()` reimplementaba VWAP desde cero sin `deduplicateMEP()` | Refactor: `renderEspecies()` consume `_instruments[ticker].txns` (ya deduped). `buildInstrument()` guarda `_slotSnap` por txn. `buildPortfolio()` retorna `instruments` → global `_instruments`. |
+| `calcBuyCost(t, false)` incluía `otros_imp` en el costo | `otros_imp` no se restaba | Agregar `- Math.abs(t.otros_imp || 0)` — ahora "sin comisiones" excluye comis + IVA + otros_imp |
+| Avg USD en Portfolio modo "Todo USD" para AR mixto usaba FX actual | Convertía avg ARS a USD con FX actual, no histórico | Usar `AR_BLENDED_USD.avg` de `avgByAcct` (calculado con FX histórico por compra) |
+| Avg blended en Especies mostraba valores incorrectos (ej: VIST U$S 5,43 en vez de ~13,5) | Race condition: `buildInstrument` corre con `_fxHistory={}` vacío → `costNoComis_usd=0` para todas las compras ARS | `rebuildBlendedAvgs()` se llama al final de `fetchFXHistory`. `renderEspecies` calcula el blended en tiempo de render usando `getFXForDate` (no desde `_slotSnap`). |
+| Avg $ en Especies incorrecto para instrumentos con ticket canonicalizado en EEUU y AR (ej: GLOB) | Para tickers solo-ARS, `avgBlendedARS = avgBlendedUSD × fxActual` introducía distorsión cambiaria | Cuando no hay pata AR_USD, `blendedARS = arARS_costARS / arARS_bal` directamente, sin pasar por USD |
 
 ### Cash
 
@@ -635,6 +665,8 @@ Supabase cappea en 1000 filas por request independientemente del `limit` enviado
 - BDC20: cerrada (stale) ✅
 - SPY dividendo 5/8/20: monto neto 20,32 → NRA estimada 6,15 ✅
 - MELI precio promedio s/comis (cuenta EEUU): ~2.006,50 USD ✅
+- GLOB avg AR (2 compras ARS, 88+229 unidades): ~$9.484 ✅
+- VIST avg blended USD (153 unidades ARS + 103 unidades AR_USD, 24/10/25): ~U$S 13,5x ✅
 
 ---
 
@@ -655,19 +687,23 @@ Pegá este documento + el HTML al inicio del chat. Ejemplos:
 - `buildCash()` y saldo en `buildAuditRows()` deben usar siempre `rawClean` (pre-dedup)
 - Para agregar tickers nuevos: INSERT en `instruments`, correr backfill desde GitHub Actions
 - El archivo del broker es HTML disfrazado — **nunca procesar con SheetJS directamente**
-- `buildPortfolio()` es pura — segura para llamar con subsets
+- `buildPortfolio(clean, fxHistory)` es pura — segura para llamar con subsets; siempre pasar `_fxHistory`
 - `recalcSnapshots()` requiere `_fxHistory` cargado (el guard lo verifica)
 - El dashboard NO funciona en el sandbox de Claude (CSP bloquea Supabase). Siempre testear desde GitHub Pages
 - Los NRA overrides se filtran por `session_id` — cada sesión tiene sus propios overrides
 - El PATCH (no DELETE) es intencional para limpiar overrides — RLS no permite DELETE con anon key
-- **`buildInstrument` trackea `acctState` con 3 slots: `EEUU`, `AR_ARS`, `AR_USD` — nunca mezclar montos de distintas monedas**
-- **`buildInstrument` guarda `_slotSnap` en cada txn — es la fuente de verdad para la evolución por fecha en Especies**
-- **`avgByAcct` incluye `balance` por slot — usarlo siempre para footer y columnas de precio en AR**
+- **`buildInstrument` trackea `acctState` con 3 slots + `costNoComis_usd` en AR_ARS — nunca mezclar montos de distintas monedas sin convertir**
+- **`buildInstrument` guarda `_slotSnap` en cada txn — pero el avg blended NO se lee de ahí en Especies (race condition). `renderEspecies` recalcula el blended en tiempo de render.**
+- **`avgByAcct` incluye hasta 4 slots: `AR_ARS`, `AR_USD`, `EEUU`, `AR_BLENDED_USD`**
 - **El avg en `makeCard` viene de `d.avgByAcct[acctKey]`, no de `d.avg` global — no cambiar esto**
-- **`_instruments` es el global canónico de instrumentos — `renderEspecies()` lo consume directamente, NUNCA recalcular VWAP en Especies**
+- **`_instruments` es el global canónico de instrumentos — `renderEspecies()` lo consume directamente**
 - **`fetchLatestPrices()` recalcula cash post-overrides — este recálculo es intencional, no eliminarlo**
+- **`fetchFXHistory()` llama `rebuildBlendedAvgs()` al final — no eliminar este call**
 - **FX siempre desde `_fxHistory`/`_fxLatest` — no agregar inputs manuales de FX en el Portfolio tab**
 - **`exportEspeciesXLS()` lee de `_especiesRows`/`_especiesState`, no del DOM — no cambiar esto**
+- **`_especiesState` incluye `hasAR_ARS` y `hasAR_USD` — usarlos en el export para columnas condicionales**
 - **Tab Especies: no hay toggle ARS/USD — el layout es fijo. No agregar `_espValMode` de vuelta**
 - **`fetchFXHistory` usa `order=date.desc` — intencional para traer los más recientes dentro del cap de Supabase**
-- **Principio general: un solo cálculo, múltiples vistas. Balances y avgs se calculan en `buildInstrument()` y se consumen desde `_instruments` / `AR` / `US` — no reimplementar la lógica en otros tabs**
+- **`calcBuyCost(t, false)` descuenta comis + IVA + otros_imp. `calcBuyCost(t, true)` = `|monto|` del broker. No cambiar esta distinción.**
+- **Avg $ en Especies para instrumentos solo-ARS: usar `blendedARS = costARS/balance` directo, nunca `blendedUSD × fxActual`**
+- **Principio general: un solo cálculo, múltiples vistas. Balances y avgs se calculan en `buildInstrument()` y se consumen desde `_instruments` — no reimplementar la lógica en otros tabs**
