@@ -157,6 +157,10 @@ tbody tr:hover td{background:var(--s2);}
 #esp-tbl th.esp-group-shared{border-bottom:1px solid var(--border)!important;}
 #esp-tbl td.esp-divider{border-left:1px solid var(--border);padding-left:12px!important;}
 #esp-tbl th.esp-divider{border-left:1px solid var(--border);padding-left:12px!important;}
+#esp-tbl td.esp-divider-strong{border-left:2px solid var(--muted);padding-left:12px!important;}
+#esp-tbl th.esp-divider-strong{border-left:2px solid var(--muted);padding-left:12px!important;}
+#esp-tbl td.esp-divider-soft{border-left:1px solid rgba(107,122,153,.35);padding-left:10px!important;}
+#esp-tbl th.esp-divider-soft{border-left:1px solid rgba(107,122,153,.35);padding-left:10px!important;}
 .esp-num{text-align:right;}
 .esp-pos{color:var(--green);}
 .esp-neg{color:var(--red);}
@@ -3116,7 +3120,7 @@ function renderEspecies() {
       if(hasAR_ARS && hasAR_USD) arLabel += ' <span style="font-size:9px;opacity:.6">· $ y U$S</span>';
       gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">${arLabel}</th>`;
     }
-    if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
+    if(hasEEUU) gh += `<th class="esp-group-us esp-divider-strong" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
   }
@@ -3131,21 +3135,21 @@ function renderEspecies() {
         <th class="esp-num esp-group-ar">Precio $</th>
         <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto $</th>`;
       if(hasAR_USD) ch += `
-        <th class="esp-num esp-group-ar${hasAR_ARS?' esp-divider':''}" style="color:var(--green);">C U$S</th>
+        <th class="esp-num esp-group-ar${hasAR_ARS?' esp-divider-soft':''}" style="color:var(--green);">C U$S</th>
         <th class="esp-num esp-group-ar" style="color:var(--red);">V U$S</th>
         <th class="esp-num esp-group-ar">Precio U$S</th>
         <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto U$S</th>`;
       ch += `
-        <th class="esp-num esp-group-ar" style="color:var(--purple);">Xfer.</th>
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--purple);">Xfer.</th>
         <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
-        <th class="esp-num esp-group-ar">Bal AR</th>
+        <th class="esp-num esp-group-ar esp-divider-soft">Bal AR</th>
         <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg $</th>
-        <th class="esp-num esp-group-ar" style="color:var(--usd);">Avg U$S</th>
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--usd);">Avg U$S</th>
         <th class="esp-num esp-group-ar" style="color:var(--ar);">Valoriz. ARS</th>
         <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD</th>`;
     }
     if(hasEEUU) ch += `
-      <th class="esp-num esp-group-us esp-divider" style="color:var(--green);">Compras</th>
+      <th class="esp-num esp-group-us esp-divider-strong" style="color:var(--green);">Compras</th>
       <th class="esp-num esp-group-us" style="color:var(--red);">Ventas</th>
       <th class="esp-num esp-group-us" style="color:var(--purple);">Xfer.</th>
       <th class="esp-num esp-group-us" style="color:var(--muted);">Amort.</th>
@@ -3201,21 +3205,21 @@ function renderEspecies() {
         <td class="esp-num">${fmtPx(ars.precio, 'ars')}</td>
         <td class="esp-num">${fmtVal(ars.monto > 0 ? ars.monto : null, 'ars')}</td>`;
       if(hasAR_USD) html += `
-        <td class="esp-num${hasAR_ARS?' esp-divider':''}">${fmtQc(ausd.compras)}</td>
+        <td class="esp-num${hasAR_ARS?' esp-divider-soft':''}">${fmtQc(ausd.compras)}</td>
         <td class="esp-num">${fmtQv(ausd.ventas)}</td>
         <td class="esp-num">${fmtPx(ausd.precio, 'usd')}</td>
         <td class="esp-num">${fmtVal(ausd.monto > 0 ? ausd.monto : null, 'usd')}</td>`;
       html += `
-        <td class="esp-num">${fmtQx(bucket.xfer)}</td>
+        <td class="esp-num esp-divider-soft">${fmtQx(bucket.xfer)}</td>
         <td class="esp-num">${fmtQa(bucket.amort)}</td>
-        <td class="esp-num">${fmtBal(r.balAR)}</td>
+        <td class="esp-num esp-divider-soft">${fmtBal(r.balAR)}</td>
         <td class="esp-num">${fmtAvg(r.avgBlendedARS, 'ars')}</td>
-        <td class="esp-num">${fmtAvg(r.avgBlendedUSD, 'usd')}</td>
+        <td class="esp-num esp-divider-soft">${fmtAvg(r.avgBlendedUSD, 'usd')}</td>
         <td class="esp-num">${fmtVal(r.valAR_ARS, 'ars')}</td>
         <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
     }
     if(hasEEUU) html += `
-      <td class="esp-num esp-divider">${fmtQc(us.compras)}</td>
+      <td class="esp-num esp-divider-strong">${fmtQc(us.compras)}</td>
       <td class="esp-num">${fmtQv(us.ventas)}</td>
       <td class="esp-num">${fmtQx(hasAR ? 0 : bucket.xfer)}</td>
       <td class="esp-num">${fmtQa(hasAR ? 0 : bucket.amort)}</td>
@@ -3243,7 +3247,7 @@ function renderEspecies() {
         <td class="esp-num">${fmtVal(last.valAR_USD, 'usd')}</td>`;
     }
     if(hasEEUU) {
-      fh += `<td colspan="4" class="${hasAR?'esp-divider':''}"></td>`;
+      fh += `<td colspan="4" class="${hasAR?'esp-divider-strong':''}"></td>`;
       fh += `
         <td class="esp-num esp-pos">${N(last.balEEUU, 0)}</td>
         <td></td><td></td>
