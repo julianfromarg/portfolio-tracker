@@ -2991,7 +2991,7 @@ function renderEspecies() {
   const dateBuckets = {};
 
   // Running VWAP accumulators for blended avg (rebuilt here using _fxHistory)
-  const blend = { arARS_bal:0, arARS_costUSD:0, arUSD_bal:0, arUSD_cost:0 };
+  const blend = { arARS_bal:0, arARS_costUSD:0, arARS_costARS:0, arUSD_bal:0, arUSD_cost:0 };
 
   for(const t of ops) {
     const { operacion: op, cantidad: qty, cuenta, precio, fecha } = t;
@@ -3019,6 +3019,7 @@ function renderEspecies() {
         if(isARS) {
           const fx = getFXForDate(fecha);
           blend.arARS_bal     += qty;
+          blend.arARS_costARS += cost;
           blend.arARS_costUSD += fx > 0 ? cost / fx : 0;
         } else if(isARG) {
           blend.arUSD_bal  += qty;
@@ -3035,8 +3036,9 @@ function renderEspecies() {
           const sellQty = Math.min(qty, blend.arARS_bal);
           const ratio = Math.max(0, (blend.arARS_bal - sellQty) / blend.arARS_bal);
           blend.arARS_costUSD *= ratio;
+          blend.arARS_costARS *= ratio;
           blend.arARS_bal -= qty;
-          if(blend.arARS_bal <= 0) { blend.arARS_bal = 0; blend.arARS_costUSD = 0; }
+          if(blend.arARS_bal <= 0) { blend.arARS_bal = 0; blend.arARS_costUSD = 0; blend.arARS_costARS = 0; }
         } else if(isARG && !isARS && blend.arUSD_bal > 0) {
           const sellQty = Math.min(qty, blend.arUSD_bal);
           const ratio = Math.max(0, (blend.arUSD_bal - sellQty) / blend.arUSD_bal);
@@ -3054,7 +3056,16 @@ function renderEspecies() {
     bucket.lastSnap = t._slotSnap;
     // Snapshot current blended state for this date
     const totalBlendBal = blend.arARS_bal + blend.arUSD_bal;
-    bucket.blendedUSD = totalBlendBal > 0 ? (blend.arARS_costUSD + blend.arUSD_cost) / totalBlendBal : null;
+    if(totalBlendBal > 0) {
+      bucket.blendedUSD = (blend.arARS_costUSD + blend.arUSD_cost) / totalBlendBal;
+      // Pure ARS avg: only meaningful when there's no AR_USD mix
+      bucket.blendedARS = blend.arUSD_bal === 0 && blend.arARS_bal > 0
+        ? blend.arARS_costARS / blend.arARS_bal
+        : null;
+    } else {
+      bucket.blendedUSD = null;
+      bucket.blendedARS = null;
+    }
   }
 
   // Layout flags — which sub-sections to show
@@ -3079,8 +3090,11 @@ function renderEspecies() {
     // Blended avg in USD (calculated progressively in bucket loop using _fxHistory)
     const avgBlendedUSD = bucket.blendedUSD > 0 ? bucket.blendedUSD : null;
 
-    // Blended avg in ARS = blended USD × FX at this date
-    const avgBlendedARS = avgBlendedUSD != null && fxDate > 0 ? avgBlendedUSD * fxDate : null;
+    // Blended avg in ARS:
+    // - If only AR_ARS: use costARS/balance directly (no FX distortion)
+    // - If mixed AR_ARS + AR_USD: convert blended USD back to ARS at current date FX
+    const avgBlendedARS = bucket.blendedARS > 0 ? bucket.blendedARS :
+                          (avgBlendedUSD != null && fxDate > 0 ? avgBlendedUSD * fxDate : null);
 
     // EEUU avg
     const avgEEUU = sEEUU.balance > 0 ? sEEUU.avg : null;
