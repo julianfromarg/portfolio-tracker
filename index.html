@@ -704,6 +704,82 @@ async function fetchPricesHistory() {
   } catch(e) { console.warn('fetchPricesHistory failed:', e); }
 }
 
+// ══════ REBUILD BLENDED AVGS ══════
+// Called after fetchFXHistory resolves, because processAndRefresh runs before
+// _fxHistory is populated. Iterates _instruments and recalculates AR_BLENDED_USD
+// for each instrument using historical FX rates now available.
+function rebuildBlendedAvgs() {
+  if(!Object.keys(_fxHistory).length || !Object.keys(_instruments).length) return;
+
+  const getFX = fecha => {
+    if(!fecha) return null;
+    const dates = Object.keys(_fxHistory).filter(d => d <= fecha).sort();
+    if(dates.length) return _fxHistory[dates[dates.length-1]];
+    const all = Object.keys(_fxHistory).sort();
+    return all.length ? _fxHistory[all[0]] : null;
+  };
+
+  for(const inst of Object.values(_instruments)) {
+    const ab = inst.avgByAcct;
+    if(!ab) continue;
+    const arARS_ac = { balance: 0, costNoComis: 0, costNoComis_usd: 0 };
+    const arUSD_ac = { balance: 0, costNoComis: 0 };
+
+    // Replay all txns to rebuild costNoComis_usd for AR_ARS using real FX history
+    for(const t of inst.txns) {
+      const { operacion: op, cantidad: qty, cuenta } = t;
+      const isARS = cuenta.includes('ARS');
+      const isARG = cuenta.includes('Argentina');
+      const isEEUU = cuenta.includes('EEUU');
+      if(isEEUU) continue;
+
+      if(BUY_OPS.includes(op) && qty > 0) {
+        if(isARS) {
+          const cost = calcBuyCost(t, false);
+          arARS_ac.balance += qty;
+          arARS_ac.costNoComis += cost;
+          const fx = getFX(t.fecha);
+          if(fx && fx > 0) arARS_ac.costNoComis_usd += cost / fx;
+        } else if(isARG) {
+          arUSD_ac.balance += qty;
+          arUSD_ac.costNoComis += calcBuyCost(t, false);
+        }
+      } else if(SELL_OPS.includes(op) && qty > 0) {
+        if(isARS && arARS_ac.balance > 0) {
+          const sellQty = Math.min(qty, arARS_ac.balance);
+          const ratio = Math.max(0, (arARS_ac.balance - sellQty) / arARS_ac.balance);
+          arARS_ac.costNoComis     *= ratio;
+          arARS_ac.costNoComis_usd *= ratio;
+          arARS_ac.balance -= qty;
+          if(arARS_ac.balance <= 0) { arARS_ac.balance = 0; arARS_ac.costNoComis = 0; arARS_ac.costNoComis_usd = 0; }
+        } else if(isARG && !isARS && arUSD_ac.balance > 0) {
+          const sellQty = Math.min(qty, arUSD_ac.balance);
+          const ratio = Math.max(0, (arUSD_ac.balance - sellQty) / arUSD_ac.balance);
+          arUSD_ac.costNoComis *= ratio;
+          arUSD_ac.balance -= qty;
+          if(arUSD_ac.balance <= 0) { arUSD_ac.balance = 0; arUSD_ac.costNoComis = 0; }
+        }
+      }
+    }
+
+    // Rebuild AR_BLENDED_USD in avgByAcct
+    const totalBal = arARS_ac.balance + arUSD_ac.balance;
+    if(totalBal > 0) {
+      const totalCostUSD = arARS_ac.costNoComis_usd + arUSD_ac.costNoComis;
+      ab['AR_BLENDED_USD'] = {
+        avg:         totalBal > 0 ? totalCostUSD / totalBal : 0,
+        balance:     totalBal,
+        hasBothLegs: arARS_ac.balance > 0 && arUSD_ac.balance > 0,
+      };
+    }
+  }
+
+  // Re-render Portfolio (avg USD mode may have changed) and refresh Especies if open
+  renderPortfolioTable();
+  const espTicker = document.getElementById('esp-ticker-select')?.value;
+  if(espTicker) renderEspecies();
+}
+
 // ══════ FETCH FX HISTORY ══════
 async function fetchFXHistory() {
   try {
@@ -725,6 +801,9 @@ async function fetchFXHistory() {
     console.log(`Loaded FX history: ${rows.length} rows, latest: ${rows[0]?.date}`);
     rebuildFXYearDropdown();
     renderFXTab();
+    // Rebuild blended avgs now that FX history is available
+    // (processAndRefresh runs before fetchFXHistory resolves, so _fxHistory was empty)
+    rebuildBlendedAvgs();
   } catch(e) { console.warn('fetchFXHistory failed:', e); }
 }
 
