@@ -2843,8 +2843,8 @@ function renderEspecies() {
   for(const t of ops) {
     const { operacion: op, cantidad: qty, cuenta, precio, fecha } = t;
     if(!dateBuckets[fecha]) dateBuckets[fecha] = {
-      ar:   { compras:0, ventas:0, xfer:0, amort:0, precioARS:null, precioUSD:null, hasActivity:false },
-      eeuu: { compras:0, ventas:0, xfer:0, amort:0, precioUSD:null, hasActivity:false },
+      ar:   { compras:0, ventas:0, xfer:0, amort:0, precioARS:null, precioUSD:null, montoARS:0, montoUSD:0, hasActivity:false },
+      eeuu: { compras:0, ventas:0, xfer:0, amort:0, precioUSD:null, montoUSD:0, hasActivity:false },
       lastSnap: null,
     };
     const bucket = dateBuckets[fecha];
@@ -2857,10 +2857,16 @@ function renderEspecies() {
       side.compras += qty;
       if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
       else        { if(precio > 0) side.precioUSD = precio; }
+      const costo = calcBuyCost(t, false);
+      if(!isEEUU) { if(isARS) side.montoARS += costo; else side.montoUSD += costo; }
+      else        { side.montoUSD += costo; }
     } else if(SELL_SET.has(op) && qty > 0) {
       side.ventas += qty;
       if(!isEEUU) { if(isARS && precio > 0) side.precioARS = precio; else if(!isARS && precio > 0) side.precioUSD = precio; }
       else        { if(precio > 0) side.precioUSD = precio; }
+      const costo = Math.abs(t.monto || 0) - Math.abs(t.comision || 0) - Math.abs(t.iva || 0);
+      if(!isEEUU) { if(isARS) side.montoARS += costo; else side.montoUSD += costo; }
+      else        { side.montoUSD += costo; }
     } else if(op === XFER_IN && qty > 0) {
       side.xfer += qty;
     } else if(op === 'Pago de Amortización' && qty < 0) {
@@ -2913,8 +2919,8 @@ function renderEspecies() {
   const colRow   = document.getElementById('esp-thead-cols');
   if(groupRow) {
     let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
-    if(hasAR)   gh += `<th class="esp-group-ar" colspan="9" style="text-align:center;">🇦🇷 Argentina</th>`;
-    if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="8" style="text-align:center;">🇺🇸 EEUU</th>`;
+    if(hasAR)   gh += `<th class="esp-group-ar" colspan="10" style="text-align:center;">🇦🇷 Argentina</th>`;
+    if(hasEEUU) gh += `<th class="esp-group-us esp-divider" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
   }
@@ -2927,6 +2933,7 @@ function renderEspecies() {
       <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
       <th class="esp-num esp-group-ar">Bal AR</th>
       <th class="esp-num esp-group-ar">Precio ARS</th>
+      <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto ARS</th>
       <th class="esp-num esp-group-ar" style="color:var(--ar);">Avg ARS AR</th>
       <th class="esp-num esp-group-ar" style="color:var(--ar);">Valoriz. ARS AR</th>
       <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD AR</th>`;
@@ -2937,6 +2944,7 @@ function renderEspecies() {
       <th class="esp-num esp-group-us" style="color:var(--muted);">Amort.</th>
       <th class="esp-num esp-group-us">Bal EEUU</th>
       <th class="esp-num esp-group-us" style="color:var(--usd);">Precio USD</th>
+      <th class="esp-num esp-group-us" style="color:var(--muted);">Monto USD</th>
       <th class="esp-num esp-group-us" style="color:var(--us);">Avg USD EEUU</th>
       <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD EEUU</th>`;
     ch += `<th class="esp-num" style="color:var(--muted);">FX</th>`;
@@ -2983,6 +2991,7 @@ function renderEspecies() {
       <td class="esp-num">${fmtQa(ar.amort)}</td>
       <td class="esp-num">${fmtBal(r.balAR)}</td>
       <td class="esp-num">${fmtPx(ar.precioARS, 'ars')}</td>
+      <td class="esp-num">${ar.montoARS > 0 ? fmtVal(ar.montoARS, 'ars') : (ar.montoUSD > 0 ? fmtVal(ar.montoUSD, 'usd') : '<span class="esp-muted">—</span>')}</td>
       <td class="esp-num">${fmtAvg(r.avgARDisplay, 'ars')}</td>
       <td class="esp-num">${fmtVal(r.valAR_ARS, 'ars')}</td>
       <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
@@ -2993,6 +3002,7 @@ function renderEspecies() {
       <td class="esp-num">${fmtQa(us.amort)}</td>
       <td class="esp-num">${fmtBal(r.balEEUU)}</td>
       <td class="esp-num">${fmtPx(us.precioUSD, 'usd')}</td>
+      <td class="esp-num">${us.montoUSD > 0 ? fmtVal(us.montoUSD, 'usd') : '<span class="esp-muted">—</span>'}</td>
       <td class="esp-num">${fmtAvg(r.avgEEUUDisplay, 'usd')}</td>
       <td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
     html += `<td class="esp-num">${fmtFX(r.fx)}</td></tr>`;
@@ -3007,12 +3017,14 @@ function renderEspecies() {
       <td colspan="4"></td>
       <td class="esp-num esp-pos">${N(last.balAR,0)}</td>
       <td></td>
+      <td></td>
       <td class="esp-num">${fmtAvg(last.avgARDisplay,'ars')}</td>
       <td class="esp-num">${fmtVal(last.valAR_ARS,'ars')}</td>
       <td class="esp-num">${fmtVal(last.valAR_USD,'usd')}</td>`;
     if(hasEEUU) fh += `
       <td colspan="4" class="${hasAR?'esp-divider':''}"></td>
       <td class="esp-num esp-pos">${N(last.balEEUU,0)}</td>
+      <td></td>
       <td></td>
       <td class="esp-num">${fmtAvg(last.avgEEUUDisplay,'usd')}</td>
       <td class="esp-num">${fmtVal(last.valEEUU,'usd')}</td>`;
@@ -3069,6 +3081,12 @@ function exportEspeciesXLS() {
       { header:'Amort. AR',       group:'Argentina', fmt:'num0', get: r => r.bucket.ar.amort    || null },
       { header:'Bal AR',          group:'Argentina', fmt:'num0', get: r => r.balAR },
       { header:'Precio ARS',      group:'Argentina', fmt:'num2', get: r => r.bucket.ar.precioARS || null },
+      { header:'Monto ARS',       group:'Argentina', fmt:'num2', get: r => {
+          const ar = r.bucket.ar;
+          if(ar.montoARS > 0) return ar.montoARS;
+          if(ar.montoUSD > 0) return ar.montoUSD;
+          return null;
+      }},
       { header:'Avg ARS AR',      group:'Argentina', fmt:'num2', get: r => r.avgARDisplay },
       { header:'Valoriz. ARS AR', group:'Argentina', fmt:'num2', get: r => r.valAR_ARS },
       { header:'Valoriz. USD AR', group:'Argentina', fmt:'num2', get: r => r.valAR_USD },
@@ -3082,6 +3100,10 @@ function exportEspeciesXLS() {
       { header:'Amort. EEUU',       group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.amort   || null },
       { header:'Bal EEUU',          group:'EEUU', fmt:'num0', get: r => r.balEEUU },
       { header:'Precio USD',        group:'EEUU', fmt:'num2', get: r => r.bucket.eeuu.precioUSD || null },
+      { header:'Monto USD',         group:'EEUU', fmt:'num2', get: r => {
+          const us = r.bucket.eeuu;
+          return us.montoUSD > 0 ? us.montoUSD : null;
+      }},
       { header:'Avg USD EEUU',      group:'EEUU', fmt:'num2', get: r => r.avgEEUUDisplay },
       { header:'Valoriz. USD EEUU', group:'EEUU', fmt:'num2', get: r => r.valEEUU },
     );
