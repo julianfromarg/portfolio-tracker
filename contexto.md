@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 04/04/2026 v3
+## Versión: 04/04/2026 v4
 
 ---
 
@@ -250,13 +250,21 @@ cuenta Argentina (USD) → slot 'AR_USD'
 ### Lógica de ventas — CRÍTICO
 **Venta desde AR (AY24 o AY24D):**
 1. Consumir del slot propio primero
-2. Si no alcanza (ej: MEP donde se vende AY24 pero los títulos están en AR_USD), consumir el remanente del otro slot AR
+2. Si no alcanza (ej: MEP donde se vende AY24 pero los títulos están en AR_USD), consumir del otro slot AR
+3. Si todavía no alcanza, transferencia implícita EEUU → AR (títulos vienen de EEUU): `_xferAR = +qty`, `_xferEEUU = -qty`
 
 **Venta desde EEUU (AY24C):**
-1. Transferencia implícita AR → EEUU proporcional (preserva precio promedio): salen de AR_ARS y AR_USD en proporción a sus balances respectivos, entran en EEUU al avg USD de AR
+1. Transferencia implícita AR → EEUU proporcional: salen de AR_ARS y AR_USD en proporción a sus balances, entran en EEUU al avg USD de AR. `_xferAR = -qty`, `_xferEEUU = +qty`
 2. Venta normal desde EEUU
 
-**Por qué no usar pool proporcional para ventas AR:** en un MEP, AY24 (AR_ARS) y AY24D (AR_USD) se compran/venden en el mismo día — si se usa pool proporcional, la venta de AY24 con AR_ARS=0 varía AR_USD cuando no debería.
+**Por qué no usar pool proporcional para ventas AR:** en un MEP, AY24 (AR_ARS) y AY24D (AR_USD) se compran/venden el mismo día — pool proporcional varía AR_USD cuando no debería.
+
+### Transferencias implícitas — visualización en Especies
+Cada txn de venta guarda `_xferAR` y `_xferEEUU` (con signo: positivo = entra, negativo = sale). `renderEspecies` los acumula en `bucket.xferAR` y `bucket.xferEEUU` y los muestra en la columna **Xfer.** de cada grupo:
+- Si hay transferencia implícita → muestra `fmtXferImpl`: `(N)` en rojo si sale, `+N` en verde si entra
+- Si no hay transferencia implícita → muestra XFER_IN real del broker (`fmtQx`) o `—`
+- Nunca muestra ambos a la vez — uno u el otro según corresponda
+- Ventas y balances negativos usan formato `(N)` en lugar de `-N`
 
 ### Consulta de balance a fecha dada
 ```javascript
@@ -443,6 +451,8 @@ Pegá este documento + el HTML al inicio del chat.
 - **`movesTitle()` determina qué fila mueve títulos — la fila de comisión (misma op, cuenta ARS) NO mueve**
 - **Ventas desde AR: consumir del slot propio primero, luego del otro slot AR si no alcanza**
 - **Ventas desde EEUU: transferencia implícita AR→EEUU proporcional antes de la venta**
+- **Ventas desde AR con insuficiente balance: fallback al otro slot AR, luego a EEUU→AR**
+- **`_xferAR` y `_xferEEUU` se guardan en cada txn de venta — no eliminar, los usa `renderEspecies`**
 - **`avgByAcct` incluye hasta 4 slots: `AR_ARS`, `AR_USD`, `EEUU`, `AR_BLENDED_USD`**
 - **El avg en `makeCard` viene de `d.avgByAcct[acctKey]` — no cambiar esto**
 - **`fetchLatestPrices()` recalcula cash post-overrides — no eliminar**
@@ -467,7 +477,12 @@ El layout se adapta según qué sub-cuentas tenga el instrumento. Flags: `hasAR`
 - Columnas compartidas: Xfer. · Amort. · Bal AR · **Avg $** · **Avg U$S** · Valoriz. ARS · Valoriz. USD
 
 **Grupo 🇺🇸 EEUU** (solo si `hasEEUU`):
-- Compras · Ventas · Xfer. · Amort. · Bal EEUU · Precio USD · Monto USD · Avg USD · Valoriz. USD
+- Compras · **Xfer.** · Ventas · Amort. · Bal EEUU · Precio USD · Monto USD · Avg USD · Valoriz. USD
+
+**Columna Xfer.** (en ambos grupos):
+- Si hay transferencia implícita del ledger (`_xferAR`/`_xferEEUU`): muestra con signo — `(N)` rojo si sale, `+N` verde si entra
+- Si no hay transferencia implícita: muestra XFER_IN real del broker o `—`
+- Nunca combina ambos en la misma celda
 
 **Grupo Total** (siempre): Bal Total (violeta)
 
