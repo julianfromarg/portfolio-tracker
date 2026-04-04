@@ -812,6 +812,15 @@ async function fetchFXHistory() {
     // Rebuild ledger with FX history now available
     if(_historicalTxns && _historicalTxns.length) {
       _ledger = buildLedger(_historicalTxns, _fxHistory);
+      // Rebuild portfolio so isEffectivelyClosed re-evaluates with the correct ledger
+      const deduped = deduplicateMEP(_historicalTxns);
+      const clean   = canonicalizeTickers(deduped);
+      const {usCards, arCards, optionsExcluded, instruments} = buildPortfolio(clean, _fxHistory);
+      US.length=0; US.push(...usCards);
+      AR.length=0; AR.push(...arCards);
+      _instruments = instruments;
+      _optionsExcluded = optionsExcluded;
+      rebuildEspeciesDropdown();
     }
   } catch(e) { console.warn('fetchFXHistory failed:', e); }
 }
