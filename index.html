@@ -1487,8 +1487,22 @@ function isEffectivelyClosed(ticker, ops) {
   // Using <= so instruments whose last activity was IN 2020 are also treated as stale
   // (e.g. BDC20 fully amortized in Jan 2020 — the export history doesn't go back
   // far enough to confirm the position was opened and closed within that year)
+  // EXCEPTION: if the calculated balance is > 0, the position is genuinely open —
+  // don't discard it just because the last trade was in 2020 (e.g. AY24 bought in July 2020).
   const years = ops.map(t => { const y=(t.fecha||'').slice(0,4); return y?parseInt(y):0; }).filter(y=>y>0);
-  if(years.length && Math.max(...years) <= STALE_CUTOFF_YEAR) return true;
+  if(years.length && Math.max(...years) <= STALE_CUTOFF_YEAR) {
+    // Calculate real balance before deciding
+    let realBal = 0;
+    for(const t of ops) {
+      const op = t.operacion, qty = t.cantidad;
+      if(BUY_OPS.includes(op) && qty > 0)               realBal += qty;
+      else if(SELL_OPS.includes(op) && qty > 0)         realBal -= qty;
+      else if(op === 'Pago de Amortización' && qty < 0) realBal += qty;
+      else if(op === XFER_IN && qty > 0)                realBal += qty;
+    }
+    if(realBal <= 0) return true; // truly stale/closed
+    // else: balance is open — fall through to return false below
+  }
 
   // Case 2: fully amortized (Pago de Amortización with cantidad=0)
   const hasBuy   = ops.some(t => BUY_OPS.includes(t.operacion) && t.cantidad > 0);
