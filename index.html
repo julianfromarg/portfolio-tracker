@@ -3228,16 +3228,19 @@ function rebuildEspeciesDropdown() {
   if(!sel) return;
   const cur = sel.value;
 
-  // Tickers con balance abierto (net > 0)
-  const openTickers = new Map(); // ticker -> net total
+  // Tickers con balance abierto (net > 0) — desde AR/US cards
+  const openTickers = new Map();
   for(const d of [...AR, ...US]) {
     if(d.net > 0) {
       openTickers.set(d.ticker, (openTickers.get(d.ticker) || 0) + d.net);
     }
   }
 
-  // Todos los tickers con historial
-  const allTickers = [...new Set([...AR, ...US].map(d => d.ticker))].sort();
+  // Todos los tickers con historial — desde _ledger (incluye cerrados/stale)
+  // Filtrar: opciones y operaciones de cash (tienen espacios)
+  const allTickers = Object.keys(_ledger)
+    .filter(tk => !tk.includes(' ') && !isOption(tk))
+    .sort();
   const closedTickers = allTickers.filter(tk => !openTickers.has(tk));
   const openSorted    = [...openTickers.keys()].sort();
 
