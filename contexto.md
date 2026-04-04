@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 04/04/2026 v2
+## Versión: 03/04/2026 v3
 
 ---
 
@@ -17,7 +17,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3777 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3760 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `CONTEXTO_PORTFOLIO_DASHBOARD_v03_04_v3.md` | Este archivo |
 
@@ -467,12 +467,6 @@ El selector de ticker usa `<optgroup>` para separar posiciones abiertas de cerra
 - **● Posiciones abiertas (N)** — tickers con `net > 0`, muestra el balance entre paréntesis
 - **○ Históricas / cerradas (N)** — tickers con historial pero sin balance
 
-**Fuente de datos:** `rebuildEspeciesDropdown` usa `Object.keys(_instruments)` como fuente (no `AR`/`US`). Esto es crítico: `buildPortfolio` descarta instrumentos cerrados/stale (e.g. AY24, ALUA, AAPL) porque devuelven `bought:0` desde `buildInstrument` cuando `isEffectivelyClosed=true` — nunca llegan a `AR`/`US`. Al leer de `_instruments` directamente, todos los instrumentos procesados aparecen en el dropdown.
-
-**Filtros aplicados:**
-- `!tk.includes(' ')` — excluye operaciones de cash que se parsean como tickers (depósitos, cauciones, transferencias, "Compra de Dólares", etc.)
-- `!isOption(tk)` — excluye contratos de opciones (ya excluidos de portfolio)
-
 ### Layout de la tabla — columnas dinámicas:
 
 El layout se adapta según qué sub-cuentas tenga el instrumento. Flags de layout: `hasAR`, `hasEEUU`, `hasAR_ARS`, `hasAR_USD`.
@@ -645,7 +639,6 @@ Supabase cappea en 1000 filas por request independientemente del `limit` enviado
 | Tab activo no persiste al refrescar | `act-portfolio` hardcodeado en HTML, sin persistencia | `switchTab` guarda en `localStorage('active_tab')`, `init` restaura |
 | `switchTab` explota si panel no existe | `getElementById(...).classList` sobre null | Guard: `const panel = getElementById(...); if(!panel) return;` |
 | Dropdown Especies vacío al abrir tab | `rebuildEspeciesDropdown` solo se llamaba en `processAndRefresh` | También se llama en `switchTab` cuando key === `'especies'` |
-| Instrumentos cerrados/stale no aparecen en "Históricas / cerradas" | `rebuildEspeciesDropdown` leía de `AR`/`US` — `buildPortfolio` descarta instrumentos con `isEffectivelyClosed=true` (bought:0) antes de pushearlos | Cambiar fuente a `Object.keys(_instruments)` con filtros `!includes(' ')` y `!isOption()` |
 
 ### FX / Supabase
 
