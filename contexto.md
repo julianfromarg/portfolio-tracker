@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 04/04/2026 v1
+## Versión: 04/04/2026 v2
 
 ---
 
@@ -17,7 +17,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3774 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3777 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `CONTEXTO_PORTFOLIO_DASHBOARD_v03_04_v3.md` | Este archivo |
 
@@ -387,34 +387,7 @@ new Set([
 ])
 ```
 
-**Cauciones en Dólares — `buildUsdCaucionMovs()` + `isCashSkip()`:**
-
-El broker registra las cauciones en dólares con dos movimientos: un débito USD al colocar la caución y un crédito ARS al liquidarla. Ninguno de los dos representa un flujo real de caja (el USD queda inmovilizado internamente). Si no se excluyen, el saldo USD baja artificialmente y el saldo ARS sube de forma ficticia.
-
-```javascript
-// Identifica todos los nro_mov que tienen al menos una fila
-// con operacion === 'Caución' AND ticker === 'Caución en Dólares Arg.'
-function buildUsdCaucionMovs(rawTxns) {
-  const movs = new Set();
-  for(const t of rawTxns) {
-    if(t.operacion === 'Caución' && t.ticker === 'Caución en Dólares Arg.'
-       && t.nro_mov && t.nro_mov !== '0') {
-      movs.add(t.nro_mov);
-    }
-  }
-  return movs;
-}
-
-// Cualquier fila cuyo nro_mov esté en el set se excluye del cash
-// (esto captura tanto el débito USD como el crédito ARS de liquidación)
-function isCashSkip(t, usdCaucionMovs) {
-  if(CASH_SKIP_OPS.has(t.operacion)) return true;
-  if(usdCaucionMovs && usdCaucionMovs.has(t.nro_mov)) return true;
-  return false;
-}
-```
-
-`buildUsdCaucionMovs` se llama en: `processAndRefresh`, `fetchLatestPrices` (post-overrides), `saveNRAOverride`, y `recalcSnapshots`. El resultado se pasa siempre a `buildCash`, `buildCashDaily`, y `buildAuditRows`.
+**Cauciones en Dólares:** `buildUsdCaucionMovs()` identifica `nro_mov` de cauciones en dólares y excluye sus filas del cash.
 
 **NRA en cash:**
 - `buildCash()` y `buildCashDaily()` llaman `calcNRA(t)` para cada dividendo EEUU
@@ -493,6 +466,12 @@ Se setea en `processAndRefresh()` desde el return de `buildPortfolio()`. Se rese
 El selector de ticker usa `<optgroup>` para separar posiciones abiertas de cerradas:
 - **● Posiciones abiertas (N)** — tickers con `net > 0`, muestra el balance entre paréntesis
 - **○ Históricas / cerradas (N)** — tickers con historial pero sin balance
+
+**Fuente de datos:** `rebuildEspeciesDropdown` usa `Object.keys(_instruments)` como fuente (no `AR`/`US`). Esto es crítico: `buildPortfolio` descarta instrumentos cerrados/stale (e.g. AY24, ALUA, AAPL) porque devuelven `bought:0` desde `buildInstrument` cuando `isEffectivelyClosed=true` — nunca llegan a `AR`/`US`. Al leer de `_instruments` directamente, todos los instrumentos procesados aparecen en el dropdown.
+
+**Filtros aplicados:**
+- `!tk.includes(' ')` — excluye operaciones de cash que se parsean como tickers (depósitos, cauciones, transferencias, "Compra de Dólares", etc.)
+- `!isOption(tk)` — excluye contratos de opciones (ya excluidos de portfolio)
 
 ### Layout de la tabla — columnas dinámicas:
 
@@ -666,6 +645,7 @@ Supabase cappea en 1000 filas por request independientemente del `limit` enviado
 | Tab activo no persiste al refrescar | `act-portfolio` hardcodeado en HTML, sin persistencia | `switchTab` guarda en `localStorage('active_tab')`, `init` restaura |
 | `switchTab` explota si panel no existe | `getElementById(...).classList` sobre null | Guard: `const panel = getElementById(...); if(!panel) return;` |
 | Dropdown Especies vacío al abrir tab | `rebuildEspeciesDropdown` solo se llamaba en `processAndRefresh` | También se llama en `switchTab` cuando key === `'especies'` |
+| Instrumentos cerrados/stale no aparecen en "Históricas / cerradas" | `rebuildEspeciesDropdown` leía de `AR`/`US` — `buildPortfolio` descarta instrumentos con `isEffectivelyClosed=true` (bought:0) antes de pushearlos | Cambiar fuente a `Object.keys(_instruments)` con filtros `!includes(' ')` y `!isOption()` |
 
 ### FX / Supabase
 
