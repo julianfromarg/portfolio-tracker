@@ -147,21 +147,7 @@ tbody tr:hover td{background:var(--s2);}
 .tab.act-evol{color:var(--purple);border-bottom-color:var(--purple);}
 /* ── ESPECIES TAB ── */
 .tab.act-especies{color:var(--us);border-bottom-color:var(--us);}
-.tab.act-especies2{color:var(--green);border-bottom-color:var(--green);}
 .tab.act-fx{color:var(--ar);border-bottom-color:var(--ar);}
-/* ── ESPECIES NUEVO TAB ── */
-#esp2-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 8px;font-family:var(--mono);font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
-#esp2-tbl tbody td{padding:5px 8px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
-#esp2-tbl tbody tr:hover td{background:var(--s2);}
-#esp2-tbl tfoot td{padding:7px 8px;font-family:var(--mono);font-size:11px;font-weight:600;border-top:2px solid var(--border);background:var(--s2);}
-#esp2-tbl th.esp2-group-ar{color:var(--ar);border-bottom:2px solid var(--ar)!important;}
-#esp2-tbl th.esp2-group-us{color:var(--us);border-bottom:2px solid var(--us)!important;}
-#esp2-tbl th.esp2-group-shared{border-bottom:1px solid var(--border)!important;}
-#esp2-tbl td.esp2-div{border-left:1px solid rgba(107,122,153,.35);padding-left:10px!important;}
-#esp2-tbl th.esp2-div{border-left:1px solid rgba(107,122,153,.35);padding-left:10px!important;}
-#esp2-tbl td.esp2-div-strong{border-left:2px solid var(--muted);padding-left:12px!important;}
-#esp2-tbl th.esp2-div-strong{border-left:2px solid var(--muted);padding-left:12px!important;}
-.esp2-stale{opacity:.45;}
 #esp-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 8px;font-family:var(--mono);font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
 #esp-tbl tbody td{padding:5px 8px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
 #esp-tbl tbody tr:hover td{background:var(--s2);}
@@ -251,7 +237,6 @@ tbody tr:hover td{background:var(--s2);}
   <div class="tab" onclick="switchTab(this,'nra')">🏛 Ret. NRA</div>
   <div class="tab" onclick="switchTab(this,'evol')">📈 Evolución</div>
   <div class="tab" onclick="switchTab(this,'especies')">🔍 Especies</div>
-  <div class="tab" onclick="switchTab(this,'especies2')">🔍 Especies ★</div>
   <div class="tab" onclick="switchTab(this,'fx')">💱 Tipo de Cambio</div>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
     <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
@@ -394,7 +379,6 @@ const AR=[];
 let _cashBalances = null;   // {account: balance} — set in processAndRefresh
 let _optionsExcluded = 0;   // count of excluded option contracts
 let _instruments = {};      // { ticker: buildInstrument result } — canonical source of truth
-let _ledger = {};           // { ticker: LedgerInstrument } — NEW ledger, replaces _instruments
 let _especiesRows  = [];    // last rendered rows from renderEspecies (for XLS export)
 let _especiesState = {};    // {ticker, hasAR, hasEEUU, opsLen} — export metadata
 
@@ -559,7 +543,7 @@ function aRow(r){
     const isCashRow = r.saldo_cash !== null && r.saldo_cash !== undefined;
     if(isCashRow) {
       const isARS = r.cuenta === 'Argentina (ARS)';
-      const sym = isARS ? '$ ' : 'U$S ';
+      const sym = isARS ? '$ ' : 'U$S ';
       const abs = Math.abs(r.saldo_cash);
       const fmt = isARS
         ? new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(abs)
@@ -824,12 +808,6 @@ async function fetchFXHistory() {
     // Rebuild blended avgs now that FX history is available
     // (processAndRefresh runs before fetchFXHistory resolves, so _fxHistory was empty)
     rebuildBlendedAvgs();
-    // Rebuild ledger with now-available FX history
-    if(_historicalTxns && _historicalTxns.length) {
-      _ledger = buildLedger(_historicalTxns, _fxHistory);
-      const esp2Ticker = document.getElementById('esp2-ticker-select')?.value;
-      if(esp2Ticker) renderEspeciesNuevo();
-    }
   } catch(e) { console.warn('fetchFXHistory failed:', e); }
 }
 
@@ -929,7 +907,6 @@ function switchTab(el,key){
   panel.classList.add('active');
   localStorage.setItem('active_tab', key);
   if(key === 'especies') rebuildEspeciesDropdown();
-  if(key === 'especies2') rebuildEspecies2Dropdown();
   if(key === 'fx') renderFXTab();
 }
 
@@ -2497,8 +2474,6 @@ function processAndRefresh(rawMerged) {
   US.length=0;    US.push(...usCards);
   AR.length=0;    AR.push(...arCards);
   _instruments = instruments;
-  // Build new ledger in parallel (nuevas Especies ★)
-  _ledger = buildLedger(_historicalTxns, _fxHistory);
   const {balances, movements} = buildCash(rawMerged, usdCaucionMovs);
   _cashBalances = balances;
   _optionsExcluded = optionsExcluded;
@@ -2515,7 +2490,6 @@ function processAndRefresh(rawMerged) {
   rebuildYearDropdown();
   renderNRATab();
   rebuildEspeciesDropdown();
-  rebuildEspecies2Dropdown();
 
   // Cash strips removed — cash is now shown inline in the Portfolio table
   // Options disclaimer is now handled inside renderPortfolioTable()
@@ -2919,7 +2893,7 @@ function rebuildEspeciesDropdown() {
   if(!sel) return;
   const cur = sel.value;
 
-  // Tickers con balance abierto (net > 0) — desde AR/US cards
+  // Tickers con balance abierto (net > 0)
   const openTickers = new Map(); // ticker -> net total
   for(const d of [...AR, ...US]) {
     if(d.net > 0) {
@@ -2927,11 +2901,8 @@ function rebuildEspeciesDropdown() {
     }
   }
 
-  // Todos los tickers con historial — desde _instruments (incluye cerrados/stale que
-  // buildPortfolio descarta). Filtrar: opciones y operaciones de cash (tienen espacios).
-  const allTickers = Object.keys(_instruments)
-    .filter(tk => !tk.includes(' ') && !isOption(tk))
-    .sort();
+  // Todos los tickers con historial
+  const allTickers = [...new Set([...AR, ...US].map(d => d.ticker))].sort();
   const closedTickers = allTickers.filter(tk => !openTickers.has(tk));
   const openSorted    = [...openTickers.keys()].sort();
 
@@ -3484,467 +3455,6 @@ function exportEspeciesXLS() {
   XLSX.writeFile(wb, `Especies_${ticker}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
-// ══════════════════════════════════════════════════════════════════════
-//  INSTRUMENT LEDGER — fuente de verdad para posiciones y precios prom.
-//  Opera sobre rawTxns crudos (pre-dedup, pre-canonicalización).
-//  Convive con buildInstrument/_instruments hasta el cutover completo.
-// ══════════════════════════════════════════════════════════════════════
-
-function buildLedger(rawTxns, fxHistory = {}) {
-  if(!rawTxns || !rawTxns.length) return {};
-
-  // ── helpers ──────────────────────────────────────────────────────────
-  // Derivar ticker canónico y slot desde ticker_raw + cuenta
-  function getCanonicalAndSlot(ticker_raw, cuenta) {
-    const canonical = TICKER_TO_GROUP[ticker_raw] || ticker_raw;
-    let slot;
-    if(cuenta.includes('EEUU'))        slot = 'EEUU';
-    else if(cuenta.includes('ARS'))    slot = 'AR_ARS';
-    else                               slot = 'AR_USD';
-    return { canonical, slot };
-  }
-
-  // FX en o antes de una fecha
-  function getFX(fecha) {
-    if(!fecha || !Object.keys(fxHistory).length) return null;
-    const dates = Object.keys(fxHistory).filter(d => d <= fecha).sort();
-    if(dates.length) return fxHistory[dates[dates.length - 1]];
-    const all = Object.keys(fxHistory).sort();
-    return all.length ? fxHistory[all[0]] : null;
-  }
-
-  // Costo de una txn de compra en la moneda de su cuenta (sin comisiones)
-  function costNoComis(t) {
-    const raw = t.ticker_raw || t.ticker;
-    if(isBond(raw)) return (t.precio || 0) * (t.cantidad || 0) / 100;
-    return Math.abs(t.monto || 0)
-      - Math.abs(t.comision || 0)
-      - Math.abs(t.iva || 0)
-      - Math.abs(t.otros_imp || 0);
-  }
-  function costWithComis(t) {
-    const raw = t.ticker_raw || t.ticker;
-    if(isBond(raw)) return (t.precio || 0) * (t.cantidad || 0) / 100;
-    return Math.abs(t.monto || 0);
-  }
-  // Para XFER_IN (acreditación gratuita): costo = comisiones e impuestos solamente
-  function costXfer(t) {
-    return Math.abs(t.comision || 0) + Math.abs(t.iva || 0) + Math.abs(t.otros_imp || 0);
-  }
-
-  // ── agrupar txns por instrumento canónico ────────────────────────────
-  const byTicker = {};
-  for(const t of rawTxns) {
-    const ticker_raw = t.ticker || '';
-    if(!ticker_raw) continue;
-    // Excluir opciones
-    if(isOption(ticker_raw)) continue;
-    // Excluir operaciones de cash puro (sin ticker real)
-    if(ticker_raw.includes(' ') || ticker_raw === '') continue;
-
-    const { canonical, slot } = getCanonicalAndSlot(ticker_raw, t.cuenta || '');
-    if(!byTicker[canonical]) byTicker[canonical] = [];
-    byTicker[canonical].push({ ...t, ticker_raw, _canonical: canonical, _slot: slot });
-  }
-
-  // ── construir instrumento por instrumento ────────────────────────────
-  const ledger = {};
-
-  for(const [canonical, txns] of Object.entries(byTicker)) {
-    // Ordenar cronológicamente, luego por nro_mov como tiebreaker
-    txns.sort((a, b) => {
-      const d = a.fecha.localeCompare(b.fecha);
-      return d !== 0 ? d : (parseInt(a.nro_mov || 0) - parseInt(b.nro_mov || 0));
-    });
-
-    // Estado acumulador por slot
-    const state = {
-      AR_ARS: { bal: 0, costARS: 0, costUSD: 0, costWithCom: 0 },
-      AR_USD: { bal: 0, costUSD: 0, costWithCom: 0 },
-      EEUU:   { bal: 0, costUSD: 0, costWithCom: 0 },
-    };
-
-    const processedTxns = txns.map(t => {
-      const { _slot: slot, operacion: op, cantidad: qty = 0 } = t;
-      const s = state[slot];
-      let txnCostNoC = 0, txnCostWithC = 0;
-
-      if(BUY_OPS.includes(op) && qty > 0) {
-        txnCostNoC   = costNoComis(t);
-        txnCostWithC = costWithComis(t);
-        s.bal         += qty;
-        s.costWithCom += txnCostWithC;
-        if(slot === 'AR_ARS') {
-          s.costARS += txnCostNoC;
-          const fx = getFX(t.fecha);
-          if(fx && fx > 0) s.costUSD += txnCostNoC / fx;
-        } else {
-          // AR_USD y EEUU: costo ya en USD
-          s.costUSD += txnCostNoC;
-        }
-
-      } else if(SELL_OPS.includes(op) && qty > 0) {
-        // VWAP móvil: reducir costo proporcionalmente
-        if(s.bal > 0) {
-          const sellQty = Math.min(qty, s.bal);
-          const ratio   = Math.max(0, (s.bal - sellQty) / s.bal);
-          s.costARS     = (s.costARS     || 0) * ratio;
-          s.costUSD    *= ratio;
-          s.costWithCom *= ratio;
-          s.bal -= qty;
-          if(s.bal <= 0) {
-            s.bal = 0; s.costARS = 0; s.costUSD = 0; s.costWithCom = 0;
-          }
-        }
-
-      } else if(op === XFER_IN && qty > 0) {
-        // Acreditación gratuita: suma cantidad, costo = comisiones/impuestos
-        txnCostNoC   = costXfer(t);
-        txnCostWithC = costXfer(t);
-        s.bal         += qty;
-        s.costWithCom += txnCostWithC;
-        if(slot === 'AR_ARS') {
-          s.costARS += txnCostNoC;
-          const fx = getFX(t.fecha);
-          if(fx && fx > 0) s.costUSD += txnCostNoC / fx;
-        } else {
-          s.costUSD += txnCostNoC;
-        }
-
-      } else if(op === 'Pago de Amortización' && qty < 0) {
-        // Amortización parcial: reduce balance proporcionalmente
-        const absQty = Math.abs(qty);
-        if(s.bal > 0) {
-          const ratio = Math.max(0, (s.bal - absQty) / s.bal);
-          s.costARS     = (s.costARS     || 0) * ratio;
-          s.costUSD    *= ratio;
-          s.costWithCom *= ratio;
-          s.bal -= absQty;
-          if(s.bal <= 0) {
-            s.bal = 0; s.costARS = 0; s.costUSD = 0; s.costWithCom = 0;
-          }
-        }
-      }
-
-      // Snap del estado completo después de esta txn
-      const snap = {};
-      for(const [k, sv] of Object.entries(state)) {
-        const bal = Math.round(sv.bal * 10000) / 10000;
-        snap[k] = {
-          bal,
-          avgNoC_native: bal > 0 ? (k === 'AR_ARS' ? (sv.costARS || 0) / bal : sv.costUSD / bal) : 0,
-          avgNoC_usd:    bal > 0 ? sv.costUSD / bal : 0,
-          avgNoC_ars:    bal > 0 && k === 'AR_ARS' ? (sv.costARS || 0) / bal : 0,
-          avgWithC:      bal > 0 ? sv.costWithCom / bal : 0,
-        };
-      }
-      // Aggregates
-      const balAR    = Math.round((state.AR_ARS.bal + state.AR_USD.bal) * 10000) / 10000;
-      const balEEUU  = Math.round(state.EEUU.bal * 10000) / 10000;
-      const balTotal = Math.round((balAR + balEEUU) * 10000) / 10000;
-      // Blended avg AR in USD
-      const arCostUSD  = (state.AR_ARS.costUSD || 0) + (state.AR_USD.costUSD || 0);
-      const arCostARS  = state.AR_ARS.costARS  || 0;
-      const avgAR_usd  = balAR > 0 ? arCostUSD / balAR : 0;
-      // Blended avg AR in ARS: only pure-ARS if no AR_USD; else convert blended USD via getFX
-      let avgAR_ars = 0;
-      if(balAR > 0) {
-        if(state.AR_USD.bal <= 0) {
-          // Pure ARS — use ARS cost directly, no FX distortion
-          avgAR_ars = arCostARS / balAR;
-        } else {
-          // Mixed: convert USD blended back to ARS at date's FX
-          const fx = getFX(t.fecha);
-          avgAR_ars = fx && fx > 0 ? avgAR_usd * fx : 0;
-        }
-      }
-      snap._totals = { balAR, balEEUU, balTotal, avgAR_usd, avgAR_ars,
-                       avgEEUU_usd: snap.EEUU.avgNoC_native };
-
-      return {
-        ...t,
-        _costNoC:   txnCostNoC,
-        _costWithC: txnCostWithC,
-        _snap:      snap,
-      };
-    });
-
-    // Posición final
-    const balAR   = Math.round((state.AR_ARS.bal + state.AR_USD.bal) * 10000) / 10000;
-    const balEEUU = Math.round(state.EEUU.bal * 10000) / 10000;
-    const arCostUSD = (state.AR_ARS.costUSD || 0) + (state.AR_USD.costUSD || 0);
-    const arCostARS = state.AR_ARS.costARS || 0;
-    const avgAR_usd = balAR > 0 ? arCostUSD / balAR : 0;
-    let avgAR_ars = 0;
-    if(balAR > 0) {
-      if(state.AR_USD.bal <= 0) {
-        avgAR_ars = arCostARS / balAR;
-      } else {
-        const lastFX = getFX(txns[txns.length - 1]?.fecha);
-        avgAR_ars = lastFX && lastFX > 0 ? avgAR_usd * lastFX : 0;
-      }
-    }
-
-    const dates    = txns.map(t => t.fecha).filter(Boolean);
-    const lastDate = dates.length ? dates[dates.length - 1] : '';
-    const lastYear = lastDate ? parseInt(lastDate.slice(0, 4)) : 0;
-
-    ledger[canonical] = {
-      ticker:    canonical,
-      txns:      processedTxns,
-      slots:     {
-        AR_ARS: { ...state.AR_ARS },
-        AR_USD: { ...state.AR_USD },
-        EEUU:   { ...state.EEUU   },
-      },
-      totals: {
-        balAR, balEEUU,
-        balTotal: Math.round((balAR + balEEUU) * 10000) / 10000,
-        avgAR_usd, avgAR_ars,
-        avgEEUU_usd: balEEUU > 0 ? state.EEUU.costUSD / balEEUU : 0,
-      },
-      meta: {
-        isClosed: balAR <= 0 && balEEUU <= 0,
-        // isStale solo si posición cerrada Y última operación <= STALE_CUTOFF_YEAR
-        // Un instrumento con balance > 0 NUNCA es stale — siempre aparece en Abiertas
-        isStale:  (balAR <= 0 && balEEUU <= 0) && (lastYear > 0 && lastYear <= STALE_CUTOFF_YEAR),
-        isBond:   isBond(canonical),
-        firstDate: dates.length ? dates[0] : '',
-        lastDate,
-        opCount:  txns.length,
-      },
-    };
-  }
-
-  return ledger;
-}
-
-// ── Dropdown del nuevo tab ────────────────────────────────────────────
-function rebuildEspecies2Dropdown() {
-  const sel       = document.getElementById('esp2-ticker-select');
-  if(!sel) return;
-  const cur       = sel.value;
-  const showStale = document.getElementById('esp2-show-stale')?.checked;
-
-  const open   = [], closed = [], stale = [];
-  for(const [tk, inst] of Object.entries(_ledger)) {
-    if(inst.meta.isStale) { if(showStale) stale.push(tk); continue; }
-    if(!inst.meta.isClosed) open.push(tk);
-    else closed.push(tk);
-  }
-  open.sort(); closed.sort(); stale.sort();
-
-  sel.innerHTML = '<option value="">— Elegir especie —</option>';
-  if(open.length) {
-    const g = document.createElement('optgroup');
-    g.label = `● Posiciones abiertas (${open.length})`;
-    open.forEach(tk => {
-      const o = document.createElement('option');
-      const inst = _ledger[tk];
-      o.value = tk;
-      o.textContent = `${tk}  (AR: ${N(inst.totals.balAR,0)} · EEUU: ${N(inst.totals.balEEUU,0)})`;
-      g.appendChild(o);
-    });
-    sel.appendChild(g);
-  }
-  if(closed.length) {
-    const g = document.createElement('optgroup');
-    g.label = `○ Cerradas (${closed.length})`;
-    closed.forEach(tk => { const o = document.createElement('option'); o.value = o.textContent = tk; g.appendChild(o); });
-    sel.appendChild(g);
-  }
-  if(stale.length) {
-    const g = document.createElement('optgroup');
-    g.label = `⚠ Históricas pre-2020 (${stale.length})`;
-    stale.forEach(tk => { const o = document.createElement('option'); o.value = o.textContent = tk; g.appendChild(o); });
-    sel.appendChild(g);
-  }
-  if(cur) sel.value = cur;
-}
-
-// ── Render del nuevo tab ──────────────────────────────────────────────
-function renderEspeciesNuevo() {
-  const ticker = document.getElementById('esp2-ticker-select')?.value;
-  const tbody  = document.getElementById('esp2Tbody');
-  const tfoot  = document.getElementById('esp2Tfoot');
-  const tbl    = document.getElementById('esp2-tbl');
-  const empty  = document.getElementById('esp2-empty');
-  const sumEl  = document.getElementById('esp2-summary');
-  const fn     = document.getElementById('esp2-footnote');
-  if(!tbody) return;
-
-  if(!ticker) {
-    tbody.innerHTML = '';
-    if(tfoot) tfoot.innerHTML = '';
-    if(tbl)   tbl.style.display = 'none';
-    if(empty) empty.style.display = 'block';
-    if(fn)    fn.style.display = 'none';
-    if(sumEl) sumEl.textContent = '';
-    return;
-  }
-
-  const inst = _ledger[ticker];
-  if(!inst || !inst.txns.length) {
-    tbody.innerHTML = '<tr><td colspan="30" class="no-r">Sin operaciones para esta especie.</td></tr>';
-    if(tfoot) tfoot.innerHTML = '';
-    if(tbl)   tbl.style.display = '';
-    if(empty) empty.style.display = 'none';
-    return;
-  }
-
-  if(tbl)   tbl.style.display = '';
-  if(empty) empty.style.display = 'none';
-  if(fn)    fn.style.display = 'block';
-
-  const txns   = inst.txns;
-  const hasAR  = txns.some(t => t._slot === 'AR_ARS' || t._slot === 'AR_USD');
-  const hasUS  = txns.some(t => t._slot === 'EEUU');
-  const hasARS = txns.some(t => t._slot === 'AR_ARS');
-  const hasARU = txns.some(t => t._slot === 'AR_USD');
-
-  // ── helpers de formato ──────────────────────────────────────────────
-  const fmtD   = d => d && d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : d||'--';
-  const fmtQ   = (n, cls) => n > 0 ? `<span class="${cls}">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
-  const fmtBal = n => { const c = n>0?'esp-pos':n<0?'esp-neg':'esp-muted'; return `<span class="${c}">${N(n,0)}</span>`; };
-  const fmtP   = (n, sym) => n > 0
-    ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>`
-    : '<span class="esp-muted">—</span>';
-  const fmtFX  = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
-  const opLabel = op => {
-    if(BUY_OPS.includes(op))              return '<span class="oc">Compra</span>';
-    if(SELL_OPS.includes(op))             return '<span class="ov">Venta</span>';
-    if(op === XFER_IN)                    return '<span style="color:var(--purple)">Transf.</span>';
-    if(op === 'Pago de Amortización')     return '<span class="od">Amort.</span>';
-    return `<span class="esp-muted">${op.slice(0,10)}</span>`;
-  };
-  const slotLabel = t => {
-    if(t._slot==='AR_ARS') return '<span class="esp-ars" style="font-size:9px;">AR $</span>';
-    if(t._slot==='AR_USD') return '<span class="esp-usd" style="font-size:9px;">AR U$S</span>';
-    return '<span class="esp-us" style="font-size:9px;">EEUU</span>';
-  };
-
-  // ── group headers ───────────────────────────────────────────────────
-  // Columnas:
-  // Shared: Fecha | Cuenta | Op. | Cant. | Precio | Monto | Comis.
-  // AR block (si hasAR): Bal AR | Avg AR $ | Avg AR U$S | Valoriz. ARS | Valoriz. USD
-  // EEUU block (si hasUS): Bal EEUU | Avg EEUU U$S | Valoriz. USD
-  // Shared: Bal Total | FX
-  const grpRow = document.getElementById('esp2-thead-groups');
-  const colRow = document.getElementById('esp2-thead-cols');
-
-  const arCols   = hasAR ? 5 : 0;
-  const usCols   = hasUS ? 3 : 0;
-
-  let gh = `<th class="esp2-group-shared" colspan="7"></th>`;
-  if(hasAR) gh += `<th class="esp2-group-ar" colspan="${arCols}" style="text-align:center;">🇦🇷 Argentina</th>`;
-  if(hasUS) gh += `<th class="esp2-group-us esp2-div-strong" colspan="${usCols}" style="text-align:center;">🇺🇸 EEUU</th>`;
-  gh += `<th class="esp2-group-shared esp2-div-strong" colspan="2" style="text-align:center;">Total</th>`;
-  grpRow.innerHTML = gh;
-
-  let ch = `
-    <th style="text-align:left;">Fecha</th>
-    <th style="text-align:left;">Cuenta</th>
-    <th style="text-align:left;">Op.</th>
-    <th class="esp-num">Cant.</th>
-    <th class="esp-num">Precio</th>
-    <th class="esp-num">Monto</th>
-    <th class="esp-num">Comis.</th>`;
-  if(hasAR) ch += `
-    <th class="esp-num esp2-div" style="color:var(--ar);">Bal AR</th>
-    <th class="esp-num esp2-div" style="color:var(--ar);">Avg $</th>
-    <th class="esp-num" style="color:var(--usd);">Avg U$S</th>
-    <th class="esp-num" style="color:var(--ar);">Valoriz. ARS</th>
-    <th class="esp-num" style="color:var(--usd);">Valoriz. USD</th>`;
-  if(hasUS) ch += `
-    <th class="esp-num esp2-div-strong" style="color:var(--us);">Bal EEUU</th>
-    <th class="esp-num esp2-div" style="color:var(--us);">Avg U$S</th>
-    <th class="esp-num" style="color:var(--us);">Valoriz. USD</th>`;
-  ch += `
-    <th class="esp-num esp2-div-strong">Bal Total</th>
-    <th class="esp-num esp2-div">FX</th>`;
-  colRow.innerHTML = ch;
-
-  // ── tbody ───────────────────────────────────────────────────────────
-  tbody.innerHTML = txns.map(t => {
-    const snap = t._snap;
-    const tot  = snap._totals;
-    const fx   = getFXForDate(t.fecha);
-    const isAR = t._slot !== 'EEUU';
-    const symNative = t._slot === 'AR_ARS' ? 'ars' : 'usd';
-
-    // Precio y monto en moneda nativa
-    const priceFmt = t.precio > 0 ? fmtP(t.precio, symNative) : '<span class="esp-muted">—</span>';
-    const montoFmt = t._costNoC > 0 ? fmtP(t._costNoC, symNative) : '<span class="esp-muted">—</span>';
-    const comFmt   = (t.comision > 0 || t.iva > 0 || t.otros_imp > 0)
-      ? fmtP(Math.abs(t.comision||0)+Math.abs(t.iva||0)+Math.abs(t.otros_imp||0), symNative)
-      : '<span class="esp-muted">—</span>';
-
-    let html = `<tr>
-      <td style="white-space:nowrap;">${fmtD(t.fecha)}</td>
-      <td>${slotLabel(t)}</td>
-      <td style="white-space:nowrap;">${opLabel(t.operacion)}</td>
-      <td class="esp-num">${t.cantidad > 0 ? fmtQ(t.cantidad, BUY_OPS.includes(t.operacion)||t.operacion===XFER_IN?'esp-pos':'esp-neg') : '<span class="esp-muted">—</span>'}</td>
-      <td class="esp-num">${priceFmt}</td>
-      <td class="esp-num">${montoFmt}</td>
-      <td class="esp-num">${comFmt}</td>`;
-
-    if(hasAR) {
-      const sAR = snap.AR_ARS;
-      html += `
-      <td class="esp-num esp2-div">${fmtBal(tot.balAR)}</td>
-      <td class="esp-num esp2-div">${fmtP(tot.avgAR_ars, 'ars')}</td>
-      <td class="esp-num">${fmtP(tot.avgAR_usd, 'usd')}</td>
-      <td class="esp-num">${tot.balAR > 0 && tot.avgAR_ars > 0 ? fmtP(tot.avgAR_ars * tot.balAR, 'ars') : '<span class="esp-muted">—</span>'}</td>
-      <td class="esp-num">${tot.balAR > 0 && tot.avgAR_usd > 0 ? fmtP(tot.avgAR_usd * tot.balAR, 'usd') : '<span class="esp-muted">—</span>'}</td>`;
-    }
-    if(hasUS) {
-      html += `
-      <td class="esp-num esp2-div-strong">${fmtBal(tot.balEEUU)}</td>
-      <td class="esp-num esp2-div">${fmtP(tot.avgEEUU_usd, 'usd')}</td>
-      <td class="esp-num">${tot.balEEUU > 0 && tot.avgEEUU_usd > 0 ? fmtP(tot.avgEEUU_usd * tot.balEEUU, 'usd') : '<span class="esp-muted">—</span>'}</td>`;
-    }
-    html += `
-      <td class="esp-num esp2-div-strong">${fmtBal(tot.balTotal)}</td>
-      <td class="esp-num esp2-div">${fmtFX(fx)}</td>
-    </tr>`;
-    return html;
-  }).join('');
-
-  // ── tfoot ───────────────────────────────────────────────────────────
-  const fin = inst.totals;
-  let fh = `<tr><td colspan="3" style="color:var(--muted);">POSICIÓN FINAL · ${inst.meta.opCount} op.</td>
-    <td colspan="4"></td>`;
-  if(hasAR) fh += `
-    <td class="esp-num esp2-div esp-pos">${N(fin.balAR,0)}</td>
-    <td class="esp-num esp2-div">${fmtP(fin.avgAR_ars,'ars')}</td>
-    <td class="esp-num">${fmtP(fin.avgAR_usd,'usd')}</td>
-    <td class="esp-num">${fin.balAR>0&&fin.avgAR_ars>0?fmtP(fin.avgAR_ars*fin.balAR,'ars'):'<span class="esp-muted">—</span>'}</td>
-    <td class="esp-num">${fin.balAR>0&&fin.avgAR_usd>0?fmtP(fin.avgAR_usd*fin.balAR,'usd'):'<span class="esp-muted">—</span>'}</td>`;
-  if(hasUS) fh += `
-    <td class="esp-num esp2-div-strong esp-pos">${N(fin.balEEUU,0)}</td>
-    <td class="esp-num esp2-div">${fmtP(fin.avgEEUU_usd,'usd')}</td>
-    <td class="esp-num">${fin.balEEUU>0&&fin.avgEEUU_usd>0?fmtP(fin.avgEEUU_usd*fin.balEEUU,'usd'):'<span class="esp-muted">—</span>'}</td>`;
-  fh += `
-    <td class="esp-num esp2-div-strong esp-pos">${N(fin.balTotal,0)}</td>
-    <td class="esp-num esp2-div"></td>
-  </tr>`;
-  tfoot.innerHTML = fh;
-
-  // ── summary ─────────────────────────────────────────────────────────
-  if(sumEl) {
-    const parts = [];
-    if(fin.balAR > 0)    parts.push(`AR: ${N(fin.balAR,0)} tít.`);
-    if(fin.balEEUU > 0)  parts.push(`EEUU: ${N(fin.balEEUU,0)} tít.`);
-    if(fin.balTotal > 0) parts.push(`Total: ${N(fin.balTotal,0)} tít.`);
-    const staleWarn = inst.meta.isStale ? ' · <span style="color:var(--usd)">⚠ histórico pre-2020</span>' : '';
-    sumEl.innerHTML = parts.join(' · ') + staleWarn;
-  }
-
-  // count
-  const cnt = document.getElementById('esp2-count');
-  if(cnt) cnt.textContent = `${txns.length} operaciones`;
-}
-
 // ══════ FX TAB ══════
 let _fxTabSort = 'date', _fxTabDir = -1; // default: fecha desc
 
@@ -4208,42 +3718,6 @@ function renderFXTab() {
       <b style="color:var(--text)">Avg</b>: costo promedio ponderado (VWAP) sin comisiones ni impuestos, comparable con el precio de mercado.
     </div>
     <div id="esp-empty" style="padding:60px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--muted);">
-      Elegí una especie del selector para ver su detalle.
-    </div>
-  </div>
-</div>
-
-<!-- Especies Nuevo Panel -->
-<div id="panel-especies2" class="panel" style="padding:0;">
-  <div class="atb" style="gap:12px;">
-    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--green);white-space:nowrap;">🔍 Especies ★</span>
-    <select class="fi" id="esp2-ticker-select" onchange="renderEspeciesNuevo()" style="width:180px;">
-      <option value="">— Elegir especie —</option>
-    </select>
-    <label style="display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:var(--muted);cursor:pointer;">
-      <input type="checkbox" id="esp2-show-stale" onchange="rebuildEspecies2Dropdown()" style="cursor:pointer;">
-      Mostrar históricas pre-2020
-    </label>
-    <span id="esp2-summary" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
-    <span class="a-count" id="esp2-count"></span>
-  </div>
-  <div class="audit-wrap">
-    <table id="esp2-tbl" style="min-width:1100px;display:none;">
-      <thead>
-        <tr id="esp2-thead-groups"></tr>
-        <tr id="esp2-thead-cols"></tr>
-      </thead>
-      <tbody id="esp2Tbody"></tbody>
-      <tfoot id="esp2Tfoot"></tfoot>
-    </table>
-    <div id="esp2-footnote" style="display:none;padding:10px 12px;font-family:var(--mono);font-size:9px;color:var(--muted);border-top:1px solid var(--border);line-height:1.8;">
-      <b style="color:var(--text)">Bal AR</b>: títulos en Argentina (ARS + USD) &nbsp;·&nbsp;
-      <b style="color:var(--text)">Bal EEUU</b>: títulos en cuenta EEUU &nbsp;·&nbsp;
-      <b style="color:var(--text)">Bal Total</b>: AR + EEUU &nbsp;·&nbsp;
-      <b style="color:var(--text)">Avg</b>: precio promedio ponderado (VWAP) sin comisiones &nbsp;·&nbsp;
-      <b style="color:var(--text)">Valoriz.</b>: balance × precio promedio
-    </div>
-    <div id="esp2-empty" style="padding:60px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--muted);">
       Elegí una especie del selector para ver su detalle.
     </div>
   </div>
