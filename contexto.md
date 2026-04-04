@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 03/04/2026 v3
+## Versión: 04/04/2026 v1
 
 ---
 
@@ -17,7 +17,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3760 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~3774 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `CONTEXTO_PORTFOLIO_DASHBOARD_v03_04_v3.md` | Este archivo |
 
@@ -387,7 +387,34 @@ new Set([
 ])
 ```
 
-**Cauciones en Dólares:** `buildUsdCaucionMovs()` identifica `nro_mov` de cauciones en dólares y excluye sus filas del cash.
+**Cauciones en Dólares — `buildUsdCaucionMovs()` + `isCashSkip()`:**
+
+El broker registra las cauciones en dólares con dos movimientos: un débito USD al colocar la caución y un crédito ARS al liquidarla. Ninguno de los dos representa un flujo real de caja (el USD queda inmovilizado internamente). Si no se excluyen, el saldo USD baja artificialmente y el saldo ARS sube de forma ficticia.
+
+```javascript
+// Identifica todos los nro_mov que tienen al menos una fila
+// con operacion === 'Caución' AND ticker === 'Caución en Dólares Arg.'
+function buildUsdCaucionMovs(rawTxns) {
+  const movs = new Set();
+  for(const t of rawTxns) {
+    if(t.operacion === 'Caución' && t.ticker === 'Caución en Dólares Arg.'
+       && t.nro_mov && t.nro_mov !== '0') {
+      movs.add(t.nro_mov);
+    }
+  }
+  return movs;
+}
+
+// Cualquier fila cuyo nro_mov esté en el set se excluye del cash
+// (esto captura tanto el débito USD como el crédito ARS de liquidación)
+function isCashSkip(t, usdCaucionMovs) {
+  if(CASH_SKIP_OPS.has(t.operacion)) return true;
+  if(usdCaucionMovs && usdCaucionMovs.has(t.nro_mov)) return true;
+  return false;
+}
+```
+
+`buildUsdCaucionMovs` se llama en: `processAndRefresh`, `fetchLatestPrices` (post-overrides), `saveNRAOverride`, y `recalcSnapshots`. El resultado se pasa siempre a `buildCash`, `buildCashDaily`, y `buildAuditRows`.
 
 **NRA en cash:**
 - `buildCash()` y `buildCashDaily()` llaman `calcNRA(t)` para cada dividendo EEUU
