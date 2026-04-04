@@ -809,17 +809,17 @@ async function fetchFXHistory() {
     // Rebuild blended avgs now that FX history is available
     // (processAndRefresh runs before fetchFXHistory resolves, so _fxHistory was empty)
     rebuildBlendedAvgs();
-    // Rebuild ledger with FX history now available
+    // Rebuild ledger with FX history now available, then rebuild portfolio
+    // so isEffectivelyClosed re-evaluates with correct ledger balances
     if(_historicalTxns && _historicalTxns.length) {
       _ledger = buildLedger(_historicalTxns, _fxHistory);
-      // Rebuild portfolio so isEffectivelyClosed re-evaluates with the correct ledger
-      const deduped = deduplicateMEP(_historicalTxns);
-      const clean   = canonicalizeTickers(deduped);
-      const {usCards, arCards, optionsExcluded, instruments} = buildPortfolio(clean, _fxHistory);
-      US.length=0; US.push(...usCards);
-      AR.length=0; AR.push(...arCards);
-      _instruments = instruments;
-      _optionsExcluded = optionsExcluded;
+      const deduped2 = deduplicateMEP(_historicalTxns);
+      const clean2   = canonicalizeTickers(deduped2);
+      const {usCards:uc, arCards:ac, optionsExcluded:oe, instruments:ins} = buildPortfolio(clean2, _fxHistory);
+      US.length=0; US.push(...uc);
+      AR.length=0; AR.push(...ac);
+      _instruments = ins;
+      _optionsExcluded = oe;
       rebuildEspeciesDropdown();
     }
   } catch(e) { console.warn('fetchFXHistory failed:', e); }
@@ -1498,11 +1498,12 @@ function isEffectivelyClosed(ticker, ops) {
   if(!ops.length) return false;
 
   // Case 1: stale position — last op is on or before STALE_CUTOFF_YEAR
-  // BUT: if _ledger already calculated a non-zero balance for this ticker,
-  // trust that over the year heuristic — the instrument is genuinely open.
+  // Using <= so instruments whose last activity was IN 2020 are also treated as stale
+  // (e.g. BDC20 fully amortized in Jan 2020 — the export history doesn't go back
+  // far enough to confirm the position was opened and closed within that year)
   const years = ops.map(t => { const y=(t.fecha||'').slice(0,4); return y?parseInt(y):0; }).filter(y=>y>0);
   if(years.length && Math.max(...years) <= STALE_CUTOFF_YEAR) {
-    // Consult ledger if available
+    // Consult ledger if available — if balance > 0 the instrument is genuinely open
     if(_ledger && _ledger[ticker] && _ledger[ticker].totals.balTotal > 0) return false;
     return true;
   }
@@ -2905,68 +2906,40 @@ function exportNRAcsv() {
   a.click();
   URL.revokeObjectURL(url);
 }
+
 // ══════════════════════════════════════════════════════════════════════
-//  INSTRUMENT LEDGER
-//  Fuente de verdad para balances de títulos por instrumento.
+//  INSTRUMENT LEDGER — fuente de verdad para balances de títulos.
 //  Opera sobre rawTxns crudos (pre-dedup, pre-canonicalización).
-//  Convive con buildInstrument/_instruments — no reemplaza nada todavía.
 //
-//  Regla clave del broker Balanz:
-//  Cuando un instrumento opera en cuenta "no nativa" (ej: AY24C vendido
-//  desde EEUU), el broker registra DOS filas con el mismo nro_mov:
-//    - Fila 1 en la cuenta real del instrumento: títulos + monto
-//    - Fila 2 en Argentina (ARS): solo comisiones en pesos
-//  Solo la fila de la cuenta real mueve el balance de títulos.
+//  Regla clave: el broker registra DOS filas por operación cuando
+//  el instrumento opera fuera de su cuenta nativa:
+//    - Fila 1 en cuenta nativa (EEUU para sufijo C, AR USD para sufijo D): títulos + monto
+//    - Fila 2 en Argentina (ARS): solo comisiones — NO mueve títulos
+//  movesTitle() determina cuál fila mueve títulos.
 //
-//  Regla de slot por ticker + cuenta:
-//    - ticker en BOND_TICKERS con sufijo C, o cuenta EEUU (USD) → EEUU
-//    - ticker en BOND_TICKERS con sufijo D, cuenta Argentina (USD) → AR_USD
-//    - ticker en BOND_TICKERS con sufijo D, cuenta Argentina (ARS) → null (solo comisión)
-//    - cuenta Argentina (ARS) → AR_ARS
-//    - cuenta Argentina (USD) → AR_USD
-//    - cuenta EEUU (USD)      → EEUU
-//
-//  Resultado: _ledger[ticker] con balances correctos por slot y totales.
+//  Toda venta consume del pool regional proporcionalmente (una sola bolsa).
 // ══════════════════════════════════════════════════════════════════════
 
 function buildLedger(rawTxns, fxHistory = {}) {
   if(!rawTxns || !rawTxns.length) return {};
 
-  // ── helpers ────────────────────────────────────────────────────────
-
-  // Determina el slot que mueve títulos para una fila dada.
-  // Retorna null si la fila es solo comisión (no mueve títulos).
-  function getTitleSlot(ticker_raw, cuenta) {
-    if(cuenta.includes('EEUU'))     return 'EEUU';
-    if(cuenta.includes('ARS'))      return 'AR_ARS';
-    // cuenta Argentina (USD)
-    // Para bonos con sufijo D (ej: AY24D, AL30D): esta es la fila real de títulos
-    // Para bonos con sufijo C (ej: AY24C, AL30C): esta fila no debería existir
-    //   porque AY24C opera desde EEUU — si aparece en AR es solo comisión
-    // Para acciones (MELID, VISTD): misma lógica que bonos D
-    return 'AR_USD';
-  }
-
-  // ¿Esta fila mueve títulos o es solo comisión?
-  // La regla: una fila mueve títulos solo en la cuenta "nativa" del ticker_raw.
-  // Si el ticker_raw tiene sufijo C → nativa es EEUU (USD)
-  // Si el ticker_raw tiene sufijo D → nativa es Argentina (USD)
-  // Si el ticker_raw no tiene sufijo → nativa es Argentina (ARS)
   function movesTitle(ticker_raw, cuenta) {
     const upper = ticker_raw.toUpperCase();
-    // Sufijo C: cuenta nativa es EEUU
-    if(TICKER_TO_GROUP[upper] && upper.endsWith('C') && upper !== upper.slice(0,-1)) {
-      return cuenta.includes('EEUU');
+    const canonical = TICKER_TO_GROUP[upper];
+    if(canonical) {
+      const suffix = upper.slice(canonical.length);
+      if(suffix === 'C') return cuenta.includes('EEUU');
+      if(suffix === 'D') return cuenta.includes('USD') && cuenta.includes('Argentina');
     }
-    // Sufijo D: cuenta nativa es Argentina (USD)
-    if(TICKER_TO_GROUP[upper] && upper.endsWith('D') && upper !== upper.slice(0,-1)) {
-      return cuenta.includes('USD') && cuenta.includes('Argentina');
-    }
-    // Sin sufijo o no canonicalizable: cuenta nativa es Argentina (ARS) o EEUU según donde opera
     return true;
   }
 
-  // FX en o antes de una fecha
+  function getTitleSlot(ticker_raw, cuenta) {
+    if(cuenta.includes('EEUU')) return 'EEUU';
+    if(cuenta.includes('ARS'))  return 'AR_ARS';
+    return 'AR_USD';
+  }
+
   function getFX(fecha) {
     if(!fecha || !Object.keys(fxHistory).length) return null;
     const dates = Object.keys(fxHistory).filter(d => d <= fecha).sort();
@@ -2975,23 +2948,21 @@ function buildLedger(rawTxns, fxHistory = {}) {
     return all.length ? fxHistory[all[0]] : null;
   }
 
-  // Fecha dd/mm/yy o dd/mm/yyyy → yyyy-mm-dd para ordenar
   function normFecha(f) {
     if(!f) return '';
     if(/^\d{4}-\d{2}-\d{2}$/.test(f)) return f;
-    const [d, m, y] = f.split('/');
+    const parts = f.split('/');
+    if(parts.length !== 3) return f;
+    const [d, m, y] = parts;
     const yr = y.length === 2 ? (parseInt(y) < 50 ? '20'+y : '19'+y) : y;
     return `${yr}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
   }
 
-  // Costo sin comisiones en moneda nativa del slot
   function calcCostNoC(t) {
     const raw = t.ticker_raw || t.ticker;
     if(isBond(raw)) return (t.precio || 0) * (t.cantidad || 0) / 100;
-    return Math.abs(t.monto || 0)
-      - Math.abs(t.comision  || 0)
-      - Math.abs(t.iva       || 0)
-      - Math.abs(t.otros_imp || 0);
+    return Math.abs(t.monto || 0) - Math.abs(t.comision || 0)
+      - Math.abs(t.iva || 0) - Math.abs(t.otros_imp || 0);
   }
 
   function calcCostWithC(t) {
@@ -3000,202 +2971,6 @@ function buildLedger(rawTxns, fxHistory = {}) {
     return Math.abs(t.monto || 0);
   }
 
-  // ── agrupar por ticker canónico ─────────────────────────────────────
-  const byTicker = {};
-  for(const t of rawTxns) {
-    const raw = t.ticker || '';
-    if(!raw || raw.includes(' ')) continue;
-    if(isOption(raw)) continue;
-    const canonical = TICKER_TO_GROUP[raw] || raw;
-    if(!byTicker[canonical]) byTicker[canonical] = [];
-    byTicker[canonical].push(t);
-  }
-
-  // ── construir ledger por instrumento ───────────────────────────────
-  const ledger = {};
-
-  for(const [canonical, txns] of Object.entries(byTicker)) {
-    // Ordenar cronológicamente
-    txns.sort((a, b) => {
-      const da = normFecha(a.fecha), db = normFecha(b.fecha);
-      if(da !== db) return da.localeCompare(db);
-      return (parseInt(a.nro_mov || 0)) - (parseInt(b.nro_mov || 0));
-    });
-
-    // Acumuladores por slot
-    const s = {
-      AR_ARS: { bal: 0, costARS: 0, costUSD: 0, costWithC: 0 },
-      AR_USD: { bal: 0, costUSD: 0, costWithC: 0 },
-      EEUU:   { bal: 0, costUSD: 0, costWithC: 0 },
-    };
-
-    const processedTxns = txns.map(t => {
-      const raw    = t.ticker_raw || t.ticker || '';
-      const cuenta = t.cuenta || '';
-      const op     = t.operacion || '';
-      const qty    = t.cantidad  || 0;
-
-      // ¿Esta fila mueve títulos?
-      const moves = movesTitle(raw, cuenta);
-      if(!moves) {
-        // Fila de comisión pura — no toca balances, retornar sin cambios
-        return { ...t, _movesTitle: false, _slot: null, _snap: snapTotals(s, t.fecha) };
-      }
-
-      const slot = getTitleSlot(raw, cuenta);
-      const sv   = s[slot];
-
-      if(BUY_OPS.includes(op) && qty > 0) {
-        const costNC = calcCostNoC(t);
-        const costWC = calcCostWithC(t);
-        sv.bal      += qty;
-        sv.costWithC += costWC;
-        if(slot === 'AR_ARS') {
-          sv.costARS += costNC;
-          const fx = getFX(normFecha(t.fecha));
-          if(fx && fx > 0) sv.costUSD += costNC / fx;
-        } else {
-          sv.costUSD += costNC;
-        }
-
-      } else if(SELL_OPS.includes(op) && qty > 0) {
-        // Toda venta consume del pool regional proporcionalmente entre slots.
-        // Una sola bolsa por región — no importa el sufijo del ticker.
-        //
-        // Venta desde AR (AY24 o AY24D): consume de AR_ARS + AR_USD proporcional.
-        // Venta desde EEUU (AY24C): transfiere de AR → EEUU proporcional, luego vende.
-
-        if(slot === 'EEUU') {
-          // Paso 1: transferencia implícita AR → EEUU
-          const balAR = s.AR_ARS.bal + s.AR_USD.bal;
-          if(balAR > 0) {
-            const xferQty   = Math.min(qty, balAR);
-            const rARS      = s.AR_ARS.bal / balAR;
-            const rARU      = s.AR_USD.bal / balAR;
-            const arCostUSD = (s.AR_ARS.costUSD || 0) + s.AR_USD.costUSD;
-            const avgAR_usd = arCostUSD / balAR;
-            if(s.AR_ARS.bal > 0) {
-              const r = Math.max(0, (s.AR_ARS.bal - xferQty * rARS) / s.AR_ARS.bal);
-              s.AR_ARS.costARS   = (s.AR_ARS.costARS || 0) * r;
-              s.AR_ARS.costUSD  *= r;
-              s.AR_ARS.costWithC *= r;
-              s.AR_ARS.bal      -= xferQty * rARS;
-              if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costUSD=0; s.AR_ARS.costWithC=0; }
-            }
-            if(s.AR_USD.bal > 0) {
-              const r = Math.max(0, (s.AR_USD.bal - xferQty * rARU) / s.AR_USD.bal);
-              s.AR_USD.costUSD  *= r;
-              s.AR_USD.costWithC *= r;
-              s.AR_USD.bal      -= xferQty * rARU;
-              if(s.AR_USD.bal <= 0) { s.AR_USD.bal=0; s.AR_USD.costUSD=0; s.AR_USD.costWithC=0; }
-            }
-            s.EEUU.bal      += xferQty;
-            s.EEUU.costUSD  += avgAR_usd * xferQty;
-            s.EEUU.costWithC += avgAR_usd * xferQty;
-          }
-          // Paso 2: venta desde EEUU
-          if(s.EEUU.bal > 0) {
-            const sellQty = Math.min(qty, s.EEUU.bal);
-            const r = Math.max(0, (s.EEUU.bal - sellQty) / s.EEUU.bal);
-            s.EEUU.costUSD  *= r;
-            s.EEUU.costWithC *= r;
-            s.EEUU.bal -= qty;
-            if(s.EEUU.bal <= 0) { s.EEUU.bal=0; s.EEUU.costUSD=0; s.EEUU.costWithC=0; }
-          }
-
-        } else {
-          // Venta desde AR — consume del pool AR_ARS + AR_USD proporcionalmente
-          const balAR = s.AR_ARS.bal + s.AR_USD.bal;
-          if(balAR > 0) {
-            const sellQty = Math.min(qty, balAR);
-            const rARS    = s.AR_ARS.bal / balAR;
-            const rARU    = s.AR_USD.bal / balAR;
-            if(s.AR_ARS.bal > 0) {
-              const r = Math.max(0, (s.AR_ARS.bal - sellQty * rARS) / s.AR_ARS.bal);
-              s.AR_ARS.costARS   = (s.AR_ARS.costARS || 0) * r;
-              s.AR_ARS.costUSD  *= r;
-              s.AR_ARS.costWithC *= r;
-              s.AR_ARS.bal      -= sellQty * rARS;
-              if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costUSD=0; s.AR_ARS.costWithC=0; }
-            }
-            if(s.AR_USD.bal > 0) {
-              const r = Math.max(0, (s.AR_USD.bal - sellQty * rARU) / s.AR_USD.bal);
-              s.AR_USD.costUSD  *= r;
-              s.AR_USD.costWithC *= r;
-              s.AR_USD.bal      -= sellQty * rARU;
-              if(s.AR_USD.bal <= 0) { s.AR_USD.bal=0; s.AR_USD.costUSD=0; s.AR_USD.costWithC=0; }
-            }
-          }
-        }
-
-      } else if(op === XFER_IN && qty > 0) {
-        // Acreditación gratuita: costo = comisiones/impuestos solamente
-        const costNC = Math.abs(t.comision||0) + Math.abs(t.iva||0) + Math.abs(t.otros_imp||0);
-        sv.bal      += qty;
-        sv.costWithC += costNC;
-        if(slot === 'AR_ARS') {
-          sv.costARS += costNC;
-          const fx = getFX(normFecha(t.fecha));
-          if(fx && fx > 0) sv.costUSD += costNC / fx;
-        } else {
-          sv.costUSD += costNC;
-        }
-
-      } else if(op === 'Pago de Amortización' && qty < 0) {
-        const absQty = Math.abs(qty);
-        if(sv.bal > 0) {
-          const ratio = Math.max(0, (sv.bal - absQty) / sv.bal);
-          if(slot === 'AR_ARS') sv.costARS = (sv.costARS || 0) * ratio;
-          sv.costUSD  *= ratio;
-          sv.costWithC *= ratio;
-          sv.bal -= absQty;
-          if(sv.bal <= 0) {
-            sv.bal = 0; sv.costARS = 0; sv.costUSD = 0; sv.costWithC = 0;
-          }
-        }
-      }
-
-      return { ...t, _movesTitle: true, _slot: slot, _snap: snapTotals(s, t.fecha) };
-    });
-
-    // Posición final
-    const balAR    = round4(s.AR_ARS.bal + s.AR_USD.bal);
-    const balEEUU  = round4(s.EEUU.bal);
-    const balTotal = round4(balAR + balEEUU);
-
-    const arCostUSD = (s.AR_ARS.costUSD || 0) + s.AR_USD.costUSD;
-    const avgAR_usd = balAR > 0 ? arCostUSD / balAR : 0;
-    const avgAR_ars = balAR > 0
-      ? (s.AR_USD.bal <= 0
-          ? (s.AR_ARS.costARS || 0) / balAR          // solo ARS: usar costo ARS directo
-          : avgAR_usd * (getFX(txns[txns.length-1]?.fecha) || 1)) // mixto: via FX
-      : 0;
-    const avgEEUU_usd = balEEUU > 0 ? s.EEUU.costUSD / balEEUU : 0;
-
-    const dates    = txns.map(t => normFecha(t.fecha)).filter(Boolean);
-    const lastDate = dates.length ? dates[dates.length - 1] : '';
-    const lastYear = lastDate ? parseInt(lastDate.slice(0, 4)) : 0;
-
-    ledger[canonical] = {
-      ticker: canonical,
-      txns:   processedTxns,
-      slots:  { AR_ARS: { ...s.AR_ARS }, AR_USD: { ...s.AR_USD }, EEUU: { ...s.EEUU } },
-      totals: { balAR, balEEUU, balTotal, avgAR_usd, avgAR_ars, avgEEUU_usd },
-      meta: {
-        isClosed:  balAR <= 0 && balEEUU <= 0,
-        // isStale solo si cerrado Y última op <= STALE_CUTOFF_YEAR
-        isStale:   (balAR <= 0 && balEEUU <= 0) && lastYear > 0 && lastYear <= STALE_CUTOFF_YEAR,
-        isBond:    isBond(canonical),
-        firstDate: dates.length ? dates[0] : '',
-        lastDate,
-        opCount:   txns.length,
-      },
-    };
-  }
-
-  return ledger;
-
-  // ── helpers internos ───────────────────────────────────────────────
   function round4(n) { return Math.round(n * 10000) / 10000; }
 
   function snapTotals(s, fecha) {
@@ -3219,6 +2994,174 @@ function buildLedger(rawTxns, fxHistory = {}) {
       fx: fx || null,
     };
   }
+
+  // Agrupar por ticker canónico
+  const byTicker = {};
+  for(const t of rawTxns) {
+    const raw = t.ticker || '';
+    if(!raw || raw.includes(' ') || isOption(raw)) continue;
+    const canonical = TICKER_TO_GROUP[raw] || raw;
+    byTicker[canonical] = byTicker[canonical] || [];
+    byTicker[canonical].push(t);
+  }
+
+  const ledger = {};
+
+  for(const [canonical, txns] of Object.entries(byTicker)) {
+    txns.sort((a, b) => {
+      const da = normFecha(a.fecha), db = normFecha(b.fecha);
+      if(da !== db) return da.localeCompare(db);
+      return (parseInt(a.nro_mov || 0)) - (parseInt(b.nro_mov || 0));
+    });
+
+    const s = {
+      AR_ARS: { bal:0, costARS:0, costUSD:0, costWithC:0 },
+      AR_USD: { bal:0, costUSD:0, costWithC:0 },
+      EEUU:   { bal:0, costUSD:0, costWithC:0 },
+    };
+
+    const processedTxns = txns.map(t => {
+      const raw    = t.ticker_raw || t.ticker || '';
+      const cuenta = t.cuenta || '';
+      const op     = t.operacion || '';
+      const qty    = t.cantidad  || 0;
+
+      if(!movesTitle(raw, cuenta)) {
+        return { ...t, _movesTitle: false, _slot: null, _snap: snapTotals(s, t.fecha) };
+      }
+
+      const slot = getTitleSlot(raw, cuenta);
+
+      if(BUY_OPS.includes(op) && qty > 0) {
+        const costNC = calcCostNoC(t);
+        const costWC = calcCostWithC(t);
+        s[slot].bal       += qty;
+        s[slot].costWithC += costWC;
+        if(slot === 'AR_ARS') {
+          s.AR_ARS.costARS += costNC;
+          const fx = getFX(normFecha(t.fecha));
+          if(fx && fx > 0) s.AR_ARS.costUSD += costNC / fx;
+        } else {
+          s[slot].costUSD += costNC;
+        }
+
+      } else if(SELL_OPS.includes(op) && qty > 0) {
+        if(slot === 'EEUU') {
+          // Transferencia implícita AR → EEUU proporcional antes de la venta
+          const balAR = s.AR_ARS.bal + s.AR_USD.bal;
+          if(balAR > 0) {
+            const xferQty   = Math.min(qty, balAR);
+            const rARS      = s.AR_ARS.bal / balAR;
+            const rARU      = s.AR_USD.bal / balAR;
+            const arCostUSD = (s.AR_ARS.costUSD || 0) + s.AR_USD.costUSD;
+            const avgAR_usd = arCostUSD / balAR;
+            if(s.AR_ARS.bal > 0) {
+              const r = Math.max(0, (s.AR_ARS.bal - xferQty * rARS) / s.AR_ARS.bal);
+              s.AR_ARS.costARS   = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costUSD  *= r; s.AR_ARS.costWithC *= r;
+              s.AR_ARS.bal      -= xferQty * rARS;
+              if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costUSD=0; s.AR_ARS.costWithC=0; }
+            }
+            if(s.AR_USD.bal > 0) {
+              const r = Math.max(0, (s.AR_USD.bal - xferQty * rARU) / s.AR_USD.bal);
+              s.AR_USD.costUSD  *= r; s.AR_USD.costWithC *= r;
+              s.AR_USD.bal      -= xferQty * rARU;
+              if(s.AR_USD.bal <= 0) { s.AR_USD.bal=0; s.AR_USD.costUSD=0; s.AR_USD.costWithC=0; }
+            }
+            s.EEUU.bal      += xferQty;
+            s.EEUU.costUSD  += avgAR_usd * xferQty;
+            s.EEUU.costWithC += avgAR_usd * xferQty;
+          }
+          if(s.EEUU.bal > 0) {
+            const sellQty = Math.min(qty, s.EEUU.bal);
+            const r = Math.max(0, (s.EEUU.bal - sellQty) / s.EEUU.bal);
+            s.EEUU.costUSD  *= r; s.EEUU.costWithC *= r;
+            s.EEUU.bal -= qty;
+            if(s.EEUU.bal <= 0) { s.EEUU.bal=0; s.EEUU.costUSD=0; s.EEUU.costWithC=0; }
+          }
+        } else {
+          // Venta desde AR — consume del pool AR_ARS + AR_USD proporcionalmente
+          const balAR = s.AR_ARS.bal + s.AR_USD.bal;
+          if(balAR > 0) {
+            const sellQty = Math.min(qty, balAR);
+            const rARS    = s.AR_ARS.bal / balAR;
+            const rARU    = s.AR_USD.bal / balAR;
+            if(s.AR_ARS.bal > 0) {
+              const r = Math.max(0, (s.AR_ARS.bal - sellQty * rARS) / s.AR_ARS.bal);
+              s.AR_ARS.costARS   = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costUSD  *= r; s.AR_ARS.costWithC *= r;
+              s.AR_ARS.bal      -= sellQty * rARS;
+              if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costUSD=0; s.AR_ARS.costWithC=0; }
+            }
+            if(s.AR_USD.bal > 0) {
+              const r = Math.max(0, (s.AR_USD.bal - sellQty * rARU) / s.AR_USD.bal);
+              s.AR_USD.costUSD  *= r; s.AR_USD.costWithC *= r;
+              s.AR_USD.bal      -= sellQty * rARU;
+              if(s.AR_USD.bal <= 0) { s.AR_USD.bal=0; s.AR_USD.costUSD=0; s.AR_USD.costWithC=0; }
+            }
+          }
+        }
+
+      } else if(op === XFER_IN && qty > 0) {
+        const costNC = Math.abs(t.comision||0) + Math.abs(t.iva||0) + Math.abs(t.otros_imp||0);
+        s[slot].bal       += qty;
+        s[slot].costWithC += costNC;
+        if(slot === 'AR_ARS') {
+          s.AR_ARS.costARS += costNC;
+          const fx = getFX(normFecha(t.fecha));
+          if(fx && fx > 0) s.AR_ARS.costUSD += costNC / fx;
+        } else {
+          s[slot].costUSD += costNC;
+        }
+
+      } else if(op === 'Pago de Amortización' && qty < 0) {
+        const absQty = Math.abs(qty);
+        const sv = s[slot];
+        if(sv.bal > 0) {
+          const r = Math.max(0, (sv.bal - absQty) / sv.bal);
+          if(slot === 'AR_ARS') sv.costARS = (sv.costARS || 0) * r;
+          sv.costUSD  *= r; sv.costWithC *= r;
+          sv.bal -= absQty;
+          if(sv.bal <= 0) { sv.bal=0; sv.costARS=0; sv.costUSD=0; sv.costWithC=0; }
+        }
+      }
+
+      return { ...t, _movesTitle: true, _slot: slot, _snap: snapTotals(s, t.fecha) };
+    });
+
+    const balAR    = round4(s.AR_ARS.bal + s.AR_USD.bal);
+    const balEEUU  = round4(s.EEUU.bal);
+    const balTotal = round4(balAR + balEEUU);
+    const arCostUSD = (s.AR_ARS.costUSD || 0) + s.AR_USD.costUSD;
+    const avgAR_usd = balAR > 0 ? arCostUSD / balAR : 0;
+    const lastDate  = txns[txns.length - 1]?.fecha || '';
+    const avgAR_ars = balAR > 0
+      ? (s.AR_USD.bal <= 0
+          ? (s.AR_ARS.costARS || 0) / balAR
+          : avgAR_usd * (getFX(normFecha(lastDate)) || 1))
+      : 0;
+    const avgEEUU_usd = balEEUU > 0 ? s.EEUU.costUSD / balEEUU : 0;
+
+    const dates    = txns.map(t => normFecha(t.fecha)).filter(Boolean);
+    const lastYear = lastDate ? parseInt((normFecha(lastDate)||'').slice(0, 4)) : 0;
+
+    ledger[canonical] = {
+      ticker: canonical,
+      txns:   processedTxns,
+      slots:  { AR_ARS: {...s.AR_ARS}, AR_USD: {...s.AR_USD}, EEUU: {...s.EEUU} },
+      totals: { balAR, balEEUU, balTotal, avgAR_usd, avgAR_ars, avgEEUU_usd },
+      meta: {
+        isClosed:  balAR <= 0 && balEEUU <= 0,
+        isStale:   (balAR <= 0 && balEEUU <= 0) && lastYear > 0 && lastYear <= STALE_CUTOFF_YEAR,
+        isBond:    isBond(canonical),
+        firstDate: dates.length ? dates[0] : '',
+        lastDate:  dates.length ? dates[dates.length-1] : '',
+        opCount:   txns.length,
+      },
+    };
+  }
+
+  return ledger;
 }
 
 // ══════ ESPECIES TAB ══════
@@ -3228,8 +3171,8 @@ function rebuildEspeciesDropdown() {
   if(!sel) return;
   const cur = sel.value;
 
-  // Tickers con balance abierto (net > 0) — desde AR/US cards
-  const openTickers = new Map();
+  // Tickers con balance abierto (net > 0)
+  const openTickers = new Map(); // ticker -> net total
   for(const d of [...AR, ...US]) {
     if(d.net > 0) {
       openTickers.set(d.ticker, (openTickers.get(d.ticker) || 0) + d.net);
@@ -3237,7 +3180,6 @@ function rebuildEspeciesDropdown() {
   }
 
   // Todos los tickers con historial — desde _ledger (incluye cerrados/stale)
-  // Filtrar: opciones y operaciones de cash (tienen espacios)
   const allTickers = Object.keys(_ledger)
     .filter(tk => !tk.includes(' ') && !isOption(tk))
     .sort();
@@ -3302,8 +3244,8 @@ function renderEspecies() {
   const expBtn = document.getElementById('esp-export-btn');
   if(expBtn) expBtn.style.display = '';
 
-  // Use the canonical instrument data (already deduped + VWAP-calculated)
-  const inst = _instruments[ticker];
+  // ── Fuente de datos: _ledger ─────────────────────────────────────────────
+  const inst = _ledger[ticker];
   if(!inst || !inst.txns || !inst.txns.length) {
     tbody.innerHTML = '<tr><td colspan="20" class="no-r">Sin operaciones para esta especie.</td></tr>';
     if(tfoot) tfoot.innerHTML = '';
@@ -3315,156 +3257,82 @@ function renderEspecies() {
   const SELL_SET = new Set(SELL_OPS);
   const fmtDate  = d => d&&d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : d||'--';
 
-  // txns from buildInstrument are already sorted chronologically and have _slotSnap
-  const ops = inst.txns;
-
   // Determine which sides exist
-  const hasAR   = ops.some(t => t.cuenta.includes('Argentina'));
-  const hasEEUU = ops.some(t => t.cuenta.includes('EEUU'));
+  const hasAR   = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina'));
+  const hasEEUU = inst.txns.some(t => t.cuenta && t.cuenta.includes('EEUU'));
+  const hasAR_ARS = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina') && t.cuenta.includes('ARS'));
+  const hasAR_USD = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
 
-  // Group txns by date into buckets for display
-  // ar_ars: operaciones en Argentina (ARS) — montos en pesos
-  // ar_usd: operaciones en Argentina (USD) — montos en dólares
-  // eeuu:   operaciones en EEUU (USD)
+  // Group all txns by date into buckets for display
   const dateBuckets = {};
-
-  // Running VWAP accumulators for blended avg (rebuilt here using _fxHistory)
-  const blend = { arARS_bal:0, arARS_costUSD:0, arARS_costARS:0, arUSD_bal:0, arUSD_cost:0 };
-
-  for(const t of ops) {
+  for(const t of inst.txns) {
     const { operacion: op, cantidad: qty, cuenta, precio, fecha } = t;
     if(!dateBuckets[fecha]) dateBuckets[fecha] = {
       ar_ars: { compras:0, ventas:0, precio:null, monto:0 },
       ar_usd: { compras:0, ventas:0, precio:null, monto:0 },
       eeuu:   { compras:0, ventas:0, precio:null, monto:0 },
-      xfer:0, amort:0,
-      lastSnap: null,
+      xfer:0, amort:0, lastSnap: null,
     };
     const bucket = dateBuckets[fecha];
-    const isEEUU = cuenta.includes('EEUU');
-    const isARS  = cuenta.includes('ARS');
-    const isARG  = cuenta.includes('Argentina');
-    // Route to the correct sub-bucket
-    const side = isEEUU ? bucket.eeuu : (isARS ? bucket.ar_ars : bucket.ar_usd);
+    const isEEUU = cuenta && cuenta.includes('EEUU');
+    const isARS  = cuenta && cuenta.includes('ARS');
+    const side   = isEEUU ? bucket.eeuu : (isARS ? bucket.ar_ars : bucket.ar_usd);
 
-    if(BUY_SET.has(op) && qty > 0) {
-      side.compras += qty;
-      if(precio > 0) side.precio = precio;
-      side.monto += calcBuyCost(t, true);
-      // Update blended accumulators
-      if(!isEEUU) {
-        const cost = calcBuyCost(t, false);
-        if(isARS) {
-          const fx = getFXForDate(fecha);
-          blend.arARS_bal     += qty;
-          blend.arARS_costARS += cost;
-          blend.arARS_costUSD += fx > 0 ? cost / fx : 0;
-        } else if(isARG) {
-          blend.arUSD_bal  += qty;
-          blend.arUSD_cost += cost;
-        }
+    if(t._movesTitle !== false) {
+      if(BUY_SET.has(op) && qty > 0) {
+        side.compras += qty;
+        if(precio > 0) side.precio = precio;
+        side.monto += calcBuyCost(t, true);
+      } else if(SELL_SET.has(op) && qty > 0) {
+        side.ventas += qty;
+        if(precio > 0) side.precio = precio;
+        side.monto += Math.abs(t.monto || 0);
+      } else if(op === XFER_IN && qty > 0) {
+        bucket.xfer += qty;
+      } else if(op === 'Pago de Amortización' && qty < 0) {
+        bucket.amort += Math.abs(qty);
       }
-    } else if(SELL_SET.has(op) && qty > 0) {
-      side.ventas += qty;
-      if(precio > 0) side.precio = precio;
-      side.monto += Math.abs(t.monto || 0);
-      // Reduce blended accumulators proportionally
-      if(!isEEUU) {
-        if(isARS && blend.arARS_bal > 0) {
-          const sellQty = Math.min(qty, blend.arARS_bal);
-          const ratio = Math.max(0, (blend.arARS_bal - sellQty) / blend.arARS_bal);
-          blend.arARS_costUSD *= ratio;
-          blend.arARS_costARS *= ratio;
-          blend.arARS_bal -= qty;
-          if(blend.arARS_bal <= 0) { blend.arARS_bal = 0; blend.arARS_costUSD = 0; blend.arARS_costARS = 0; }
-        } else if(isARG && !isARS && blend.arUSD_bal > 0) {
-          const sellQty = Math.min(qty, blend.arUSD_bal);
-          const ratio = Math.max(0, (blend.arUSD_bal - sellQty) / blend.arUSD_bal);
-          blend.arUSD_cost *= ratio;
-          blend.arUSD_bal -= qty;
-          if(blend.arUSD_bal <= 0) { blend.arUSD_bal = 0; blend.arUSD_cost = 0; }
-        }
-      }
-    } else if(op === XFER_IN && qty > 0) {
-      bucket.xfer += qty;
-    } else if(op === 'Pago de Amortización' && qty < 0) {
-      bucket.amort += Math.abs(qty);
     }
-
-    bucket.lastSnap = t._slotSnap;
-    // Snapshot current blended state for this date
-    const totalBlendBal = blend.arARS_bal + blend.arUSD_bal;
-    if(totalBlendBal > 0) {
-      bucket.blendedUSD = (blend.arARS_costUSD + blend.arUSD_cost) / totalBlendBal;
-      // Pure ARS avg: only meaningful when there's no AR_USD mix
-      bucket.blendedARS = blend.arUSD_bal === 0 && blend.arARS_bal > 0
-        ? blend.arARS_costARS / blend.arARS_bal
-        : null;
-    } else {
-      bucket.blendedUSD = null;
-      bucket.blendedARS = null;
-    }
+    if(t._snap) bucket.lastSnap = t._snap;
   }
-
-  // Layout flags — which sub-sections to show
-  const hasAR_ARS  = ops.some(t => t.cuenta.includes('Argentina') && t.cuenta.includes('ARS'));
-  const hasAR_USD  = ops.some(t => t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
 
   // Build rows from date buckets
   const dates = Object.keys(dateBuckets).sort();
   const rows  = dates.map(fecha => {
-    const bucket  = dateBuckets[fecha];
-    const fxDate  = getFXForDate(fecha);
-    const snap    = bucket.lastSnap || {};
-    const sAR_ARS = snap.AR_ARS || { balance:0, avg:0, costNoComis_usd:0 };
-    const sAR_USD = snap.AR_USD || { balance:0, avg:0 };
-    const sEEUU   = snap.EEUU   || { balance:0, avg:0 };
-    const sBlended = snap.AR_BLENDED_USD || null;
+    const bucket = dateBuckets[fecha];
+    const fxDate = getFXForDate(fecha);
+    const snap   = bucket.lastSnap || {};
 
-    // Balances
-    const balAR   = Math.round((sAR_ARS.balance + sAR_USD.balance) * 10000) / 10000;
-    const balEEUU = Math.round(sEEUU.balance * 10000) / 10000;
+    const sAR_ARS = snap.AR_ARS || { bal:0, avgNoC:0 };
+    const sAR_USD = snap.AR_USD || { bal:0, avgNoC:0 };
+    const sEEUU   = snap.EEUU   || { bal:0, avgNoC:0 };
 
-    // Blended avg in USD (calculated progressively in bucket loop using _fxHistory)
-    const avgBlendedUSD = bucket.blendedUSD > 0 ? bucket.blendedUSD : null;
+    const balAR    = snap.balAR    ?? (sAR_ARS.bal + sAR_USD.bal);
+    const balEEUU  = snap.balEEUU  ?? sEEUU.bal;
+    const balTotal = snap.balTotal ?? (balAR + balEEUU);
 
-    // Blended avg in ARS:
-    // - If only AR_ARS: use costARS/balance directly (no FX distortion)
-    // - If mixed AR_ARS + AR_USD: convert blended USD back to ARS at current date FX
-    const avgBlendedARS = bucket.blendedARS > 0 ? bucket.blendedARS :
-                          (avgBlendedUSD != null && fxDate > 0 ? avgBlendedUSD * fxDate : null);
+    const avgBlendedUSD = snap.avgAR_usd > 0 ? snap.avgAR_usd : null;
+    const avgBlendedARS = snap.avgAR_ars > 0 ? snap.avgAR_ars
+      : (avgBlendedUSD && fxDate > 0 ? avgBlendedUSD * fxDate : null);
+    const avgEEUU = sEEUU.bal > 0 ? sEEUU.avgNoC : null;
 
-    // EEUU avg
-    const avgEEUU = sEEUU.balance > 0 ? sEEUU.avg : null;
-
-    // Valorización AR — same as before
     let valAR_ARS = null, valAR_USD = null, valEEUU = null;
-    const avgARS_val   = sAR_ARS.balance > 0 ? sAR_ARS.avg : null;
-    const avgARUSD_val = sAR_USD.balance > 0 ? sAR_USD.avg : null;
-    const posARS_ars = avgARS_val   != null ? avgARS_val   * sAR_ARS.balance : 0;
-    const posUSD_ars = avgARUSD_val != null ? avgARUSD_val * sAR_USD.balance * fxDate : 0;
-    if(posARS_ars + posUSD_ars > 0) valAR_ARS = posARS_ars + posUSD_ars;
-    const posARS_usd = avgARS_val   != null && fxDate > 0 ? (avgARS_val * sAR_ARS.balance) / fxDate : 0;
-    const posUSD_usd = avgARUSD_val != null                ?  avgARUSD_val * sAR_USD.balance         : 0;
-    if(posARS_usd + posUSD_usd > 0) valAR_USD = posARS_usd + posUSD_usd;
-    if(sEEUU.balance > 0 && avgEEUU != null) valEEUU = avgEEUU * sEEUU.balance;
+    if(balAR > 0 && avgBlendedARS) valAR_ARS = avgBlendedARS * balAR;
+    if(balAR > 0 && avgBlendedUSD) valAR_USD = avgBlendedUSD * balAR;
+    if(balEEUU > 0 && avgEEUU)     valEEUU   = avgEEUU * balEEUU;
 
-    return { fecha, fx:fxDate, bucket, balAR, balEEUU,
-             avgBlendedUSD, avgBlendedARS, avgEEUU,
-             valAR_ARS, valAR_USD, valEEUU };
+    return { fecha, fx:fxDate, bucket, balAR, balEEUU, balTotal,
+             avgBlendedUSD, avgBlendedARS, avgEEUU, valAR_ARS, valAR_USD, valEEUU };
   });
 
-  // Build column headers — static layout (no toggle)
+  // ── Column headers ───────────────────────────────────────────────────────
   const groupRow = document.getElementById('esp-thead-groups');
   const colRow   = document.getElementById('esp-thead-cols');
-  // ── Column counts for colspan ──────────────────────────────────────────
-  // AR section: [ARS: C+V+P+M] + [USD: C+V+P+M] + Xfer + Amort + Bal + Avg$ + AvgU$S + ValARS + ValUSD
   const arARS_cols  = hasAR_ARS ? 4 : 0;
   const arUSD_cols  = hasAR_USD ? 4 : 0;
-  const arBase_cols = 7; // Xfer + Amort + Bal + Avg$ + AvgU$S + ValARS + ValUSD
+  const arBase_cols = 7;
   const arColspan   = hasAR ? arARS_cols + arUSD_cols + arBase_cols : 0;
 
-  // ── Group headers ───────────────────────────────────────────────────────
   if(groupRow) {
     let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
     if(hasAR) {
@@ -3473,11 +3341,11 @@ function renderEspecies() {
       gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">${arLabel}</th>`;
     }
     if(hasEEUU) gh += `<th class="esp-group-us esp-divider-strong" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
+    gh += `<th class="esp-group-shared esp-divider-strong" colspan="1" style="text-align:center;color:var(--purple);">Total</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
   }
 
-  // ── Column headers ──────────────────────────────────────────────────────
   if(colRow) {
     let ch = `<th style="text-align:left;">Fecha</th><th style="text-align:left;min-width:60px;">Op.</th>`;
     if(hasAR) {
@@ -3510,11 +3378,12 @@ function renderEspecies() {
       <th class="esp-num esp-group-us" style="color:var(--muted);">Monto USD</th>
       <th class="esp-num esp-group-us esp-divider-soft" style="color:var(--us);">Avg USD</th>
       <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD</th>`;
+    ch += `<th class="esp-num esp-divider-strong" style="color:var(--purple);">Bal Total</th>`;
     ch += `<th class="esp-num esp-divider-strong" style="color:var(--muted);">FX</th>`;
     colRow.innerHTML = ch;
   }
 
-  // ── Cell helpers ────────────────────────────────────────────────────────
+  // ── Cell helpers ─────────────────────────────────────────────────────────
   const fmtQc  = n => n > 0 ? `<span class="esp-pos">${N(n,0)}</span>`  : '<span class="esp-muted">—</span>';
   const fmtQv  = n => n > 0 ? `<span class="esp-neg">${N(n,0)}</span>`  : '<span class="esp-muted">—</span>';
   const fmtQx  = n => n > 0 ? `<span style="color:var(--purple)">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
@@ -3525,7 +3394,6 @@ function renderEspecies() {
   const fmtVal = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
   const fmtFX  = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
 
-  // ── Op label ────────────────────────────────────────────────────────────
   const opLabel = dateOps => {
     const opNames = [...new Set(dateOps.map(t => {
       const o = t.operacion;
@@ -3538,18 +3406,17 @@ function renderEspecies() {
     return opNames.join(' / ');
   };
 
-  // ── Tbody ───────────────────────────────────────────────────────────────
+  // ── Tbody ────────────────────────────────────────────────────────────────
   tbody.innerHTML = rows.map(r => {
     const { bucket } = r;
     const ars  = bucket.ar_ars;
     const ausd = bucket.ar_usd;
     const us   = bucket.eeuu;
-    const opLbl = opLabel(ops.filter(t => t.fecha === r.fecha));
+    const opLbl = opLabel(inst.txns.filter(t => t.fecha === r.fecha));
 
     let html = `<tr>
       <td style="white-space:nowrap;">${fmtDate(r.fecha)}</td>
       <td style="font-size:9px;color:var(--muted);white-space:nowrap;">${opLbl}</td>`;
-
     if(hasAR) {
       if(hasAR_ARS) html += `
         <td class="esp-num">${fmtQc(ars.compras)}</td>
@@ -3580,17 +3447,18 @@ function renderEspecies() {
       <td class="esp-num">${fmtVal(us.monto > 0 ? us.monto : null, 'usd')}</td>
       <td class="esp-num esp-divider-soft">${fmtAvg(r.avgEEUU, 'usd')}</td>
       <td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
+    html += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${fmtBal(r.balTotal)}</td>`;
     html += `<td class="esp-num esp-divider-strong">${fmtFX(r.fx)}</td></tr>`;
     return html;
   }).join('');
 
-  // ── Footer ──────────────────────────────────────────────────────────────
+  // ── Footer ───────────────────────────────────────────────────────────────
   const last = rows[rows.length - 1];
   if(tfoot) {
-    const arDataCols = arARS_cols + arUSD_cols; // cols before Xfer
-    let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${ops.length} op.</td>`;
+    const arDataCols = arARS_cols + arUSD_cols;
+    let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${inst.meta.opCount} op.</td>`;
     if(hasAR) {
-      fh += `<td colspan="${arDataCols + 2}"></td>`; // data cols + Xfer + Amort
+      fh += `<td colspan="${arDataCols + 2}"></td>`;
       fh += `
         <td class="esp-num esp-pos">${N(last.balAR, 0)}</td>
         <td class="esp-num">${fmtAvg(last.avgBlendedARS, 'ars')}</td>
@@ -3606,26 +3474,25 @@ function renderEspecies() {
         <td class="esp-num esp-divider-soft">${fmtAvg(last.avgEEUU, 'usd')}</td>
         <td class="esp-num">${fmtVal(last.valEEUU, 'usd')}</td>`;
     }
+    fh += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${N(last.balTotal, 0)}</td>`;
     fh += `<td class="esp-divider-strong"></td></tr>`;
     tfoot.innerHTML = fh;
   }
 
-  // ── Summary ─────────────────────────────────────────────────────────────
+  // ── Summary ──────────────────────────────────────────────────────────────
   if(sumEl) {
     const parts = [];
-    if(hasAR && last.balAR > 0) {
-      let p = `AR: ${N(last.balAR, 0)} títulos`;
-      if(last.avgBlendedUSD) p += ` · avg U$S ${N(last.avgBlendedUSD, 2)}`;
-      parts.push(p);
-    }
-    if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU, 0)} títulos`);
+    if(hasAR && last.balAR > 0)     parts.push(`AR: ${N(last.balAR, 0)} tít.`);
+    if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU, 0)} tít.`);
+    if(last.balTotal > 0)           parts.push(`Total: ${N(last.balTotal, 0)} tít.`);
     sumEl.textContent = parts.join(' · ');
   }
 
   // Save for XLS export
   _especiesRows  = rows;
-  _especiesState = { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen: ops.length };
+  _especiesState = { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen: inst.meta.opCount };
 }
+
 
 // ══════ ESPECIES XLS EXPORT ══════
 function exportEspeciesXLS() {
