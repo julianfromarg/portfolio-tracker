@@ -3705,7 +3705,9 @@ function buildLedger(rawTxns, fxHistory = {}) {
       },
       meta: {
         isClosed: balAR <= 0 && balEEUU <= 0,
-        isStale:  lastYear > 0 && lastYear <= STALE_CUTOFF_YEAR,
+        // isStale solo si posición cerrada Y última operación <= STALE_CUTOFF_YEAR
+        // Un instrumento con balance > 0 NUNCA es stale — siempre aparece en Abiertas
+        isStale:  (balAR <= 0 && balEEUU <= 0) && (lastYear > 0 && lastYear <= STALE_CUTOFF_YEAR),
         isBond:   isBond(canonical),
         firstDate: dates.length ? dates[0] : '',
         lastDate,
