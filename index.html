@@ -3180,9 +3180,17 @@ function buildLedger(rawTxns, fxHistory = {}) {
         let xferAR = 0, xferEEUU = 0;
 
         if(slot === 'EEUU') {
-          // Venta desde EEUU — transferencia implícita AR → EEUU
+          // Transferencia implícita AR → EEUU solo para tickers con sufijo C (ej: AY24C).
+          // Esos son ventas MEP donde los títulos salen físicamente de AR hacia EEUU.
+          // Para otros instrumentos (ej: GLOB vendido en NYSE), la venta es independiente
+          // del pool AR — no hay transferencia implícita.
+          const upper = raw.toUpperCase();
+          const _canon = TICKER_TO_GROUP[upper];
+          const _suffix = _canon ? upper.slice(_canon.length) : '';
+          const isMEP_C = _suffix === 'C';
+
           const balAR = s.AR_ARS.bal + s.AR_USD.bal;
-          if(balAR > 0) {
+          if(isMEP_C && balAR > 0) {
             const xferQty   = Math.min(qty, balAR);
             const rARS      = s.AR_ARS.bal / balAR;
             const rARU      = s.AR_USD.bal / balAR;
