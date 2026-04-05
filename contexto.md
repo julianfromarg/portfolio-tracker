@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 04/04/2026 v5
+## Versión: 05/04/2026 v6
 
 ---
 
@@ -473,7 +473,7 @@ Pegá este documento + el HTML al inicio del chat.
 - **`buildLedger` opera sobre rawTxns (pre-dedup) — nunca pasarle txns ya deduplicadas**
 - **`movesTitle()` determina qué fila mueve títulos — la fila de comisión (misma op, cuenta ARS) NO mueve**
 - **Ventas desde AR: consumir del slot propio primero, luego del otro slot AR si no alcanza**
-- **Ventas desde EEUU: transferencia implícita AR→EEUU proporcional antes de la venta**
+- **Ventas desde EEUU: transferencia implícita AR→EEUU proporcional antes de la venta — SOLO si el ticker raw tiene sufijo C (`isMEP_C`). Para instrumentos sin sufijo C (ej: GLOB, NU, SPY) la venta desde EEUU es independiente del pool AR**
 - **Ventas desde AR con insuficiente balance: fallback al otro slot AR, luego a EEUU→AR**
 - **`_xferAR` y `_xferEEUU` se guardan en cada txn de venta — no eliminar, los usa `renderEspecies`**
 - **`avgByAcct` incluye hasta 4 slots: `AR_ARS`, `AR_USD`, `EEUU`, `AR_BLENDED_USD`**
@@ -611,6 +611,7 @@ Supabase cappea en 1000 filas por request. `fetchFXHistory` usa `order=date.desc
 | Precio promedio incorrecto para tickers split AR/EEUU | `buildInstrument` mezclaba montos ARS y USD | 3 slots: `EEUU`, `AR_ARS`, `AR_USD` |
 | Total Argentina (USD) mostraba ~U$S 32M | Footer filtraba por `accounts.includes('USD')` | `calcArSlots()` itera `avgByAcct.AR_ARS` y `avgByAcct.AR_USD` directamente |
 | Avg blended incorrecto (race condition) | `buildInstrument` corría con `_fxHistory={}` vacío | `rebuildBlendedAvgs()` al final de `fetchFXHistory` |
+| GLOB (y similares) mostraba transferencia implícita AR→EEUU incorrecta | `buildLedger` aplicaba xfer implícita a toda venta desde EEUU, no solo MEP | Solo ejecutar xfer implícita AR→EEUU cuando el ticker raw tiene sufijo `C` (`isMEP_C`) |
 
 ### Snapshots / Evolución
 
