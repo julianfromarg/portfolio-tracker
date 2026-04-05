@@ -118,6 +118,19 @@ tbody tr:hover td{background:var(--s2);}
 .ac-ud{background:rgba(245,158,11,.12);color:var(--usd);}
 .no-r{padding:32px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px;}
 ::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+/* ── MULTI-SELECT DROPDOWN ── */
+.ms-wrap{position:relative;display:inline-block;}
+.ms-btn{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:6px;transition:border-color .15s;}
+.ms-btn:hover{border-color:var(--muted);}
+.ms-btn.ms-active{border-color:var(--text);color:var(--text);}
+.ms-btn .ms-badge{background:var(--us);color:#fff;border-radius:3px;padding:0 5px;font-size:9px;font-weight:700;line-height:16px;}
+.ms-panel{position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,.5);min-width:190px;max-height:260px;overflow-y:auto;display:none;padding:4px 0;}
+.ms-panel.open{display:block;}
+.ms-item{display:flex;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--muted);transition:background .1s;}
+.ms-item:hover{background:var(--s2);color:var(--text);}
+.ms-item input[type=checkbox]{accent-color:var(--us);width:13px;height:13px;cursor:pointer;flex-shrink:0;}
+.ms-item.ms-checked{color:var(--text);}
+.ms-divider{height:1px;background:var(--border);margin:4px 0;}
 /* ── PORTFOLIO TAB ── */
 .tab.act-portfolio{color:var(--green);border-bottom-color:var(--green);}
 /* portfolio table */
@@ -290,28 +303,65 @@ tbody tr:hover td{background:var(--s2);}
 <div id="panel-audit" class="panel">
   <div class="atb">
     <input class="fi" type="text" placeholder="🔍  Ticker, operación, cuenta..." oninput="aFilter()">
-    <select class="fi" id="aCuenta" onchange="aFilter()">
-      <option value="">Todas las cuentas</option>
-      <option>EEUU (USD)</option><option>Argentina (ARS)</option><option>Argentina (USD)</option>
-    </select>
-    <select class="fi" id="aOp" onchange="aFilter()">
-      <option value="">Todas las operaciones</option>
-      <option>Compra</option><option>Venta</option>
-      <option>Pago de Dividendos</option><option>Pago de Renta</option>
-      <option>Pago de Amortización</option><option>Suscripción FCI</option>
-      <option>Rescate FCI</option><option>Caución</option>
-      <option>Suscripción Primaria</option><option>Otras</option>
-    </select>
-    <select class="fi" id="aYear" onchange="aFilter()">
-      <option value="">Todos los años</option>
-    </select>
-    <select class="fi" id="aMonth" onchange="aFilter()">
-      <option value="">Todos los meses</option>
-      <option value="01">Enero</option><option value="02">Febrero</option><option value="03">Marzo</option>
-      <option value="04">Abril</option><option value="05">Mayo</option><option value="06">Junio</option>
-      <option value="07">Julio</option><option value="08">Agosto</option><option value="09">Septiembre</option>
-      <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
-    </select>
+    <!-- Cuenta multi-select -->
+    <div class="ms-wrap" id="ms-wrap-cuenta">
+      <button class="ms-btn" id="ms-btn-cuenta" onclick="msDrillToggle('cuenta')">
+        Cuenta <span class="ms-badge" id="ms-badge-cuenta" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-cuenta">
+        <label class="ms-item"><input type="checkbox" value="EEUU (USD)"       onchange="msChange('cuenta')"> EEUU (USD)</label>
+        <label class="ms-item"><input type="checkbox" value="Argentina (ARS)"  onchange="msChange('cuenta')"> Argentina (ARS)</label>
+        <label class="ms-item"><input type="checkbox" value="Argentina (USD)"  onchange="msChange('cuenta')"> Argentina (USD)</label>
+      </div>
+    </div>
+    <!-- Operación multi-select -->
+    <div class="ms-wrap" id="ms-wrap-op">
+      <button class="ms-btn" id="ms-btn-op" onclick="msDrillToggle('op')">
+        Operación <span class="ms-badge" id="ms-badge-op" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-op">
+        <label class="ms-item"><input type="checkbox" value="Compra"               onchange="msChange('op')"> Compra</label>
+        <label class="ms-item"><input type="checkbox" value="Venta"                onchange="msChange('op')"> Venta</label>
+        <label class="ms-item"><input type="checkbox" value="Pago de Dividendos"   onchange="msChange('op')"> Pago de Dividendos</label>
+        <label class="ms-item"><input type="checkbox" value="Pago de Renta"        onchange="msChange('op')"> Pago de Renta</label>
+        <label class="ms-item"><input type="checkbox" value="Pago de Amortización" onchange="msChange('op')"> Pago de Amortización</label>
+        <label class="ms-item"><input type="checkbox" value="Suscripción FCI"      onchange="msChange('op')"> Suscripción FCI</label>
+        <label class="ms-item"><input type="checkbox" value="Rescate FCI"          onchange="msChange('op')"> Rescate FCI</label>
+        <label class="ms-item"><input type="checkbox" value="Caución"              onchange="msChange('op')"> Caución</label>
+        <label class="ms-item"><input type="checkbox" value="Suscripción Primaria" onchange="msChange('op')"> Suscripción Primaria</label>
+        <div class="ms-divider"></div>
+        <label class="ms-item"><input type="checkbox" value="__otras__"            onchange="msChange('op')"> Otras</label>
+      </div>
+    </div>
+    <!-- Año multi-select -->
+    <div class="ms-wrap" id="ms-wrap-year">
+      <button class="ms-btn" id="ms-btn-year" onclick="msDrillToggle('year')">
+        Año <span class="ms-badge" id="ms-badge-year" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-year">
+        <!-- poblado dinámicamente por rebuildYearDropdown() -->
+      </div>
+    </div>
+    <!-- Mes multi-select -->
+    <div class="ms-wrap" id="ms-wrap-month">
+      <button class="ms-btn" id="ms-btn-month" onclick="msDrillToggle('month')">
+        Mes <span class="ms-badge" id="ms-badge-month" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-month">
+        <label class="ms-item"><input type="checkbox" value="01" onchange="msChange('month')"> Enero</label>
+        <label class="ms-item"><input type="checkbox" value="02" onchange="msChange('month')"> Febrero</label>
+        <label class="ms-item"><input type="checkbox" value="03" onchange="msChange('month')"> Marzo</label>
+        <label class="ms-item"><input type="checkbox" value="04" onchange="msChange('month')"> Abril</label>
+        <label class="ms-item"><input type="checkbox" value="05" onchange="msChange('month')"> Mayo</label>
+        <label class="ms-item"><input type="checkbox" value="06" onchange="msChange('month')"> Junio</label>
+        <label class="ms-item"><input type="checkbox" value="07" onchange="msChange('month')"> Julio</label>
+        <label class="ms-item"><input type="checkbox" value="08" onchange="msChange('month')"> Agosto</label>
+        <label class="ms-item"><input type="checkbox" value="09" onchange="msChange('month')"> Septiembre</label>
+        <label class="ms-item"><input type="checkbox" value="10" onchange="msChange('month')"> Octubre</label>
+        <label class="ms-item"><input type="checkbox" value="11" onchange="msChange('month')"> Noviembre</label>
+        <label class="ms-item"><input type="checkbox" value="12" onchange="msChange('month')"> Diciembre</label>
+      </div>
+    </div>
     <select class="fi" id="aGroup" onchange="aRender()">
       <option value="">Sin agrupar</option>
       <option value="ticker">Por instrumento</option>
@@ -336,9 +386,11 @@ tbody tr:hover td{background:var(--s2);}
         <th id="th-monto" onclick="aSort('monto')" class="num">Monto</th>
         <th id="th-comision" onclick="aSort('comision')" class="num">Comisión</th>
         <th id="th-iva" onclick="aSort('iva')" class="num">IVA</th>
+        <th id="th-otros_imp" onclick="aSort('otros_imp')" class="num">Otros Imp.</th>
         <th id="th-nra" onclick="aSort('nra')" class="num" style="color:var(--usd)">Ret. NRA</th>
         <th id="th-saldo_cash" onclick="aSort('saldo_cash')" class="num">Saldo cash</th>
         <th class="num">Nro. Boleto</th>
+        <th id="th-nro_mov" onclick="aSort('nro_mov')" class="num">Nro. Mov.</th>
       </tr></thead>
       <tbody id="aTbody"></tbody>
     </table>
@@ -391,12 +443,22 @@ const acP=a=>a.includes('EEUU')?'ac-us':a.includes('ARS')?'ac-ar':'ac-ud';
 // ══════ AUDIT ══════
 function rebuildYearDropdown() {
   const yrs=[...new Set(AUDIT.map(r=>r.fecha.slice(0,4)).filter(Boolean))].sort().reverse();
-  const s=document.getElementById('aYear');
-  const cur=s.value;
-  // Remove all options except the first (Todos)
-  while(s.options.length>1) s.remove(1);
-  yrs.forEach(y=>{const o=document.createElement('option');o.value=o.textContent=y;s.appendChild(o);});
-  if(cur) s.value=cur;
+  const panel = document.getElementById('ms-panel-year');
+  if(!panel) return;
+  // Preserve current selections
+  const cur = msGetSelected('year');
+  panel.innerHTML = '';
+  yrs.forEach(y => {
+    const lbl = document.createElement('label');
+    lbl.className = 'ms-item' + (cur.has(y) ? ' ms-checked' : '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = y; cb.checked = cur.has(y);
+    cb.addEventListener('change', () => msChange('year'));
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(' ' + y));
+    panel.appendChild(lbl);
+  });
+  msUpdateBadge('year');
 }
 
 // ══════ PORTFOLIO CARDS ══════
@@ -467,24 +529,92 @@ const OTHER_OPS=new Set(['Caución','Compra de Dólares','Crédito','Suscripció
   'Extracción de Fondos - Transferencia Electrónica - Industrial and Commercial Bank of China',
   'Liquidación de Caución','Remuneración de Saldos Líquidos']);
 
+// ══════ MULTI-SELECT DROPDOWN HELPERS ══════
+function msGetSelected(key) {
+  const panel = document.getElementById(`ms-panel-${key}`);
+  if(!panel) return new Set();
+  return new Set(
+    [...panel.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.value)
+  );
+}
+
+function msUpdateBadge(key) {
+  const sel = msGetSelected(key);
+  const badge = document.getElementById(`ms-badge-${key}`);
+  const btn   = document.getElementById(`ms-btn-${key}`);
+  if(!badge || !btn) return;
+  if(sel.size > 0) {
+    badge.textContent = sel.size;
+    badge.style.display = 'inline-block';
+    btn.classList.add('ms-active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('ms-active');
+  }
+  // Update ms-item checked style
+  const panel = document.getElementById(`ms-panel-${key}`);
+  if(panel) panel.querySelectorAll('.ms-item').forEach(item => {
+    const cb = item.querySelector('input[type=checkbox]');
+    item.classList.toggle('ms-checked', cb && cb.checked);
+  });
+}
+
+function msDrillToggle(key) {
+  const panel = document.getElementById(`ms-panel-${key}`);
+  if(!panel) return;
+  const isOpen = panel.classList.contains('open');
+  // Close all panels first
+  document.querySelectorAll('.ms-panel.open').forEach(p => p.classList.remove('open'));
+  if(!isOpen) panel.classList.add('open');
+}
+
+function msChange(key) {
+  msUpdateBadge(key);
+  aFilter();
+}
+
+// Close panels on outside click
+document.addEventListener('click', e => {
+  if(!e.target.closest('.ms-wrap')) {
+    document.querySelectorAll('.ms-panel.open').forEach(p => p.classList.remove('open'));
+  }
+});
+
 function aFilter(){
   const q=(document.querySelector('.atb .fi').value||'').toLowerCase();
-  const cuenta=document.getElementById('aCuenta').value;
-  const op=document.getElementById('aOp').value;
-  const year=document.getElementById('aYear').value;
-  const month=document.getElementById('aMonth').value;
+  const cuentas = msGetSelected('cuenta');
+  const ops     = msGetSelected('op');
+  const years   = msGetSelected('year');
+  const months  = msGetSelected('month');
+  const hasOtras = ops.has('__otras__');
+  const realOps = new Set([...ops].filter(v => v !== '__otras__'));
+
   aData=AUDIT.filter(r=>{
-    if(cuenta&&r.cuenta!==cuenta) return false;
-    if(op==='Otras'){if(!OTHER_OPS.has(r.operacion)) return false;}
-    else if(op&&r.operacion!==op) return false;
-    if(year&&r.year!==year) return false;
-    if(month&&(r.fecha||'').slice(5,7)!==month) return false;
-    if(q){const hay=r.ticker+' '+r.ticker_raw+' '+r.operacion+' '+r.cuenta+' '+r.nro_boleto;if(!hay.toLowerCase().includes(q)) return false;}
+    if(cuentas.size && !cuentas.has(r.cuenta)) return false;
+    if(ops.size) {
+      const matchReal  = realOps.has(r.operacion);
+      const matchOtras = hasOtras && OTHER_OPS.has(r.operacion);
+      if(!matchReal && !matchOtras) return false;
+    }
+    if(years.size  && !years.has(r.year)) return false;
+    if(months.size && !months.has((r.fecha||'').slice(5,7))) return false;
+    if(q){const hay=r.ticker+' '+r.ticker_raw+' '+r.operacion+' '+r.cuenta+' '+r.nro_boleto+' '+r.nro_mov;if(!hay.toLowerCase().includes(q)) return false;}
     return true;
   });
   aSortApply();
 }
 
+function aClear(){
+  document.querySelector('.atb .fi').value='';
+  ['cuenta','op','year','month'].forEach(key => {
+    const panel = document.getElementById(`ms-panel-${key}`);
+    if(panel) panel.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+    msUpdateBadge(key);
+  });
+  document.getElementById('aGroup').value='';
+  Object.keys(gCollapsed).forEach(k=>delete gCollapsed[k]);
+  aFilter();
+}
 function aSort(col){
   if(col===aSort_col) aSort_dir*=-1; else{aSort_col=col;aSort_dir=col==='fecha'?-1:1;}
   aSortApply();
@@ -564,23 +694,19 @@ function aRow(r){
     <td class="num ${r.monto>=0?'mp':'mn'}">${N(r.monto,2)}</td>
     <td class="num">${r.comision>0?N(r.comision,2):'—'}</td>
     <td class="num">${r.iva>0?N(r.iva,2):'—'}</td>
+    <td class="num">${r.otros_imp>0?N(r.otros_imp,2):'—'}</td>
     <td class="num${r.nra<0?' mn':''}" style="${r.nra<0?'':'color:var(--muted)'}">${r.nra<0?'−U$S '+N(Math.abs(r.nra),2):'—'}</td>
     ${saldoCell}
     <td class="num" style="color:var(--muted)">${r.nro_boleto&&r.nro_boleto!=='0'?r.nro_boleto:'—'}</td>
+    <td class="num" style="color:var(--muted)">${r.nro_mov&&r.nro_mov!=='0'?r.nro_mov:'—'}</td>
   </tr>`;
 }
 
 function toggleG(key){gCollapsed[key]=!gCollapsed[key];aRender();}
-function aClear(){
-  document.querySelector('.atb .fi').value='';
-  ['aCuenta','aOp','aYear','aMonth','aGroup'].forEach(id=>document.getElementById(id).value='');
-  Object.keys(gCollapsed).forEach(k=>delete gCollapsed[k]);
-  aFilter();
-}
 
 function exportAuditCSV() {
   if(!aData.length) { alert('No hay filas para exportar.'); return; }
-  const headers = ['Fecha','Cuenta','Instrumento','Operación','Cantidad','Precio','Monto','Comisión','IVA','Ret. NRA','Saldo Cash','Nro. Boleto'];
+  const headers = ['Fecha','Cuenta','Instrumento','Operación','Cantidad','Precio','Monto','Comisión','IVA','Otros Imp.','Ret. NRA','Saldo Cash','Nro. Boleto','Nro. Mov.'];
   const rows = aData.map(r => [
     r.fecha||'',
     r.cuenta||'',
@@ -591,9 +717,11 @@ function exportAuditCSV() {
     r.monto      != null ? r.monto    : '',
     r.comision>0 ? r.comision : '',
     r.iva>0      ? r.iva      : '',
+    r.otros_imp>0 ? r.otros_imp : '',
     r.nra<0      ? r.nra      : '',
     r.saldo_cash != null ? r.saldo_cash : '',
     r.nro_boleto && r.nro_boleto!=='0' ? r.nro_boleto : '',
+    r.nro_mov && r.nro_mov!=='0' ? r.nro_mov : '',
   ]);
   const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8'});
@@ -781,7 +909,7 @@ function rebuildBlendedAvgs() {
 
   // Re-render Portfolio (avg USD mode may have changed) and refresh Especies if open
   renderPortfolioTable();
-  const espTicker = document.getElementById('esp-ticker-select')?.value;
+  const espTicker = espGetSelectedTicker();
   if(espTicker) renderEspecies();
 }
 
@@ -1890,7 +2018,7 @@ function buildAuditRows(clean, rawTxns, usdCaucionMovs) {
       fecha:t.fecha, year:t.fecha.slice(0,4), cuenta:t.cuenta,
       ticker:t.ticker, ticker_raw:t.ticker_raw||t.ticker,
       operacion:t.operacion, cantidad:t.cantidad, precio:t.precio,
-      monto:t.monto, comision:t.comision, iva:t.iva, nro_boleto:t.nro_boleto,
+      monto:t.monto, comision:t.comision, iva:t.iva, otros_imp:t.otros_imp||0, nro_boleto:t.nro_boleto,
       nro_mov:t.nro_mov||0, saldo_cash,
       nra: calcNRA(t)  // estimated NRA withholding (negative) or 0
     };
@@ -3208,58 +3336,125 @@ function buildLedger(rawTxns, fxHistory = {}) {
 
 // ══════ ESPECIES TAB ══════
 
-function rebuildEspeciesDropdown() {
-  const sel = document.getElementById('esp-ticker-select');
-  if(!sel) return;
-  const cur = sel.value;
+// Clasificación de ticker en categoría para el tab Especies
+function espCategorizeTicker(tk) {
+  // 1. Letras: ticker con guión (ej: L22J6-1705, I15G8-1505)
+  if(tk.includes('-')) return 'letras';
+  // 2. Bonos: en BOND_TICKERS
+  if(BOND_TICKERS.has(tk)) return 'bonos';
+  // 3. FCI: tiene al menos una op de suscripción o rescate FCI
+  const inst = _ledger[tk];
+  if(inst) {
+    const hasFCI = inst.txns.some(t =>
+      t.operacion === 'Suscripción FCI' || t.operacion === 'Rescate FCI'
+    );
+    if(hasFCI) return 'fci';
+  }
+  // 4. Acciones: resto de instrumentos reconocibles (alfanumérico puro)
+  if(/^[A-Z0-9]+$/.test(tk)) return 'acciones';
+  // 5. Otros: fallback
+  return 'otros';
+}
 
-  // Tickers con balance abierto (net > 0)
+function rebuildEspeciesDropdown() {
+  const CAT_IDS = ['acciones','bonos','letras','fci','otros'];
+
+  // Guardar selección activa antes de repoblar
+  let curTicker = '', curCat = '';
+  for(const cat of CAT_IDS) {
+    const s = document.getElementById(`esp-sel-${cat}`);
+    if(s && s.value) { curTicker = s.value; curCat = cat; break; }
+  }
+
+  // Tickers con balance abierto (net > 0) → para mostrar cantidad
   const openTickers = new Map(); // ticker -> net total
   for(const d of [...AR, ...US]) {
-    if(d.net > 0) {
-      openTickers.set(d.ticker, (openTickers.get(d.ticker) || 0) + d.net);
+    if(d.net > 0) openTickers.set(d.ticker, (openTickers.get(d.ticker) || 0) + d.net);
+  }
+
+  // Instrumentos reales: sin espacios, no opción, al menos una compra en _ledger
+  const realTickers = Object.keys(_ledger).filter(tk => {
+    if(tk.includes(' ') || isOption(tk)) return false;
+    const inst = _ledger[tk];
+    if(!inst) return false;
+    return inst.txns.some(t => BUY_OPS.includes(t.operacion) && (t.cantidad || 0) > 0);
+  });
+
+  // Agrupar por categoría
+  const bycat = {};
+  for(const cat of CAT_IDS) bycat[cat] = [];
+  for(const tk of realTickers) {
+    const cat = espCategorizeTicker(tk);
+    bycat[cat].push(tk);
+  }
+
+  // Poblar cada selector
+  for(const cat of CAT_IDS) {
+    const sel = document.getElementById(`esp-sel-${cat}`);
+    if(!sel) continue;
+
+    const tickers = bycat[cat].sort();
+    const openInCat   = tickers.filter(tk =>  openTickers.has(tk));
+    const closedInCat = tickers.filter(tk => !openTickers.has(tk));
+
+    sel.innerHTML = '<option value="">—</option>';
+
+    if(openInCat.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = `● Abiertas (${openInCat.length})`;
+      openInCat.forEach(tk => {
+        const o = document.createElement('option');
+        const net = openTickers.get(tk);
+        o.value = tk;
+        o.textContent = `${tk}  (${new Intl.NumberFormat('es-AR').format(Math.round(net))})`;
+        grp.appendChild(o);
+      });
+      sel.appendChild(grp);
+    }
+
+    if(closedInCat.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = `○ Cerradas (${closedInCat.length})`;
+      closedInCat.forEach(tk => {
+        const o = document.createElement('option');
+        o.value = o.textContent = tk;
+        grp.appendChild(o);
+      });
+      sel.appendChild(grp);
     }
   }
 
-  // Todos los tickers con historial — desde _ledger (incluye cerrados/stale)
-  const allTickers = Object.keys(_ledger)
-    .filter(tk => !tk.includes(' ') && !isOption(tk))
-    .sort();
-  const closedTickers = allTickers.filter(tk => !openTickers.has(tk));
-  const openSorted    = [...openTickers.keys()].sort();
-
-  sel.innerHTML = '<option value="">— Elegir especie —</option>';
-
-  if(openSorted.length) {
-    const grpOpen = document.createElement('optgroup');
-    grpOpen.label = `● Posiciones abiertas (${openSorted.length})`;
-    openSorted.forEach(tk => {
-      const o = document.createElement('option');
-      const net = openTickers.get(tk);
-      o.value = tk;
-      o.textContent = `${tk}  (${new Intl.NumberFormat('es-AR').format(Math.round(net))})`;
-      grpOpen.appendChild(o);
-    });
-    sel.appendChild(grpOpen);
+  // Restaurar selección previa si sigue existiendo
+  if(curTicker && curCat) {
+    const sel = document.getElementById(`esp-sel-${curCat}`);
+    if(sel) sel.value = curTicker;
   }
+}
 
-  if(closedTickers.length) {
-    const grpClosed = document.createElement('optgroup');
-    grpClosed.label = `○ Históricas / cerradas (${closedTickers.length})`;
-    closedTickers.forEach(tk => {
-      const o = document.createElement('option');
-      o.value = o.textContent = tk;
-      grpClosed.appendChild(o);
-    });
-    sel.appendChild(grpClosed);
+// Manejo de cambio en cualquiera de los 5 selectores de categoría
+function espCatChange(changedCat) {
+  const CAT_IDS = ['acciones','bonos','letras','fci','otros'];
+  // Limpiar todos los demás selectores
+  for(const cat of CAT_IDS) {
+    if(cat === changedCat) continue;
+    const s = document.getElementById(`esp-sel-${cat}`);
+    if(s) s.value = '';
   }
+  renderEspecies();
+}
 
-  // Restore selection — value still works even inside optgroup
-  if(cur) sel.value = cur;
+// Obtener el ticker actualmente seleccionado en cualquiera de los 5 selectores
+function espGetSelectedTicker() {
+  const CAT_IDS = ['acciones','bonos','letras','fci','otros'];
+  for(const cat of CAT_IDS) {
+    const s = document.getElementById(`esp-sel-${cat}`);
+    if(s && s.value) return s.value;
+  }
+  return '';
 }
 
 function renderEspecies() {
-  const ticker  = document.getElementById('esp-ticker-select')?.value;
+  const ticker  = espGetSelectedTicker();
   const tbody   = document.getElementById('espTbody');
   const tfoot   = document.getElementById('espTfoot');
   const empty   = document.getElementById('esp-empty');
@@ -3942,11 +4137,38 @@ function renderFXTab() {
 
 <!-- Especies Panel -->
 <div id="panel-especies" class="panel" style="padding:0;">
-  <div class="atb" style="gap:12px;">
+  <div class="atb" style="gap:10px;flex-wrap:wrap;">
     <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--us);white-space:nowrap;">🔍 Especies</span>
-    <select class="fi" id="esp-ticker-select" onchange="renderEspecies()" style="width:160px;">
-      <option value="">— Elegir especie —</option>
-    </select>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Acciones</span>
+      <select class="fi esp-cat-select" id="esp-sel-acciones" onchange="espCatChange('acciones')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Bonos</span>
+      <select class="fi esp-cat-select" id="esp-sel-bonos" onchange="espCatChange('bonos')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Letras</span>
+      <select class="fi esp-cat-select" id="esp-sel-letras" onchange="espCatChange('letras')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">FCI</span>
+      <select class="fi esp-cat-select" id="esp-sel-fci" onchange="espCatChange('fci')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Otros</span>
+      <select class="fi esp-cat-select" id="esp-sel-otros" onchange="espCatChange('otros')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
     <button class="fb" id="esp-export-btn" onclick="exportEspeciesXLS()" style="display:none;color:var(--green);border-color:rgba(34,197,94,.3);">↓ XLS</button>
     <span id="esp-summary" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
   </div>
