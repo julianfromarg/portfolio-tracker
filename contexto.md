@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 04/04/2026 v4
+## Versión: 04/04/2026 v5
 
 ---
 
@@ -27,11 +27,11 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 ### 8 tabs:
 - **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones abiertas con precios live + caja + totales. Argentina tiene toggle de modo (moneda origen / todo ARS / todo USD). FX siempre desde `fx_rates` en Supabase — sin input manual.
-- **📋 Transacciones** — Tabla audit completa con filtros (cuenta, operación, año, mes), agrupación, columna Saldo cash, columna Ret. NRA y botón `↓ CSV`.
+- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes, permite seleccionar varios valores simultáneamente), agrupación, columnas Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. y botón `↓ CSV`.
 - **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
 - **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
 - **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
-- **🔍 Especies** — Tab de auditoría por instrumento. Ver más abajo.
+- **🔍 Especies** — Tab de auditoría por instrumento. Ver más abajo. El selector de instrumento está dividido en 5 dropdowns por categoría: Acciones · Bonos · Letras · FCI · Otros. Solo se puede seleccionar un instrumento a la vez (elegir en uno limpia los demás).
 - **💱 Tipo de Cambio** — Tabla con la serie histórica de FX USD/ARS desde Supabase. Columnas: Fecha · ARS/USD · Var. diaria · Var. 30d. Filtros por año y texto. Orden clickeable por fecha o tasa.
 - **Botones fijos:** `↑ Importar .xls` (en tabs bar)
 - **Header:** selector de sesiones con `＋ Nueva`, `✎ Renombrar`, `🗑 Borrar`
@@ -320,8 +320,27 @@ if(years.length && Math.max(...years) <= STALE_CUTOFF_YEAR) {
 ### Columna nueva: Bal Total
 Sección **Total** al final de la tabla (violeta), con una columna `Bal Total = balAR + balEEUU`. Refleja el balance global del instrumento en cada fecha.
 
-### Dropdown — fuente: `_ledger`
-`rebuildEspeciesDropdown` usa `Object.keys(_ledger)` como fuente para los tickers históricos. Esto incluye instrumentos que `buildPortfolio` descarta (ej: AY24 con balance 0 — aparece en "Históricas / cerradas").
+### Selectores por categoría — 5 dropdowns
+`rebuildEspeciesDropdown()` puebla 5 selectores independientes: `esp-sel-acciones`, `esp-sel-bonos`, `esp-sel-letras`, `esp-sel-fci`, `esp-sel-otros`. Elegir en uno limpia los demás (`espCatChange(cat)`). El ticker activo se obtiene con `espGetSelectedTicker()`.
+
+**Filtro "instrumento real":** solo aparecen tickers que tienen al menos una txn con `BUY_OPS` en `_ledger[tk].txns`. Esto excluye operaciones de cash sin ticker real (Crédito, Argentina, Depósito, etc.).
+
+**Clasificación `espCategorizeTicker(tk)` — en orden de prioridad:**
+1. **Letras** — ticker contiene `-` (ej: L22J6-1705, I15G8-1505)
+2. **Bonos** — ticker está en `BOND_TICKERS`
+3. **FCI** — tiene txn con `Suscripción FCI` o `Rescate FCI`
+4. **Acciones** — alfanumérico puro (`/^[A-Z0-9]+$/`) — incluye CEDEARs y acciones locales/EEUU
+5. **Otros** — fallback para cualquier cosa no clasificada
+
+Dentro de cada selector se distingue entre abiertas (net > 0) y cerradas, igual que antes.
+
+### Funciones clave
+- `espCategorizeTicker(tk)` — clasifica un ticker en su categoría
+- `rebuildEspeciesDropdown()` — puebla los 5 selectores desde `_ledger`
+- `espCatChange(cat)` — limpia los otros 4 selectores y llama `renderEspecies()`
+- `espGetSelectedTicker()` — escanea los 5 selectores y retorna el valor activo
+- `renderEspecies()` — lee el ticker de `espGetSelectedTicker()`
+- `exportEspeciesXLS()` — sin cambios (lee de `_especiesRows`/`_especiesState`)
 
 ---
 
@@ -445,6 +464,10 @@ Pegá este documento + el HTML al inicio del chat.
 - **`buildLedger` se llama ANTES de `buildPortfolio` en `processAndRefresh` — no cambiar este orden**
 - **`renderEspecies()` lee de `_ledger[ticker]`, no de `_instruments[ticker]` — no revertir**
 - **`rebuildEspeciesDropdown()` usa `Object.keys(_ledger)` como fuente — no `AR`/`US`**
+- **`rebuildEspeciesDropdown()` puebla 5 selectores (`esp-sel-acciones/bonos/letras/fci/otros`) — no hay `esp-ticker-select` único**
+- **`renderEspecies()` obtiene el ticker con `espGetSelectedTicker()` — no leer de un selector fijo**
+- **`rebuildYearDropdown()` puebla `ms-panel-year` con checkboxes — no hay `<select id="aYear">`**
+- **Los filtros del tab Transacciones son multi-valor (checkboxes). `aFilter()` usa `msGetSelected()` — no `getElementById('aCuenta').value`**
 - **`isEffectivelyClosed` consulta `_ledger` antes de declarar stale — no eliminar ese check**
 - **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown al resolverse — no eliminar**
 - **`buildLedger` opera sobre rawTxns (pre-dedup) — nunca pasarle txns ya deduplicadas**
@@ -620,6 +643,33 @@ Supabase cappea en 1000 filas por request. `fetchFXHistory` usa `order=date.desc
 | Tab activo no persiste | `act-portfolio` hardcodeado | `switchTab` guarda en `localStorage('active_tab')` |
 | Dropdown Especies vacío | Solo se llamaba en `processAndRefresh` | También en `switchTab` cuando key === `'especies'` |
 | Instrumentos cerrados no aparecen en dropdown | Leía de `AR`/`US` | Cambiar fuente a `Object.keys(_ledger)` |
+
+---
+
+## Tab 📋 Transacciones — detalle
+
+### Columnas de la tabla:
+Fecha · Cuenta · Instrumento · Operación · Cantidad · Precio · Monto · Comisión · IVA · **Otros Imp.** · Ret. NRA · Saldo Cash · Nro. Boleto · **Nro. Mov.**
+
+Todas las columnas numéricas tienen `onclick` para ordenar (`aSort(col)`), excepto Nro. Boleto.
+
+### Filtros multi-valor (dropdown con checkboxes):
+Los 4 filtros principales son dropdowns con checkboxes — permiten seleccionar uno o varios valores simultáneamente:
+- **Cuenta** — `ms-panel-cuenta`: EEUU (USD) · Argentina (ARS) · Argentina (USD)
+- **Operación** — `ms-panel-op`: lista fija + opción "Otras" (mapea a `OTHER_OPS`)
+- **Año** — `ms-panel-year`: poblado dinámicamente por `rebuildYearDropdown()`
+- **Mes** — `ms-panel-month`: Enero–Diciembre
+
+**Funciones del sistema multi-select:**
+- `msGetSelected(key)` → `Set` de valores chequeados para ese panel
+- `msUpdateBadge(key)` → actualiza el badge numérico y el estilo del botón
+- `msDrillToggle(key)` → abre/cierra el panel (cierra los demás primero)
+- `msChange(key)` → llama `msUpdateBadge` + `aFilter()`
+- Click afuera de `.ms-wrap` cierra todos los paneles abiertos
+
+**`aFilter()` con multi-select:** lógica OR dentro de cada filtro (si seleccionás Compra + Venta, muestra ambas). Entre filtros distintos es AND. "Otras" en Operación mapea a `OTHER_OPS`.
+
+**CRÍTICO:** `rebuildYearDropdown()` ya no puebla un `<select id="aYear">` — puebla el panel `ms-panel-year` con checkboxes. No revertir a `<select>`.
 
 ### FX / Supabase
 
