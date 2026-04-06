@@ -2483,7 +2483,7 @@ async function recalcSnapshots() {
     const clean    = canonicalizeTickers(deduped);
 
     // buildPortfolio is pure (doesn't mutate globals — globals are set in processAndRefresh)
-    const {usCards, arCards} = buildPortfolio(clean, _fxHistory);
+    const {usCards} = buildPortfolio(clean, _fxHistory);
 
     // Cash up to this date
     const {balances} = buildCash(txnsUpTo, usdCaucionMovs);
@@ -2498,22 +2498,28 @@ async function recalcSnapshots() {
       us_usd += price * d.net;
     }
 
-    // Argentina ARS: positions in ARS account (valued at avg cost) + ARS cash
-    let ar_ars = balances['Argentina (ARS)'] || 0;
-    // Argentina USD: positions in AR USD account (valued at avg cost) + USD cash
-    let ar_usd = balances['Argentina (USD)'] || 0;
-
-    // For each AR card, attribute value using per-slot avg (AR_ARS in pesos, AR_USD in dollars)
-    for(const d of arCards.filter(c => c.net > 0)) {
-      const ab = d.avgByAcct || {};
-      if(ab.AR_ARS) ar_ars += ab.AR_ARS.avg * ab.AR_ARS.balance;
-      if(ab.AR_USD) ar_usd += ab.AR_USD.avg * ab.AR_USD.balance;
+    // Argentina en USD: leer del _ledger (snap.avgAR_usd × balAR) — igual que Portfolio modo usd.
+    // Esto garantiza que Evolución coincida exactamente con Portfolio para cualquier fecha.
+    let ar_usd = 0;
+    for(const [, inst] of Object.entries(_ledger)) {
+      if(!inst || !inst.txns || !inst.txns.length) continue;
+      let lastSnap = null;
+      for(const t of inst.txns) {
+        if(t.fecha > date) break;
+        if(t._snap) lastSnap = t._snap;
+      }
+      if(!lastSnap || (lastSnap.balAR ?? 0) <= 0) continue;
+      ar_usd += (lastSnap.avgAR_usd ?? 0) * lastSnap.balAR;
     }
+    // Cash AR: USD directo + ARS convertido al FX del día
+    const bUSD_AR = balances['Argentina (USD)'] || 0;
+    const bARS    = balances['Argentina (ARS)'] || 0;
+    ar_usd += bUSD_AR + (fx > 0 ? bARS / fx : 0);
 
-    snapshots.push({ date, ar_ars: Math.round(ar_ars*100)/100, ar_usd: Math.round(ar_usd*100)/100, us_usd: Math.round(us_usd*100)/100, fx_rate: fx });
+    snapshots.push({ date, ar_ars: 0, ar_usd: Math.round(ar_usd*100)/100, us_usd: Math.round(us_usd*100)/100, fx_rate: fx });
 
     // Debug: log every 50th snapshot
-    if(i % 50 === 0) console.log(`Snapshot ${date}: ar_ars=${ar_ars.toFixed(0)}, ar_usd=${ar_usd.toFixed(2)}, us_usd=${us_usd.toFixed(2)}, fx=${fx}`);
+    if(i % 50 === 0) console.log(`Snapshot ${date}: ar_usd=${ar_usd.toFixed(2)}, us_usd=${us_usd.toFixed(2)}, fx=${fx}`);
 
     // Yield to browser every 20 iterations to avoid freezing
     if(i % 20 === 0) await new Promise(r => setTimeout(r, 0));
@@ -2591,8 +2597,8 @@ function renderEvolChart() {
   const labels = data.map(r => r.date);
   const fmtLbl = d => `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
 
-  // Build series: AR in USD, EEUU USD, Total USD
-  const arUSD   = data.map(r => r.fx_rate > 0 ? Math.round((r.ar_ars / r.fx_rate + r.ar_usd)*100)/100 : r.ar_usd);
+  // Build series: AR in USD (ya calculado en recalcSnapshots como blended USD), EEUU USD, Total USD
+  const arUSD   = data.map(r => r.ar_usd);
   const usUSD   = data.map(r => r.us_usd);
   const totalUSD = data.map((r,i) => Math.round((arUSD[i] + usUSD[i])*100)/100);
 
