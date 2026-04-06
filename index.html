@@ -2530,10 +2530,12 @@ async function recalcSnapshots() {
   }
 
   // ── Calcular flujos netos e índice base 100 ───────────────────────────────
-  // Flujo neto del día (en USD): depósitos - extracciones, convertidos al FX del día.
-  // El índice mide el retorno del portfolio excluyendo el efecto de los flujos externos.
-  // Fórmula: retorno_diario = (total_hoy - total_ayer - flujo_neto_hoy) / total_ayer
+  // Método Modified Dietz simplificado: el flujo se resta del valor de hoy antes
+  // de dividir por el valor de ayer. Esto excluye depósitos/extracciones del retorno.
+  // Fórmula: retorno_diario = (total_hoy - flujo_hoy) / total_ayer - 1
   //          idx_hoy = idx_ayer × (1 + retorno_diario)
+  // Huecos en la serie (días sin movimiento): no hay flujos intermedios,
+  // el retorno acumulado se aplica de una vez — correcto matemáticamente.
   const flujosPorFecha = {};
   for(const t of _historicalTxns) {
     if(!isDeposito(t.operacion) && !isExtraccion(t.operacion)) continue;
@@ -2550,13 +2552,13 @@ async function recalcSnapshots() {
   for(let i = 0; i < snapshots.length; i++) {
     const s = snapshots[i];
     const total = s.ar_usd + s.us_usd;
-    const flujo = flujosPorFecha[s.date] || 0;
     if(i === 0) {
       s.idx = 100;
     } else {
       const totalAyer = snapshots[i-1].ar_usd + snapshots[i-1].us_usd;
       if(totalAyer > 0) {
-        const retorno = (total - totalAyer - flujo) / totalAyer;
+        const flujo = flujosPorFecha[s.date] || 0;
+        const retorno = (total - flujo) / totalAyer - 1;
         idx = Math.round(snapshots[i-1].idx * (1 + retorno) * 10000) / 10000;
       }
       s.idx = idx;
@@ -2733,8 +2735,8 @@ function renderEvolChart() {
           }
         },
         zoom: {
-          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
-          pan:  { enabled: true, mode: 'x' },
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' },
+          pan:  { enabled: true, mode: 'xy' },
         }
       },
       scales: {
