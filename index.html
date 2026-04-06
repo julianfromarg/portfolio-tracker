@@ -332,6 +332,9 @@ tbody tr:hover td{background:var(--s2);}
         <label class="ms-item"><input type="checkbox" value="Caución"              onchange="msChange('op')"> Caución</label>
         <label class="ms-item"><input type="checkbox" value="Suscripción Primaria" onchange="msChange('op')"> Suscripción Primaria</label>
         <div class="ms-divider"></div>
+        <label class="ms-item"><input type="checkbox" value="__depositos__"        onchange="msChange('op')"> Depósito de Fondos</label>
+        <label class="ms-item"><input type="checkbox" value="__extracciones__"     onchange="msChange('op')"> Extracción de Fondos</label>
+        <div class="ms-divider"></div>
         <label class="ms-item"><input type="checkbox" value="__otras__"            onchange="msChange('op')"> Otras</label>
       </div>
     </div>
@@ -522,14 +525,11 @@ const gCollapsed={};
 const OTHER_OPS=new Set(['Caución','Compra de Dólares','Crédito','Suscripción FCI','Rescate FCI',
   'Suscripción Primaria','Transferencia de Titulos IN -','Depósito por transferencia interna',
   'Extracción por Transferencia interna','Débito - Producto','Venta de Dólares',
-  'Depósito de Fondos - Transferencia electrónica - BANCO COMAFI SA',
-  'Depósito de Fondos - Transferencia electrónica - BANCO SUPERVIELLE S.A.',
-  'Depósito de Fondos - Transferencia electrónica - Banco Industrial',
-  'Extracción de Fondos - Transferencia Electrónica - BANCO DE LA NACION ARGENTINA',
-  'Extracción de Fondos - Transferencia Electrónica - BANCO DE LA PROVINCIA DEL NEUQUEN',
-  'Extracción de Fondos - Transferencia Electrónica - BBVA BANCO FRANCES S.A.',
-  'Extracción de Fondos - Transferencia Electrónica - Industrial and Commercial Bank of China',
   'Liquidación de Caución','Remuneración de Saldos Líquidos']);
+
+// Depósitos y extracciones: se detectan por prefijo en operacion
+function isDeposito(op)   { return op && op.startsWith('Depósito de Fondos'); }
+function isExtraccion(op) { return op && op.startsWith('Extracción de Fondos'); }
 
 // ══════ MULTI-SELECT DROPDOWN HELPERS ══════
 function msGetSelected(key) {
@@ -588,15 +588,19 @@ function aFilter(){
   const ops     = msGetSelected('op');
   const years   = msGetSelected('year');
   const months  = msGetSelected('month');
-  const hasOtras = ops.has('__otras__');
-  const realOps = new Set([...ops].filter(v => v !== '__otras__'));
+  const hasOtras      = ops.has('__otras__');
+  const hasDepositos  = ops.has('__depositos__');
+  const hasExtracc    = ops.has('__extracciones__');
+  const realOps = new Set([...ops].filter(v => !v.startsWith('__')));
 
   aData=AUDIT.filter(r=>{
     if(cuentas.size && !cuentas.has(r.cuenta)) return false;
     if(ops.size) {
-      const matchReal  = realOps.has(r.operacion);
-      const matchOtras = hasOtras && OTHER_OPS.has(r.operacion);
-      if(!matchReal && !matchOtras) return false;
+      const matchReal   = realOps.has(r.operacion);
+      const matchOtras  = hasOtras      && OTHER_OPS.has(r.operacion);
+      const matchDep    = hasDepositos  && isDeposito(r.operacion);
+      const matchExt    = hasExtracc    && isExtraccion(r.operacion);
+      if(!matchReal && !matchOtras && !matchDep && !matchExt) return false;
     }
     if(years.size  && !years.has(r.year)) return false;
     if(months.size && !months.has((r.fecha||'').slice(5,7))) return false;
@@ -960,7 +964,7 @@ async function fetchFXHistory() {
 async function fetchSnapshots() {
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate&order=date.asc&limit=10000`,
+      `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate,idx&order=date.asc&limit=10000`,
       { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`, 'Range-Unit': 'items', 'Range': '0-9999' } }
     );
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -2525,6 +2529,40 @@ async function recalcSnapshots() {
     if(i % 20 === 0) await new Promise(r => setTimeout(r, 0));
   }
 
+  // ── Calcular flujos netos e índice base 100 ───────────────────────────────
+  // Flujo neto del día (en USD): depósitos - extracciones, convertidos al FX del día.
+  // El índice mide el retorno del portfolio excluyendo el efecto de los flujos externos.
+  // Fórmula: retorno_diario = (total_hoy - total_ayer - flujo_neto_hoy) / total_ayer
+  //          idx_hoy = idx_ayer × (1 + retorno_diario)
+  const flujosPorFecha = {};
+  for(const t of _historicalTxns) {
+    if(!isDeposito(t.operacion) && !isExtraccion(t.operacion)) continue;
+    if(!t.monto || !t.fecha) continue;
+    const fx_t = getFXForDate(t.fecha);
+    // monto positivo = depósito, monto negativo = extracción
+    const montoUSD = t.cuenta === 'Argentina (ARS)'
+      ? (t.monto / (fx_t > 0 ? fx_t : 1))
+      : t.monto;
+    flujosPorFecha[t.fecha] = (flujosPorFecha[t.fecha] || 0) + montoUSD;
+  }
+
+  let idx = 100;
+  for(let i = 0; i < snapshots.length; i++) {
+    const s = snapshots[i];
+    const total = s.ar_usd + s.us_usd;
+    const flujo = flujosPorFecha[s.date] || 0;
+    if(i === 0) {
+      s.idx = 100;
+    } else {
+      const totalAyer = snapshots[i-1].ar_usd + snapshots[i-1].us_usd;
+      if(totalAyer > 0) {
+        const retorno = (total - totalAyer - flujo) / totalAyer;
+        idx = Math.round(snapshots[i-1].idx * (1 + retorno) * 10000) / 10000;
+      }
+      s.idx = idx;
+    }
+  }
+
   if(progressLbl) progressLbl.textContent = `Guardando ${snapshots.length} snapshots en Supabase...`;
   if(progressBar) progressBar.style.width = '100%';
 
@@ -2556,7 +2594,7 @@ async function recalcSnapshots() {
 // ══════ EVOLUTION CHART ══════
 let _evolChart = null;
 let _evolRange = 'MAX';
-let _evolSeries = new Set(['ar','us','total']);
+let _evolSeries = new Set(['ar','us','total','flujos']);
 
 function evolSetRange(range) {
   _evolRange = range;
@@ -2597,33 +2635,83 @@ function renderEvolChart() {
   const labels = data.map(r => r.date);
   const fmtLbl = d => `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
 
-  // Build series: AR in USD (ya calculado en recalcSnapshots como blended USD), EEUU USD, Total USD
-  const arUSD   = data.map(r => r.ar_usd);
-  const usUSD   = data.map(r => r.us_usd);
+  // Series de valor (eje Y izquierdo)
+  const arUSD    = data.map(r => r.ar_usd);
+  const usUSD    = data.map(r => r.us_usd);
   const totalUSD = data.map((r,i) => Math.round((arUSD[i] + usUSD[i])*100)/100);
+
+  // Flujos por fecha (en USD): depósitos positivos en verde, extracciones positivas en rojo
+  // Se pre-calculan de _historicalTxns para la ventana filtrada
+  const flujosDepo = new Array(data.length).fill(null);
+  const flujosExtr = new Array(data.length).fill(null);
+  if(_evolSeries.has('flujos') && _historicalTxns && _historicalTxns.length) {
+    const dateIndex = {};
+    data.forEach((r, i) => dateIndex[r.date] = i);
+    for(const t of _historicalTxns) {
+      if(!t.fecha || !(t.fecha in dateIndex)) continue;
+      const i = dateIndex[t.fecha];
+      const fx_t = data[i].fx_rate > 0 ? data[i].fx_rate : 1;
+      const montoUSD = t.cuenta === 'Argentina (ARS)'
+        ? Math.abs(t.monto) / fx_t
+        : Math.abs(t.monto);
+      if(isDeposito(t.operacion)  && t.monto > 0) flujosDepo[i] = (flujosDepo[i] || 0) + montoUSD;
+      if(isExtraccion(t.operacion)&& t.monto < 0) flujosExtr[i] = (flujosExtr[i] || 0) + montoUSD;
+    }
+  }
+
+  // Índice (eje Y derecho) — viene de snapshot.idx; si no existe (snapshots viejos) queda null
+  const idxData = data.map(r => r.idx ?? null);
+
+  const showIdx    = _evolSeries.has('idx');
+  const showFlujos = _evolSeries.has('flujos');
+  const hasSecondaryAxis = showIdx;
 
   const datasets = [];
   if(_evolSeries.has('ar')) datasets.push({
+    type: 'line', yAxisID: 'y',
     label: '🇦🇷 Argentina (USD)', data: arUSD,
     borderColor: '#3d7fff', backgroundColor: 'transparent',
     borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
   if(_evolSeries.has('us')) datasets.push({
+    type: 'line', yAxisID: 'y',
     label: '🇺🇸 EEUU (USD)', data: usUSD,
     borderColor: '#ef4444', backgroundColor: 'transparent',
     borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
   if(_evolSeries.has('total')) datasets.push({
+    type: 'line', yAxisID: 'y',
     label: '∑ Total (USD)', data: totalUSD,
     borderColor: '#a78bfa', backgroundColor: 'transparent',
     borderWidth: 3, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(showFlujos) {
+    datasets.push({
+      type: 'bar', yAxisID: 'y',
+      label: '💰 Depósito (USD)', data: flujosDepo,
+      backgroundColor: 'rgba(34,197,94,0.5)', borderColor: '#22c55e', borderWidth: 1,
+      barPercentage: 0.4, categoryPercentage: 1,
+    });
+    datasets.push({
+      type: 'bar', yAxisID: 'y',
+      label: '💸 Extracción (USD)', data: flujosExtr,
+      backgroundColor: 'rgba(239,68,68,0.5)', borderColor: '#ef4444', borderWidth: 1,
+      barPercentage: 0.4, categoryPercentage: 1,
+    });
+  }
+  if(showIdx) datasets.push({
+    type: 'line', yAxisID: 'y2',
+    label: '📈 Índice (base 100)', data: idxData,
+    borderColor: '#f59e0b', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3,
+    fill: false, borderDash: [4, 3],
   });
 
   if(_evolChart) { _evolChart.destroy(); _evolChart = null; }
 
   const ctx = canvas.getContext('2d');
   _evolChart = new Chart(ctx, {
-    type: 'line',
+    type: 'bar',
     data: { labels: labels.map(fmtLbl), datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -2636,7 +2724,12 @@ function renderEvolChart() {
           titleFont: { family: "'IBM Plex Mono'" }, bodyFont: { family: "'IBM Plex Mono'" },
           callbacks: {
             title: items => items[0].label,
-            label: item => ` ${item.dataset.label}: U$S ${new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(item.raw)}`
+            label: item => {
+              if(item.raw === null || item.raw === undefined) return null;
+              if(item.dataset.label.includes('Índice'))
+                return ` ${item.dataset.label}: ${N(item.raw, 2)}`;
+              return ` ${item.dataset.label}: U$S ${new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(item.raw)}`;
+            }
           }
         },
         zoom: {
@@ -2651,9 +2744,18 @@ function renderEvolChart() {
           border: { color: '#2a3040' }
         },
         y: {
+          position: 'left',
           ticks: { color: '#6b7a99', font: { family: "'IBM Plex Mono'", size: 10 },
             callback: v => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:0,maximumFractionDigits:0}).format(v) },
           grid: { color: 'rgba(42,48,64,.5)' },
+          border: { color: '#2a3040' }
+        },
+        y2: {
+          display: hasSecondaryAxis,
+          position: 'right',
+          ticks: { color: '#f59e0b', font: { family: "'IBM Plex Mono'", size: 10 },
+            callback: v => N(v, 1) },
+          grid: { drawOnChartArea: false },
           border: { color: '#2a3040' }
         }
       }
@@ -2663,9 +2765,10 @@ function renderEvolChart() {
   // Summary row
   if(summaryEl && data.length) {
     const last = data[data.length-1];
-    const lastAR = arUSD[arUSD.length-1];
-    const lastUS = usUSD[usUSD.length-1];
+    const lastAR    = arUSD[arUSD.length-1];
+    const lastUS    = usUSD[usUSD.length-1];
     const lastTotal = totalUSD[totalUSD.length-1];
+    const lastIdx   = idxData[idxData.length-1];
     const fmtU = n => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(n);
     summaryEl.innerHTML = `
       <div style="font-family:var(--mono);font-size:11px;">
@@ -2674,6 +2777,7 @@ function renderEvolChart() {
           ${_evolSeries.has('ar')    ? `<span style="color:var(--ar)">🇦🇷 ${fmtU(lastAR)}</span>` : ''}
           ${_evolSeries.has('us')    ? `<span style="color:var(--us)">🇺🇸 ${fmtU(lastUS)}</span>` : ''}
           ${_evolSeries.has('total') ? `<span style="color:var(--purple)">∑ ${fmtU(lastTotal)}</span>` : ''}
+          ${showIdx && lastIdx !== null ? `<span style="color:var(--usd)">📈 Índice: ${N(lastIdx,2)}</span>` : ''}
           <span style="color:var(--muted);font-size:10px;">FX: ${N(last.fx_rate,2)} ARS/USD</span>
         </div>
       </div>`;
@@ -4247,6 +4351,8 @@ function renderFXTab() {
       <button class="evol-series act" data-series="ar" onclick="evolToggleSeries('ar')" style="border-color:#3d7fff;color:#3d7fff;">🇦🇷 Argentina</button>
       <button class="evol-series act" data-series="us" onclick="evolToggleSeries('us')" style="border-color:#ef4444;color:#ef4444;">🇺🇸 EEUU</button>
       <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:#a78bfa;color:#a78bfa;">∑ Total</button>
+      <button class="evol-series act" data-series="flujos" onclick="evolToggleSeries('flujos')" style="border-color:#22c55e;color:#22c55e;">💰 Flujos</button>
+      <button class="evol-series" data-series="idx" onclick="evolToggleSeries('idx')" style="border-color:#f59e0b;color:#f59e0b;">📈 Índice</button>
       <!-- Recalc button -->
       <button class="fb" id="evol-recalc-btn" onclick="recalcSnapshots()" style="color:var(--usd);border-color:var(--usd);white-space:nowrap;">⟳ Recalcular</button>
     </div>
