@@ -264,6 +264,8 @@ tbody tr:hover td{background:var(--s2);}
       <button id="ptog-us"  onclick="switchPortfolio('us')"   style="padding:6px 20px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;border:none;cursor:pointer;transition:all .15s;background:transparent;color:var(--muted);">🇺🇸 EEUU (USD)</button>
     </div>
     <input class="fi" id="portfolio-search" style="width:180px" type="text" placeholder="Buscar ticker..." oninput="filterPortfolioTable(this.value)">
+    <input class="fi" id="portfolio-date" type="date" style="width:150px;" oninput="onPortfolioDateChange()" title="Ver estado del portfolio en esta fecha">
+    <button class="fb" id="portfolio-date-today" onclick="setPortfolioDateToday()" style="font-size:10px;">Hoy</button>
     <button class="fb" onclick="fetchLatestPrices()" style="color:var(--green);border-color:var(--green);">🔄 Actualizar precios</button>
     <span id="price-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
     <span id="options-disclaimer-inline" style="display:none;padding:4px 10px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.25);border-radius:4px;font-family:var(--mono);font-size:10px;color:rgba(251,191,36,.85);"></span>
@@ -750,6 +752,7 @@ let _fxHistory = {};       // { 'YYYY-MM-DD': usd_ars }
 let _fxLatest = null;      // latest fx rate loaded from DB
 let _snapshots = [];       // [{date, ar_ars, ar_usd, us_usd, fx_rate}] sorted asc
 let _arMode = 'origin';    // 'origin' | 'ars' | 'usd'
+let _portfolioDate = new Date().toISOString().slice(0,10); // fecha seleccionada en el date picker
 
 async function fetchLatestPrices() {
   if(_pricesLoading) return;
@@ -1081,9 +1084,64 @@ function filterPortfolioTable(q) {
   });
 }
 
+// ══════ PORTFOLIO DATE SELECTOR ══════
+function onPortfolioDateChange() {
+  const inp = document.getElementById('portfolio-date');
+  if(inp && inp.value) _portfolioDate = inp.value;
+  renderPortfolioTable();
+}
+
+function setPortfolioDateToday() {
+  const today = new Date().toISOString().slice(0,10);
+  _portfolioDate = today;
+  const inp = document.getElementById('portfolio-date');
+  if(inp) inp.value = today;
+  renderPortfolioTable();
+}
+
+function initPortfolioDateInput() {
+  const inp = document.getElementById('portfolio-date');
+  if(inp && !inp.value) inp.value = _portfolioDate;
+}
+
+// ══════ PORTFOLIO STATE FROM LEDGER ══════
+// Construye el estado del portfolio a una fecha dada leyendo _ledger.
+// Para cada ticker, busca el último _snap en o antes de fecha.
+// Devuelve array de { ticker, snap, isAR, isEEUU } para posiciones con bal > 0.
+function getPortfolioStateAtDate(fecha) {
+  const result = [];
+  for(const [ticker, inst] of Object.entries(_ledger)) {
+    if(!inst || !inst.txns || !inst.txns.length) continue;
+    // Encontrar el último snap en o antes de fecha
+    let lastSnap = null;
+    for(const t of inst.txns) {
+      if(t.fecha > fecha) break;      // txns están ordenadas asc por fecha
+      if(t._snap) lastSnap = t._snap;
+    }
+    if(!lastSnap) continue;
+    const balAR   = lastSnap.balAR   ?? 0;
+    const balEEUU = lastSnap.balEEUU ?? 0;
+    if(balAR <= 0 && balEEUU <= 0) continue;
+    const isAR   = inst.txns.some(t => t.fecha <= fecha && t.cuenta && t.cuenta.includes('Argentina'));
+    const isEEUU = balEEUU > 0;
+    result.push({ ticker, snap: lastSnap, isAR, isEEUU,
+                  balAR, balEEUU, balTotal: lastSnap.balTotal ?? (balAR + balEEUU) });
+  }
+  return result;
+}
+
 function renderPortfolioTable() {
   const isAr = _portfolioView === 'ar';
-  const data  = isAr ? AR : US;
+  const fecha = _portfolioDate;
+  const isToday = fecha >= new Date().toISOString().slice(0,10);
+
+  initPortfolioDateInput();
+
+  // Obtener estado del portfolio a la fecha desde _ledger
+  const allPositions = getPortfolioStateAtDate(fecha);
+  const positions = allPositions.filter(p => isAr ? p.isAR && p.balAR > 0 : p.isEEUU && p.balEEUU > 0);
+
+  const fmtP = (n, ref) => ref < 200 ? N(n, 4) : N(n, 2);
 
   // Sort headers
   document.querySelectorAll('#portfolio-tbl thead th').forEach(th => {
@@ -1092,109 +1150,109 @@ function renderPortfolioTable() {
     if(col && col === _pSort_col) th.classList.add(_pSort_dir===1?'sa':'sd');
   });
 
-  // Only open positions (net > 0)
-  const open = [...data].filter(d => d.net > 0);
-  open.sort((a,b) => {
+  // Construir objetos ordenables
+  const rows = positions.map(p => {
+    const snap = p.snap;
+    const bal  = isAr ? p.balAR : p.balEEUU;
+    const avgNoC_ARS_blended = snap.avgAR_ars ?? 0;
+    const avgNoC_EEUU        = snap.EEUU?.avgNoC ?? 0;
+    return { ticker: p.ticker, bal, snap, p,
+             net: bal,
+             avg: isAr ? avgNoC_ARS_blended : avgNoC_EEUU };
+  });
+
+  rows.sort((a, b) => {
     const va = a[_pSort_col], vb = b[_pSort_col];
     if(typeof va === 'string') return va.localeCompare(vb) * _pSort_dir;
     return ((+va||0) - (+vb||0)) * _pSort_dir;
   });
-
-  const today = new Date().toISOString().slice(0,10);
-  const fmt2  = n => N(n, 2);
-  const fmt0  = n => N(n, 0);
-  const fmtP  = (n, avg) => avg < 200 ? N(n, 4) : N(n, 2);
 
   // Show/hide AR mode controls
   const arModeWrap = document.getElementById('ar-mode-wrap');
   if(arModeWrap) arModeWrap.style.display = isAr ? 'flex' : 'none';
 
   const tbody = document.getElementById('portfolio-tbody');
-  tbody.innerHTML = open.map(d => {
-    const netFmt = isAr ? fmt0(d.net) : fmt2(d.net);
 
-    // AR mode: compute display avg using per-slot avgByAcct + FX conversion
-    let avgFmt = '—', avgComFmt = '—';
+  tbody.innerHTML = rows.map(row => {
+    const { ticker, bal, snap } = row;
+    const netFmt = isAr ? N(bal, 0) : N(bal, 2);
+    const fx = getCurrentFX();
+
+    // ── Avg sin comisiones (del ledger/snap) ──────────────────────────────
+    let avgFmt = '—';
     if(isAr) {
-      const ab  = d.avgByAcct || {};
-      const fx  = getCurrentFX();
-      const hasARS = ab.AR_ARS && ab.AR_ARS.balance > 0;
-      const hasUSD = ab.AR_USD && ab.AR_USD.balance > 0;
+      const hasARS = (snap.AR_ARS?.bal ?? 0) > 0;
+      const hasUSD = (snap.AR_USD?.bal ?? 0) > 0;
       if(_arMode === 'origin') {
-        // Show each slot in its native currency
-        const parts = [], partsC = [];
-        if(hasARS) { parts.push('$ ' + fmtP(ab.AR_ARS.avg, ab.AR_ARS.avg)); partsC.push('$ ' + fmtP(ab.AR_ARS.avgWithCom, ab.AR_ARS.avgWithCom)); }
-        if(hasUSD) { parts.push('U$S ' + fmtP(ab.AR_USD.avg, ab.AR_USD.avg)); partsC.push('U$S ' + fmtP(ab.AR_USD.avgWithCom, ab.AR_USD.avgWithCom)); }
-        avgFmt    = parts.length  ? parts.join(' / ')  : '—';
-        avgComFmt = partsC.length ? partsC.join(' / ') : '—';
+        const parts = [];
+        if(hasARS && snap.AR_ARS.avgNoC > 0) parts.push('$ '   + fmtP(snap.AR_ARS.avgNoC, snap.AR_ARS.avgNoC));
+        if(hasUSD && snap.AR_USD.avgNoC > 0) parts.push('U$S ' + fmtP(snap.AR_USD.avgNoC, snap.AR_USD.avgNoC));
+        avgFmt = parts.length ? parts.join(' / ') : '—';
       } else if(_arMode === 'ars') {
-        // Convert USD slot to ARS
-        let totalCost = 0, totalCostC = 0, totalBal = 0;
-        if(hasARS) { totalCost += ab.AR_ARS.avg * ab.AR_ARS.balance; totalCostC += ab.AR_ARS.avgWithCom * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
-        if(hasUSD) { totalCost += ab.AR_USD.avg * fx * ab.AR_USD.balance; totalCostC += ab.AR_USD.avgWithCom * fx * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
-        const blended    = totalBal > 0 ? totalCost  / totalBal : 0;
-        const blendedC   = totalBal > 0 ? totalCostC / totalBal : 0;
-        avgFmt    = blended  > 0 ? '$ ' + fmtP(blended,  blended)  : '—';
-        avgComFmt = blendedC > 0 ? '$ ' + fmtP(blendedC, blendedC) : '—';
+        const v = snap.avgAR_ars ?? 0;
+        avgFmt = v > 0 ? '$ ' + fmtP(v, v) : '—';
       } else { // usd
-        // Use pre-calculated blended avg if available (uses historical FX per purchase date)
-        // Fall back to converting with current FX only if blended not available
-        const blendedSlot = ab.AR_BLENDED_USD;
-        if(blendedSlot && blendedSlot.balance > 0 && blendedSlot.avg > 0) {
-          avgFmt    = 'U$S ' + fmtP(blendedSlot.avg, blendedSlot.avg);
-          // avgWithCom not yet tracked in blended — fall back to current-FX conversion
-          let totalCostC = 0, totalBal = 0;
-          if(hasARS) { totalCostC += (ab.AR_ARS.avgWithCom / fx) * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
-          if(hasUSD) { totalCostC += ab.AR_USD.avgWithCom * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
-          const blendedC = totalBal > 0 ? totalCostC / totalBal : 0;
-          avgComFmt = blendedC > 0 ? 'U$S ' + fmtP(blendedC, blendedC) : '—';
-        } else {
-          // Convert ARS slot to USD using current FX (single-currency AR instruments)
-          let totalCost = 0, totalCostC = 0, totalBal = 0;
-          if(hasARS) { totalCost += (ab.AR_ARS.avg / fx) * ab.AR_ARS.balance; totalCostC += (ab.AR_ARS.avgWithCom / fx) * ab.AR_ARS.balance; totalBal += ab.AR_ARS.balance; }
-          if(hasUSD) { totalCost += ab.AR_USD.avg * ab.AR_USD.balance; totalCostC += ab.AR_USD.avgWithCom * ab.AR_USD.balance; totalBal += ab.AR_USD.balance; }
-          const blended  = totalBal > 0 ? totalCost  / totalBal : 0;
-          const blendedC = totalBal > 0 ? totalCostC / totalBal : 0;
-          avgFmt    = blended  > 0 ? 'U$S ' + fmtP(blended,  blended)  : '—';
-          avgComFmt = blendedC > 0 ? 'U$S ' + fmtP(blendedC, blendedC) : '—';
-        }
+        const v = snap.avgAR_usd ?? 0;
+        avgFmt = v > 0 ? 'U$S ' + fmtP(v, v) : '—';
       }
     } else {
-      avgFmt    = d.avg > 0        ? fmtP(d.avg, d.avg)               : '—';
-      avgComFmt = d.avgWithCom > 0 ? fmtP(d.avgWithCom, d.avgWithCom) : '—';
+      const v = snap.EEUU?.avgNoC ?? 0;
+      avgFmt = v > 0 ? fmtP(v, v) : '—';
     }
 
-    // Price lookup with fallback
+    // ── Avg con comisiones (del snap del ledger — histórico a la fecha) ──
+    let avgComFmt = '—';
+    if(isAr) {
+      const hasARS = (snap.AR_ARS?.bal ?? 0) > 0;
+      const hasUSD = (snap.AR_USD?.bal ?? 0) > 0;
+      if(_arMode === 'origin') {
+        const parts = [];
+        if(hasARS && snap.AR_ARS.avgWithC > 0) parts.push('$ '   + fmtP(snap.AR_ARS.avgWithC, snap.AR_ARS.avgWithC));
+        if(hasUSD && snap.AR_USD.avgWithC > 0) parts.push('U$S ' + fmtP(snap.AR_USD.avgWithC, snap.AR_USD.avgWithC));
+        avgComFmt = parts.length ? parts.join(' / ') : '—';
+      } else if(_arMode === 'ars') {
+        const v = snap.avgAR_ars_wc ?? 0;
+        avgComFmt = v > 0 ? '$ ' + fmtP(v, v) : '—';
+      } else { // usd
+        const v = snap.avgAR_usd_wc ?? 0;
+        avgComFmt = v > 0 ? 'U$S ' + fmtP(v, v) : '—';
+      }
+    } else {
+      const v = snap.avgEEUU_usd_wc ?? snap.EEUU?.avgWithC ?? 0;
+      avgComFmt = v > 0 ? fmtP(v, v) : '—';
+    }
+
+    // ── Precio actual (solo EEUU, a la fecha seleccionada) ────────────────
     let currentPrice = null, isEstimated = false;
     if(!isAr) {
-      const lookup = getPriceForDate(d.ticker, today, d.avg);
+      const avgRef = snap.EEUU?.avgNoC ?? 0;
+      const lookup = getPriceForDate(ticker, fecha, avgRef);
       currentPrice = lookup.price > 0 ? lookup.price : null;
-      isEstimated = lookup.estimated;
+      isEstimated  = lookup.estimated;
     }
     const priceColor = currentPrice !== null ? (isEstimated ? 'color:var(--usd)' : 'color:var(--text)') : 'color:var(--muted)';
-    const priceFmt = currentPrice !== null
+    const priceFmt   = currentPrice !== null
       ? (fmtP(currentPrice, currentPrice) + (isEstimated ? ' *' : ''))
       : '—';
 
-    // P&L
-    let plCell = '<td class="num" style="color:var(--muted)">—</td>';
+    // ── Gan./Pérd. y Valor Tenencia ───────────────────────────────────────
+    let plCell  = '<td class="num" style="color:var(--muted)">—</td>';
     let valCell = '<td class="num" style="color:var(--muted)">—</td>';
-    if(currentPrice !== null && d.net > 0) {
-      const valor = currentPrice * d.net;
-      const pl    = d.avg > 0 && !isEstimated ? (currentPrice - d.avg) * d.net : null;
-      const plPct = d.avg > 0 && !isEstimated ? ((currentPrice / d.avg) - 1) * 100 : null;
-      valCell = `<td class="num mp">${'U$S ' + N(valor, 2)}</td>`;
+    if(!isAr && currentPrice !== null && bal > 0) {
+      const valor  = currentPrice * bal;
+      const avgRef = snap.EEUU?.avgNoC ?? 0;
+      const pl     = avgRef > 0 && !isEstimated ? (currentPrice - avgRef) * bal : null;
+      const plPct  = avgRef > 0 && !isEstimated ? ((currentPrice / avgRef) - 1) * 100 : null;
+      valCell = `<td class="num mp">U$S ${N(valor, 2)}</td>`;
       if(pl !== null) {
         const cls = pl >= 0 ? 'mp' : 'mn';
         const sign = pl >= 0 ? '+' : '';
         plCell = `<td class="num ${cls}">${sign}U$S ${N(Math.abs(pl),2)} <span style="font-size:9px;opacity:.7">(${sign}${N(plPct,1)}%)</span></td>`;
-      } else {
-        plCell = `<td class="num" style="color:var(--muted)">—</td>`;
       }
     }
 
-    return `<tr data-ticker="${d.ticker}">
-      <td><b style="font-size:13px">${d.ticker}</b></td>
+    return `<tr data-ticker="${ticker}">
+      <td><b style="font-size:13px">${ticker}</b></td>
       <td class="num">${netFmt}</td>
       <td class="num">${avgFmt}</td>
       <td class="num" style="color:var(--muted);font-size:11px">${avgComFmt}</td>
@@ -1204,12 +1262,21 @@ function renderPortfolioTable() {
     </tr>`;
   }).join('');
 
-  // Cash rows — from global cash balances
+  // ── Cash histórico a la fecha seleccionada ────────────────────────────
+  let historicCash = _cashBalances; // fallback: cash actual
+  if(_historicalTxns && _historicalTxns.length) {
+    const txnsUpTo = _historicalTxns.filter(t => t.fecha <= fecha);
+    if(txnsUpTo.length) {
+      const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
+      const { balances } = buildCash(txnsUpTo, usdCaucionMovs);
+      historicCash = balances;
+    }
+  }
+
   let cashRows = '';
   if(isAr) {
-    // Argentina: two rows — ARS and USD
-    const bARS = _cashBalances?.['Argentina (ARS)'] ?? null;
-    const bUSD = _cashBalances?.['Argentina (USD)'] ?? null;
+    const bARS = historicCash?.['Argentina (ARS)'] ?? null;
+    const bUSD = historicCash?.['Argentina (USD)'] ?? null;
     if(bARS !== null) cashRows += `<tr class="row-cash">
       <td>💵 Caja ARS</td>
       <td class="num" colspan="5"></td>
@@ -1221,8 +1288,7 @@ function renderPortfolioTable() {
       <td class="num ${bUSD>=0?'mp':'mn'}">${(bUSD<0?'-':'') + 'U$S ' + N(Math.abs(bUSD),2)}</td>
     </tr>`;
   } else {
-    // EEUU: one USD row
-    const bUS = _cashBalances?.['EEUU (USD)'] ?? null;
+    const bUS = historicCash?.['EEUU (USD)'] ?? null;
     if(bUS !== null) cashRows += `<tr class="row-cash">
       <td>💵 Caja USD</td>
       <td class="num" colspan="5"></td>
@@ -1231,81 +1297,84 @@ function renderPortfolioTable() {
   }
   tbody.innerHTML += cashRows;
 
-  // Footer totals
+  // ── Footer totals ─────────────────────────────────────────────────────
   const tfoot = document.getElementById('portfolio-tfoot');
-  if(isAr) {
-    const bARS = _cashBalances?.['Argentina (ARS)'] ?? 0;
-    const bUSD = _cashBalances?.['Argentina (USD)'] ?? 0;
-    const fx   = getCurrentFX();
-    const note = `<span style="font-size:9px;color:var(--muted)">(posiciones al costo + caja)</span>`;
+  const dateLabel = isToday ? '' : ` <span style="font-size:9px;color:var(--usd)">· al ${fecha}</span>`;
+  const note = `<span style="font-size:9px;color:var(--muted)">(posiciones al costo + caja)</span>`;
 
-    // Helper: compute AR position value split by currency slot
-    // Returns {ars, usd} — values in their native currency
-    const calcArSlots = () => {
-      let posARS = 0, posUSD = 0;
-      for(const d of open) {
-        const ab = d.avgByAcct || {};
-        if(ab.AR_ARS) posARS += ab.AR_ARS.avg * ab.AR_ARS.balance;
-        if(ab.AR_USD) posUSD += ab.AR_USD.avg * ab.AR_USD.balance;
+  if(isAr) {
+    const bARS = historicCash?.['Argentina (ARS)'] ?? 0;
+    const bUSD = historicCash?.['Argentina (USD)'] ?? 0;
+    const fx   = getCurrentFX();
+
+    // Sumar posiciones desde los snaps del ledger
+    let posARS = 0, posUSD_AR = 0;
+    for(const row of rows) {
+      const snap = row.snap;
+      if(_arMode === 'ars') {
+        // Todo en ARS: AR_ARS al costo ARS, AR_USD convertido
+        posARS += (snap.avgAR_ars ?? 0) * row.p.balAR;
+      } else if(_arMode === 'usd') {
+        posUSD_AR += (snap.avgAR_usd ?? 0) * row.p.balAR;
+      } else {
+        // origin: separar por slot
+        posARS    += (snap.AR_ARS?.avgNoC ?? 0) * (snap.AR_ARS?.bal ?? 0);
+        posUSD_AR += (snap.AR_USD?.avgNoC ?? 0) * (snap.AR_USD?.bal ?? 0);
       }
-      return {posARS, posUSD};
-    };
+    }
 
     if(_arMode === 'origin') {
-      const {posARS, posUSD} = calcArSlots();
       tfoot.innerHTML = `
         <tr class="total-ars">
-          <td colspan="6">TOTAL ARGENTINA (ARS) ${note}</td>
+          <td colspan="6">TOTAL ARGENTINA (ARS) ${note}${dateLabel}</td>
           <td class="num mp" style="font-size:13px">$ ${N(posARS + bARS, 2)}</td>
         </tr>
         <tr class="total-usd">
-          <td colspan="6">TOTAL ARGENTINA (USD) ${note}</td>
-          <td class="num mp" style="font-size:13px">U$S ${N(posUSD + bUSD, 2)}</td>
+          <td colspan="6">TOTAL ARGENTINA (USD) ${note}${dateLabel}</td>
+          <td class="num mp" style="font-size:13px">U$S ${N(posUSD_AR + bUSD, 2)}</td>
         </tr>`;
     } else if(_arMode === 'ars') {
-      const {posARS, posUSD} = calcArSlots();
-      const totalARS = posARS + bARS + (posUSD + bUSD) * fx;
+      const totalARS = posARS + bARS + bUSD * fx;
       tfoot.innerHTML = `
         <tr class="total-ars">
-          <td colspan="6">TOTAL ARGENTINA (ARS) ${note} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+          <td colspan="6">TOTAL ARGENTINA (ARS) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
           <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
         </tr>`;
     } else { // usd
-      const {posARS, posUSD} = calcArSlots();
-      const totalUSD = (posARS + bARS) / fx + posUSD + bUSD;
+      const totalUSD = posUSD_AR + bUSD + bARS / fx;
       tfoot.innerHTML = `
         <tr class="total-usd">
-          <td colspan="6">TOTAL ARGENTINA (USD) ${note} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+          <td colspan="6">TOTAL ARGENTINA (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
           <td class="num mp" style="font-size:13px">U$S ${N(totalUSD, 2)}</td>
         </tr>`;
     }
   } else {
-    // EEUU — use fallback pricing for all positions
-    let totalVal = 0;
-    let anyPrice = false;
-    for(const d of open) {
-      const lookup = getPriceForDate(d.ticker, today, d.avg);
-      if(lookup.price > 0) { totalVal += lookup.price * d.net; anyPrice = true; }
+    // EEUU — precio a la fecha seleccionada
+    let totalVal = 0, anyPrice = false;
+    for(const row of rows) {
+      const avgRef = row.snap.EEUU?.avgNoC ?? 0;
+      const lookup = getPriceForDate(row.ticker, fecha, avgRef);
+      if(lookup.price > 0) { totalVal += lookup.price * row.bal; anyPrice = true; }
     }
-    const bUS = _cashBalances?.['EEUU (USD)'] ?? 0;
+    const bUS = historicCash?.['EEUU (USD)'] ?? 0;
     const grandTotal = totalVal + bUS;
     tfoot.innerHTML = anyPrice
       ? `<tr>
-          <td colspan="5" style="color:var(--us)">TOTAL EEUU (USD) <span style="font-size:9px;color:var(--muted)">(posiciones + caja · * = al costo)</span></td>
+          <td colspan="5" style="color:var(--us)">TOTAL EEUU (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· * = al costo</span></td>
           <td class="num"></td>
           <td class="num mp" style="font-size:14px">U$S ${N(grandTotal, 2)}</td>
         </tr>`
       : `<tr>
-          <td colspan="6" style="color:var(--us)">TOTAL EEUU (USD)</td>
+          <td colspan="6" style="color:var(--us)">TOTAL EEUU (USD)${dateLabel}</td>
           <td class="num" style="color:var(--muted)">— (presioná 🔄 para cargar precios)</td>
         </tr>`;
   }
 
-  // Options disclaimer
+  // Options disclaimer — solo relevante en fecha actual
   const disc = document.getElementById('options-disclaimer-inline');
   if(disc) {
     const cnt = _optionsExcluded || 0;
-    if(isAr && cnt > 0) {
+    if(isAr && cnt > 0 && isToday) {
       disc.textContent = `⚠️ ${cnt} contrato${cnt>1?'s':''} de opciones excluido${cnt>1?'s':''}`;
       disc.style.display = 'inline-block';
     } else {
@@ -2953,6 +3022,9 @@ async function clearAllData() {
     setActiveSessionId(sessions[0].id);
   }
   renderSessionDropdown();
+  // Inicializar date picker del Portfolio con la fecha de hoy
+  const pdInp = document.getElementById('portfolio-date');
+  if(pdInp) pdInp.value = _portfolioDate;
   // Load active session data
   const stored = localStorage.getItem(getSessionTxnsKey(getActiveSessionId()));
   if(stored) {
@@ -3104,21 +3176,42 @@ function buildLedger(rawTxns, fxHistory = {}) {
   function snapTotals(s, fecha) {
     const balAR   = round4(s.AR_ARS.bal + s.AR_USD.bal);
     const balEEUU = round4(s.EEUU.bal);
-    const arCostUSD = (s.AR_ARS.costUSD || 0) + s.AR_USD.costUSD;
-    const avgAR_usd = balAR > 0 ? arCostUSD / balAR : 0;
+    const arCostUSD     = (s.AR_ARS.costUSD     || 0) + s.AR_USD.costUSD;
+    const arCostUSD_wc  = (s.AR_ARS.costUSD_withC || 0) + s.AR_USD.costWithC;
+    const avgAR_usd     = balAR > 0 ? arCostUSD    / balAR : 0;
+    const avgAR_usd_wc  = balAR > 0 ? arCostUSD_wc / balAR : 0;
     const fx = getFX(normFecha(fecha));
     const avgAR_ars = balAR > 0
       ? (s.AR_USD.bal <= 0
           ? (s.AR_ARS.costARS || 0) / balAR
           : avgAR_usd * (fx || 1))
       : 0;
+    const avgAR_ars_wc = balAR > 0
+      ? (s.AR_USD.bal <= 0
+          ? (s.AR_ARS.costARS_withC || 0) / balAR
+          : avgAR_usd_wc * (fx || 1))
+      : 0;
     return {
-      AR_ARS: { bal: round4(s.AR_ARS.bal), avgNoC: s.AR_ARS.bal > 0 ? (s.AR_ARS.costARS||0)/s.AR_ARS.bal : 0 },
-      AR_USD: { bal: round4(s.AR_USD.bal), avgNoC: s.AR_USD.bal > 0 ? s.AR_USD.costUSD/s.AR_USD.bal : 0 },
-      EEUU:   { bal: round4(s.EEUU.bal),   avgNoC: s.EEUU.bal   > 0 ? s.EEUU.costUSD/s.EEUU.bal     : 0 },
+      AR_ARS: {
+        bal:     round4(s.AR_ARS.bal),
+        avgNoC:  s.AR_ARS.bal > 0 ? (s.AR_ARS.costARS||0)       / s.AR_ARS.bal : 0,
+        avgWithC: s.AR_ARS.bal > 0 ? (s.AR_ARS.costARS_withC||0) / s.AR_ARS.bal : 0,
+      },
+      AR_USD: {
+        bal:     round4(s.AR_USD.bal),
+        avgNoC:  s.AR_USD.bal > 0 ? s.AR_USD.costUSD  / s.AR_USD.bal : 0,
+        avgWithC: s.AR_USD.bal > 0 ? s.AR_USD.costWithC / s.AR_USD.bal : 0,
+      },
+      EEUU: {
+        bal:     round4(s.EEUU.bal),
+        avgNoC:  s.EEUU.bal > 0 ? s.EEUU.costUSD   / s.EEUU.bal : 0,
+        avgWithC: s.EEUU.bal > 0 ? s.EEUU.costWithC / s.EEUU.bal : 0,
+      },
       balAR, balEEUU, balTotal: round4(balAR + balEEUU),
-      avgAR_usd, avgAR_ars,
-      avgEEUU_usd: s.EEUU.bal > 0 ? s.EEUU.costUSD / s.EEUU.bal : 0,
+      avgAR_usd,    avgAR_ars,
+      avgAR_usd_wc, avgAR_ars_wc,
+      avgEEUU_usd:    s.EEUU.bal > 0 ? s.EEUU.costUSD   / s.EEUU.bal : 0,
+      avgEEUU_usd_wc: s.EEUU.bal > 0 ? s.EEUU.costWithC / s.EEUU.bal : 0,
       fx: fx || null,
     };
   }
@@ -3143,7 +3236,7 @@ function buildLedger(rawTxns, fxHistory = {}) {
     });
 
     const s = {
-      AR_ARS: { bal:0, costARS:0, costUSD:0, costWithC:0 },
+      AR_ARS: { bal:0, costARS:0, costUSD:0, costWithC:0, costARS_withC:0, costUSD_withC:0 },
       AR_USD: { bal:0, costUSD:0, costWithC:0 },
       EEUU:   { bal:0, costUSD:0, costWithC:0 },
     };
@@ -3168,7 +3261,11 @@ function buildLedger(rawTxns, fxHistory = {}) {
         if(slot === 'AR_ARS') {
           s.AR_ARS.costARS += costNC;
           const fx = getFX(normFecha(t.fecha));
-          if(fx && fx > 0) s.AR_ARS.costUSD += costNC / fx;
+          if(fx && fx > 0) {
+            s.AR_ARS.costUSD     += costNC / fx;
+            s.AR_ARS.costUSD_withC += costWC / fx;
+          }
+          s.AR_ARS.costARS_withC += costWC;
         } else {
           s[slot].costUSD += costNC;
         }
@@ -3198,10 +3295,11 @@ function buildLedger(rawTxns, fxHistory = {}) {
             const avgAR_usd = arCostUSD / balAR;
             if(s.AR_ARS.bal > 0) {
               const r = Math.max(0, (s.AR_ARS.bal - xferQty * rARS) / s.AR_ARS.bal);
-              s.AR_ARS.costARS   = (s.AR_ARS.costARS || 0) * r;
-              s.AR_ARS.costUSD  *= r; s.AR_ARS.costWithC *= r;
-              s.AR_ARS.bal      -= xferQty * rARS;
-              if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costUSD=0; s.AR_ARS.costWithC=0; }
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r;
+              s.AR_ARS.costUSD      *= r; s.AR_ARS.costUSD_withC  *= r; s.AR_ARS.costWithC *= r;
+              s.AR_ARS.bal          -= xferQty * rARS;
+              if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costARS_withC=0; s.AR_ARS.costUSD=0; s.AR_ARS.costUSD_withC=0; s.AR_ARS.costWithC=0; }
             }
             if(s.AR_USD.bal > 0) {
               const r = Math.max(0, (s.AR_USD.bal - xferQty * rARU) / s.AR_USD.bal);
@@ -3234,10 +3332,14 @@ function buildLedger(rawTxns, fxHistory = {}) {
           if(s[slot].bal > 0) {
             const take = Math.min(remaining, s[slot].bal);
             const r = Math.max(0, (s[slot].bal - take) / s[slot].bal);
-            if(slot === 'AR_ARS') s.AR_ARS.costARS = (s.AR_ARS.costARS || 0) * r;
+            if(slot === 'AR_ARS') {
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r;
+              s.AR_ARS.costUSD_withC *= r;
+            }
             s[slot].costUSD  *= r; s[slot].costWithC *= r;
             s[slot].bal -= take;
-            if(s[slot].bal <= 0) { s[slot].bal=0; s[slot].costARS=0; s[slot].costUSD=0; s[slot].costWithC=0; }
+            if(s[slot].bal <= 0) { s[slot].bal=0; s[slot].costARS=0; s[slot].costARS_withC=0; s[slot].costUSD=0; s[slot].costUSD_withC=0; s[slot].costWithC=0; }
             remaining -= take;
           }
 
@@ -3245,10 +3347,14 @@ function buildLedger(rawTxns, fxHistory = {}) {
           if(remaining > 0 && s[otherSlot].bal > 0) {
             const take = Math.min(remaining, s[otherSlot].bal);
             const r = Math.max(0, (s[otherSlot].bal - take) / s[otherSlot].bal);
-            if(otherSlot === 'AR_ARS') s.AR_ARS.costARS = (s.AR_ARS.costARS || 0) * r;
+            if(otherSlot === 'AR_ARS') {
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r;
+              s.AR_ARS.costUSD_withC *= r;
+            }
             s[otherSlot].costUSD  *= r; s[otherSlot].costWithC *= r;
             s[otherSlot].bal -= take;
-            if(s[otherSlot].bal <= 0) { s[otherSlot].bal=0; s[otherSlot].costARS=0; s[otherSlot].costUSD=0; s[otherSlot].costWithC=0; }
+            if(s[otherSlot].bal <= 0) { s[otherSlot].bal=0; s[otherSlot].costARS=0; s[otherSlot].costARS_withC=0; s[otherSlot].costUSD=0; s[otherSlot].costUSD_withC=0; s[otherSlot].costWithC=0; }
             remaining -= take;
           }
 
@@ -3265,13 +3371,21 @@ function buildLedger(rawTxns, fxHistory = {}) {
             s[slot].bal       += xferQty;
             s[slot].costUSD   += avgEEUU_usd * xferQty;
             s[slot].costWithC += avgEEUU_usd * xferQty;
-            if(slot === 'AR_ARS' && fx && fx > 0) s.AR_ARS.costARS += avgEEUU_usd * xferQty * fx;
+            if(slot === 'AR_ARS' && fx && fx > 0) {
+              s.AR_ARS.costARS       += avgEEUU_usd * xferQty * fx;
+              s.AR_ARS.costARS_withC += avgEEUU_usd * xferQty * fx;
+              s.AR_ARS.costUSD_withC += avgEEUU_usd * xferQty;
+            }
             // Ahora vender del slot AR
             const r2 = Math.max(0, (s[slot].bal - xferQty) / s[slot].bal);
-            if(slot === 'AR_ARS') s.AR_ARS.costARS = (s.AR_ARS.costARS || 0) * r2;
+            if(slot === 'AR_ARS') {
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r2;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r2;
+              s.AR_ARS.costUSD_withC *= r2;
+            }
             s[slot].costUSD  *= r2; s[slot].costWithC *= r2;
             s[slot].bal -= xferQty;
-            if(s[slot].bal <= 0) { s[slot].bal=0; s[slot].costARS=0; s[slot].costUSD=0; s[slot].costWithC=0; }
+            if(s[slot].bal <= 0) { s[slot].bal=0; s[slot].costARS=0; s[slot].costARS_withC=0; s[slot].costUSD=0; s[slot].costUSD_withC=0; s[slot].costWithC=0; }
             xferEEUU = -xferQty;  // sale de EEUU
             xferAR   = +xferQty;  // entra en AR
           }
@@ -3285,9 +3399,13 @@ function buildLedger(rawTxns, fxHistory = {}) {
         s[slot].bal       += qty;
         s[slot].costWithC += costNC;
         if(slot === 'AR_ARS') {
-          s.AR_ARS.costARS += costNC;
+          s.AR_ARS.costARS       += costNC;
+          s.AR_ARS.costARS_withC += costNC;
           const fx = getFX(normFecha(t.fecha));
-          if(fx && fx > 0) s.AR_ARS.costUSD += costNC / fx;
+          if(fx && fx > 0) {
+            s.AR_ARS.costUSD       += costNC / fx;
+            s.AR_ARS.costUSD_withC += costNC / fx;
+          }
         } else {
           s[slot].costUSD += costNC;
         }
@@ -3297,10 +3415,14 @@ function buildLedger(rawTxns, fxHistory = {}) {
         const sv = s[slot];
         if(sv.bal > 0) {
           const r = Math.max(0, (sv.bal - absQty) / sv.bal);
-          if(slot === 'AR_ARS') sv.costARS = (sv.costARS || 0) * r;
+          if(slot === 'AR_ARS') {
+            sv.costARS       = (sv.costARS || 0) * r;
+            sv.costARS_withC = (sv.costARS_withC || 0) * r;
+            sv.costUSD_withC *= r;
+          }
           sv.costUSD  *= r; sv.costWithC *= r;
           sv.bal -= absQty;
-          if(sv.bal <= 0) { sv.bal=0; sv.costARS=0; sv.costUSD=0; sv.costWithC=0; }
+          if(sv.bal <= 0) { sv.bal=0; sv.costARS=0; sv.costARS_withC=0; sv.costUSD=0; sv.costUSD_withC=0; sv.costWithC=0; }
         }
       }
 
