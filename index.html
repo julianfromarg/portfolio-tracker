@@ -1176,7 +1176,7 @@ function renderPortfolioTable() {
   tbody.innerHTML = rows.map(row => {
     const { ticker, bal, snap } = row;
     const netFmt = isAr ? N(bal, 0) : N(bal, 2);
-    const fx = getCurrentFX();
+    const fx = getFXForDate(fecha);
 
     // ── Avg sin comisiones (del ledger/snap) ──────────────────────────────
     let avgFmt = '—';
@@ -1305,7 +1305,7 @@ function renderPortfolioTable() {
   if(isAr) {
     const bARS = historicCash?.['Argentina (ARS)'] ?? 0;
     const bUSD = historicCash?.['Argentina (USD)'] ?? 0;
-    const fx   = getCurrentFX();
+    const fx   = getFXForDate(fecha);
 
     // Sumar posiciones desde los snaps del ledger
     let posARS = 0, posUSD_AR = 0;
