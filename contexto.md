@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 06/04/2026 v8
+## Versión: 06/04/2026 v9
 
 ---
 
@@ -139,8 +139,10 @@ Refleja el saldo de caja real en esa fecha, no el de hoy.
 - **Moneda origen:** ARS en ARS (suma `snap.AR_ARS.avgNoC × bal`) + USD en USD (suma `snap.AR_USD.avgNoC × bal`)
 - **Todo ARS:** `snap.avgAR_ars × balAR` + caja en ARS + caja USD convertida
 - **Todo USD:** `snap.avgAR_usd × balAR` + caja en USD + caja ARS convertida
-- FX para conversiones: `getCurrentFX()` (del input o `_fxLatest`)
-- El label del footer muestra la fecha si no es hoy
+- FX para conversiones: `getFXForDate(fecha)` — FX histórico exacto de la fecha seleccionada (no el input)
+- El label del footer muestra la fecha y el FX histórico si no es hoy
+
+**CRÍTICO:** `renderPortfolioTable()` usa `getFXForDate(fecha)` — **nunca `getCurrentFX()`** — para convertir cash ARS a USD. Esto garantiza que el total en modo "Todo USD" coincida exactamente con el valor que muestra Evolución para esa misma fecha.
 
 ### Total EEUU:
 - `getPriceForDate(ticker, _portfolioDate, avgRef)` por posición + caja USD a la fecha
@@ -451,12 +453,23 @@ Función pura. `isEffectivelyClosed()`:
 
 ## Tab 📈 Evolución
 
-### `recalcSnapshots()`:
-Por cada fecha en `_cashDaily`: reconstruye posiciones usando `avgByAcct` por slot, valoriza, obtiene FX, guarda snapshot. Requiere `_fxHistory` cargado.
+### Invariante de consistencia
+**Cada punto del gráfico debe coincidir exactamente con el total que mostraría Portfolio en modo "Todo USD" para esa fecha.** Portfolio, Especies y Evolución leen todos del mismo `_ledger`.
+
+### `recalcSnapshots()` ★ REFACTORIZADO v9
+Por cada fecha en `_cashDaily`:
+1. Reconstruye posiciones EEUU con `buildPortfolio` → `getPriceForDate` (igual que antes)
+2. Calcula AR en USD leyendo directamente del `_ledger`: `snap.avgAR_usd × snap.balAR` para cada ticker con `balAR > 0` a esa fecha — **igual que `renderPortfolioTable()` modo "Todo USD"**
+3. Suma cash AR: `bUSD_AR + bARS / getFXForDate(date)`
+4. Guarda `{ date, ar_ars: 0, ar_usd, us_usd, fx_rate }` — `ar_ars` siempre 0 (columna existe en Supabase pero ya no se usa)
+
+Requiere `_fxHistory` cargado. El guard lo verifica antes de arrancar.
+
+**Después de cualquier cambio en la lógica de Portfolio o Especies, hay que hacer ⟳ Recalcular para regenerar los snapshots en Supabase.**
 
 ### `renderEvolChart()`:
-- 🇦🇷 `arUSD = ar_ars / fx_rate + ar_usd` — color `#3d7fff`
-- 🇺🇸 `usUSD = us_usd` — color `#ef4444`
+- 🇦🇷 `arUSD = r.ar_usd` — ya viene en USD desde `recalcSnapshots` — color `#3d7fff`
+- 🇺🇸 `usUSD = r.us_usd` — color `#ef4444`
 - ∑ `totalUSD = arUSD + usUSD` — color `#a78bfa`
 
 ---
@@ -549,6 +562,8 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Instrumentos cerrados no aparecen en dropdown | Leía de `AR`/`US` | Fuente: `Object.keys(_ledger)` |
 | Tab FX solo mostraba hasta 2023 | `order=date.asc` traía los más antiguos | `order=date.desc` con `Range: 0-9999` |
 | Fechas XLS exportadas como número | `parseFloat("28/03/2026")` → `28` | Leer de `_especiesRows` directamente |
+| Evolución AR no coincidía con Portfolio | `recalcSnapshots` usaba `buildPortfolio` → `avgByAcct` en vez del ledger; convertía ARS a USD con FX del momento del render | Leer `_ledger` → `snap.avgAR_usd × balAR`; cash con `getFXForDate(date)` |
+| Portfolio modo "Todo USD" no coincidía con Evolución en fechas históricas | `renderPortfolioTable` usaba `getCurrentFX()` (FX de hoy) para convertir cash ARS | Reemplazado por `getFXForDate(fecha)` en tbody y footer |
 
 ---
 
@@ -590,4 +605,8 @@ Pegá este documento + el HTML al inicio del chat.
 - **`calcBuyCost(t, false)` descuenta comis + IVA + otros_imp. `calcBuyCost(t, true)` = `|monto|`**
 - **`buildPortfolio(clean, fxHistory)` es pura** — no muta globals, segura para llamar con subsets
 - **`recalcSnapshots()` requiere `_fxHistory` cargado** — el guard lo verifica
+- **`recalcSnapshots()` usa `_ledger` para AR** — no `buildPortfolio` → `avgByAcct`
+- **`recalcSnapshots()` usa `getFXForDate(date)` para convertir cash ARS** — no `getCurrentFX()`
+- **`renderPortfolioTable()` usa `getFXForDate(fecha)`** — nunca `getCurrentFX()` para cálculos de conversión
+- **`ar_ars` en snapshots siempre es 0 desde v9** — `ar_usd` ya contiene el total AR en USD
 - **Cash histórico en Portfolio** — se recalcula filtrando `_historicalTxns` por `t.fecha <= _portfolioDate`
