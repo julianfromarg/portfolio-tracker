@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 05/04/2026 v7
+## Versión: 06/04/2026 v8
 
 ---
 
@@ -298,7 +298,8 @@ let _especiesState = {};  // {ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsL
 - `espGetSelectedTicker()` — escanea los 5 selectores para encontrar el valor activo
 - `renderEspecies()` — lee de `_ledger[ticker].txns`, agrupa por fecha en `dateBuckets`
 - `exportEspeciesXLS()` — genera y descarga el XLSX desde `_especiesRows`
-- `rebuildBlendedAvgs()` — recalcula `AR_BLENDED_USD` en `_instruments` tras `fetchFXHistory`
+
+**Nota:** `rebuildBlendedAvgs()` actualiza `AR_BLENDED_USD` en el global `_instruments` (sistema pre-v7). Desde v7 el tab Especies y el tab Portfolio leen del `_ledger` directamente — `rebuildBlendedAvgs()` ya no afecta el rendering de ninguno de los dos tabs. Se mantiene en el código pero no debe confundirse con la fuente de datos activa.
 
 ---
 
