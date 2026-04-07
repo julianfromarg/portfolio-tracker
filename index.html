@@ -966,6 +966,7 @@ async function fetchFXHistory() {
       _instruments = ins;
       _optionsExcluded = oe;
       rebuildEspeciesDropdown();
+      renderPortfolioTable();
     }
   } catch(e) { console.warn('fetchFXHistory failed:', e); }
 }
