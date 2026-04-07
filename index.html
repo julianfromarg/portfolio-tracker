@@ -402,7 +402,8 @@ tbody tr:hover td{background:var(--s2);}
   <div class="audit-wrap">
     <table id="audit-tbl">
       <thead><tr>
-        <th id="th-fecha" onclick="aSort('fecha')">Fecha</th>
+        <th id="th-fecha" onclick="aSort('fecha')">Fecha Concert.</th>
+        <th id="th-fecha_liq" onclick="aSort('fecha_liq')">Fecha Liq.</th>
         <th id="th-cuenta" onclick="aSort('cuenta')">Cuenta</th>
         <th id="th-ticker" onclick="aSort('ticker')">Instrumento</th>
         <th id="th-operacion" onclick="aSort('operacion')">Operación</th>
@@ -710,8 +711,10 @@ function aRow(r){
       saldoCell = `<td class="num ${cls}" style="font-weight:500">${str}</td>`;
     }
   }
+  const fmtFecha = d => d && d.length >= 10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : (d||'—');
   return`<tr>
-    <td>${r.fecha||'—'}</td>
+    <td>${fmtFecha(r.fecha)}</td>
+    <td style="color:var(--muted);font-size:10px">${fmtFecha(r.fecha_liq)}</td>
     <td><span class="ac-p ${acP(r.cuenta)}">${r.cuenta}</span></td>
     <td><b>${r.ticker}</b>${raw}</td>
     <td><span class="op-p ${opP(r.operacion)}">${r.operacion}</span></td>
@@ -732,9 +735,10 @@ function toggleG(key){gCollapsed[key]=!gCollapsed[key];aRender();}
 
 function exportAuditCSV() {
   if(!aData.length) { alert('No hay filas para exportar.'); return; }
-  const headers = ['Fecha','Cuenta','Instrumento','Operación','Cantidad','Precio','Monto','Comisión','IVA','Otros Imp.','Ret. NRA','Saldo Cash','Nro. Boleto','Nro. Mov.'];
+  const headers = ['Fecha Concert.','Fecha Liq.','Cuenta','Instrumento','Operación','Cantidad','Precio','Monto','Comisión','IVA','Otros Imp.','Ret. NRA','Saldo Cash','Nro. Boleto','Nro. Mov.'];
   const rows = aData.map(r => [
     r.fecha||'',
+    r.fecha_liq||'',
     r.cuenta||'',
     r.ticker||'',
     r.operacion||'',
@@ -1445,7 +1449,12 @@ function renderPortfolioTable() {
   // ── Cash histórico a la fecha seleccionada ────────────────────────────
   let historicCash = _cashBalances; // fallback: cash actual
   if(_historicalTxns && _historicalTxns.length) {
-    const txnsUpTo = _historicalTxns.filter(t => t.fecha <= fecha);
+    // Para Pago de Renta con fecha_liq distinta, usar fecha_liq para decidir si incluir
+    const txnsUpTo = _historicalTxns.filter(t => {
+      const fechaRef = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+        ? t.fecha_liq : t.fecha;
+      return fechaRef <= fecha;
+    });
     if(txnsUpTo.length) {
       const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
       const { balances } = buildCash(txnsUpTo, usdCaucionMovs);
@@ -2090,11 +2099,14 @@ function buildCash(rawTxns, usdCaucionMovs) {
     if(!(acct in balances)) continue;
     const m = t.monto || 0;
     if(m === 0) continue;
+    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
+    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+      ? t.fecha_liq : t.fecha;
     balances[acct] += m;
     // Deduct estimated NRA withholding for US dividends
     const nra = calcNRA(t);
     if(nra !== 0) balances[acct] += nra; // nra is already negative
-    movements[acct].push({fecha:t.fecha, op:t.operacion, ticker:t.ticker||'', monto:m, nra});
+    movements[acct].push({fecha:fechaCash, op:t.operacion, ticker:t.ticker||'', monto:m, nra});
   }
 
   // Sort movements by date desc, keep last 6
@@ -2247,12 +2259,12 @@ function buildAuditRows(clean, rawTxns, usdCaucionMovs) {
       saldo_cash = rawBalMap.has(k) ? rawBalMap.get(k) : null;
     }
     return {
-      fecha:t.fecha, year:t.fecha.slice(0,4), cuenta:t.cuenta,
+      fecha:t.fecha, fecha_liq:t.fecha_liq||'', year:t.fecha.slice(0,4), cuenta:t.cuenta,
       ticker:t.ticker, ticker_raw:t.ticker_raw||t.ticker,
       operacion:t.operacion, cantidad:t.cantidad, precio:t.precio,
       monto:t.monto, comision:t.comision, iva:t.iva, otros_imp:t.otros_imp||0, nro_boleto:t.nro_boleto,
       nro_mov:t.nro_mov||0, saldo_cash,
-      nra: calcNRA(t)  // estimated NRA withholding (negative) or 0
+      nra: calcNRA(t)
     };
   });
 }
@@ -2279,13 +2291,16 @@ function buildCashDaily(rawTxns, usdCaucionMovs) {
     if(!CASH_ACCOUNTS.has(t.cuenta)) continue;
     if(isCashSkip(t, usdCaucionMovs)) continue;
     if(!t.monto) continue;
+    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
+    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+      ? t.fecha_liq : t.fecha;
     runBal[t.cuenta] = (runBal[t.cuenta] || 0) + t.monto;
     const nra = calcNRA(t);
     if(nra !== 0) runBal[t.cuenta] += nra;
-    if(!dayMap[t.fecha]) dayMap[t.fecha] = {};
-    dayMap[t.fecha].ars    = runBal['Argentina (ARS)'];
-    dayMap[t.fecha].ar_usd = runBal['Argentina (USD)'];
-    dayMap[t.fecha].us_usd = runBal['EEUU (USD)'];
+    if(!dayMap[fechaCash]) dayMap[fechaCash] = {};
+    dayMap[fechaCash].ars    = runBal['Argentina (ARS)'];
+    dayMap[fechaCash].ar_usd = runBal['Argentina (USD)'];
+    dayMap[fechaCash].us_usd = runBal['EEUU (USD)'];
   }
 
   return Object.entries(dayMap)
