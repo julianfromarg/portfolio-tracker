@@ -1235,6 +1235,9 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
     // 5. Portfolio Total (placeholder AR hasta Fase 2)
     html += placeholder('pc-total', '🏦 Portfolio Total');
 
+    // 6. P&L (placeholder AR hasta Fase 2)
+    html += placeholder('pc-pl', '📈 Ganancia');
+
   } else {
     // ── EEUU ──
     const bUS = historicCash?.['EEUU (USD)'] ?? 0;
@@ -1250,21 +1253,7 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
       `<span style="color:var(--purple)">U$S ${fN2(costoMasCajaUS)}</span>`,
       `Costo: U$S ${fN2(sumCostoTotal)}`);
 
-    // 3. P&L
-    if(anyPrice) {
-      const pl    = sumValorTenencia - sumCostoTotal;
-      const plPct = sumCostoTotal > 0 ? (pl / sumCostoTotal) * 100 : null;
-      const plColor = pl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
-      const plSign  = pl >= 0 ? '+' : '-';
-      const plSub   = plPct !== null ? `${plSign}${N(Math.abs(plPct), 2)}% vs costo` : '';
-      html += card('pc-pl', '📈 P&L',
-        `<span style="${plColor}">${plSign}U$S ${fN2(pl)}</span>`,
-        plSub);
-    } else {
-      html += placeholder('pc-pl', '📈 P&L');
-    }
-
-    // 4. Portfolio Total
+    // 3. Portfolio Total
     if(anyPrice) {
       const portfolioTotal = sumValorTenencia + bUS;
       html += card('pc-total', '🏦 Portfolio Total',
@@ -1272,6 +1261,20 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
         `Tenencias: U$S ${fN2(sumValorTenencia)}`);
     } else {
       html += placeholder('pc-total', '🏦 Portfolio Total');
+    }
+
+    // 4. Ganancia
+    if(anyPrice) {
+      const pl    = sumValorTenencia - sumCostoTotal;
+      const plPct = sumCostoTotal > 0 ? (pl / sumCostoTotal) * 100 : null;
+      const plColor = pl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+      const plSign  = pl >= 0 ? '+' : '-';
+      const plSub   = plPct !== null ? `${plSign}${N(Math.abs(plPct), 2)}%` : '';
+      html += card('pc-pl', '📈 Ganancia',
+        `<span style="${plColor}">${plSign}U$S ${fN2(pl)}</span>`,
+        plSub);
+    } else {
+      html += placeholder('pc-pl', '📈 Ganancia');
     }
   }
 
