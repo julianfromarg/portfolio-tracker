@@ -923,22 +923,31 @@ function rebuildBlendedAvgs() {
 // ══════ FETCH FX HISTORY ══════
 async function fetchFXHistory() {
   try {
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.desc&limit=10000`,
-      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`, 'Range-Unit': 'items', 'Range': '0-9999' } }
-    );
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    const rows = await r.json();
+    // Supabase cappea en 1000 filas por request — paginamos hasta traer todo
+    const PAGE = 1000;
+    let allRows = [];
+    let from = 0;
+    while(true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.desc&limit=${PAGE}`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+                     'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
+      );
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const rows = await r.json();
+      allRows = allRows.concat(rows);
+      if(rows.length < PAGE) break; // última página
+      from += PAGE;
+    }
     _fxHistory = {};
-    for(const row of rows) _fxHistory[row.date] = row.usd_ars;
-    // Set latest FX in input (first row = most recent, since we ordered desc)
-    if(rows.length) {
-      const latest = rows[0];
-      _fxLatest = latest.usd_ars;
+    for(const row of allRows) _fxHistory[row.date] = row.usd_ars;
+    // Set latest FX in input (primer row = más reciente, orden desc)
+    if(allRows.length) {
+      _fxLatest = allRows[0].usd_ars;
       const inp = document.getElementById('fx-input');
       if(inp && !inp.value) inp.value = _fxLatest;
     }
-    console.log(`Loaded FX history: ${rows.length} rows, latest: ${rows[0]?.date}`);
+    console.log(`Loaded FX history: ${allRows.length} rows, latest: ${allRows[0]?.date}, earliest: ${allRows[allRows.length-1]?.date}`);
     rebuildFXYearDropdown();
     renderFXTab();
     // Rebuild blended avgs now that FX history is available
@@ -963,12 +972,22 @@ async function fetchFXHistory() {
 // ══════ FETCH SNAPSHOTS ══════
 async function fetchSnapshots() {
   try {
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate,idx&order=date.asc&limit=10000`,
-      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`, 'Range-Unit': 'items', 'Range': '0-9999' } }
-    );
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    _snapshots = await r.json();
+    const PAGE = 1000;
+    let allRows = [];
+    let from = 0;
+    while(true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate,idx&order=date.asc&limit=${PAGE}`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+                     'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
+      );
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const rows = await r.json();
+      allRows = allRows.concat(rows);
+      if(rows.length < PAGE) break;
+      from += PAGE;
+    }
+    _snapshots = allRows;
     console.log(`Loaded snapshots: ${_snapshots.length} rows`);
     renderEvolChart();
   } catch(e) { console.warn('fetchSnapshots failed:', e); }
