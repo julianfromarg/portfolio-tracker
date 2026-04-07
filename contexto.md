@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 07/04/2026 v10
+## Versión: 07/04/2026 v11
 
 ---
 
@@ -17,7 +17,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~4350 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~4650 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `contexto.md` | Este archivo |
 
@@ -26,8 +26,8 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 ## Estructura del dashboard
 
 ### 8 tabs:
-- **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones con date picker para ver el estado en cualquier fecha histórica. Prices live para EEUU. Argentina con toggle de modo (moneda origen / todo ARS / todo USD). FX siempre desde `fx_rates` en Supabase.
-- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes), agrupación, columnas Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. y botón `↓ CSV`. El filtro Operación incluye opciones explícitas para **Depósito de Fondos** y **Extracción de Fondos** (detectados por prefijo, no por nombre exacto del banco).
+- **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tarjetas de resumen arriba. Tabla de posiciones con date picker para ver el estado en cualquier fecha histórica. Prices live para EEUU. Argentina con toggle de modo **Todo ARS / Todo USD** (el modo "Moneda origen" fue eliminado). FX siempre desde `fx_rates` en Supabase.
+- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes), agrupación, columnas Fecha Concert. · **Fecha Liq.** · Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. y botón `↓ CSV`. El filtro Operación incluye opciones explícitas para **Depósito de Fondos** y **Extracción de Fondos** (detectados por prefijo, no por nombre exacto del banco).
 - **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
 - **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
 - **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
@@ -82,7 +82,7 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 
 ---
 
-## Tab Portfolio — diseño ★ REFACTORIZADO v7
+## Tab Portfolio — diseño ★ REFACTORIZADO v11
 
 ### Fuente de datos — CRÍTICO
 **El tab Portfolio ya NO lee de `AR[]`/`US[]` (output de `buildPortfolio`).** Lee directamente de `_ledger` a través de `getPortfolioStateAtDate(fecha)`. Esta es la fuente de verdad canónica — los mismos datos que usa el tab Especies.
@@ -93,60 +93,132 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 - Variable de estado: `_portfolioDate` (string `YYYY-MM-DD`)
 - Al cambiar la fecha: los tickers mostrados, balances, precios promedios, precio actual, Gan./Pérd., Valor Tenencia y caja se recalculan para esa fecha
 
+### Toggle AR mode — SOLO 2 MODOS (v11)
+El modo "Moneda origen" fue **eliminado**. Solo existen:
+- `'ars'` — Todo en ARS
+- `'usd'` — Todo en USD (default al abrir)
+
+`_arMode` default: `'usd'`. `setARMode()` solo itera `['ars','usd']`. El botón `armode-origin` ya no existe.
+
+### Tarjetas de resumen (v11) — `renderPortfolioCards()`
+Función separada llamada desde `renderPortfolioTable()`. Renderiza en `<div id="portfolio-cards">` ubicado entre la toolbar y la tabla.
+
+**Tab Argentina — 5 tarjetas:**
+| Tarjeta | Clase CSS | Contenido |
+|---|---|---|
+| 💵 Caja ARS | `pc-cash-ars` | `$ X` + sub `≈ U$S Y` |
+| 💵 Caja USD | `pc-cash-usd` | `U$S X` + sub `≈ $ Y` |
+| 🏦 Total Caja | `pc-cash-total` | en modo toggle + sub `FX X` |
+| 📦 Costo + Caja | `pc-costo` | Costo Total acumulado + caja en toggle + sub `Costo: X` |
+| 🏦 Portfolio Total | `pc-total` | placeholder hasta Fase 2 |
+| 📈 Ganancia | `pc-pl` | placeholder hasta Fase 2 |
+
+**Tab EEUU — 4 tarjetas:**
+| Tarjeta | Clase CSS | Contenido |
+|---|---|---|
+| 💵 Caja USD | `pc-cash-usd` | `U$S X` |
+| 📦 Costo + Caja | `pc-costo` | Costo Total + caja + sub `Costo: X` |
+| 🏦 Portfolio Total | `pc-total` | Tenencias a mercado + caja + sub `Tenencias: X` |
+| 📈 Ganancia | `pc-pl` | `sumPL` en USD + sub `%` |
+
+**Firma:** `renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPrice)`
+
+**CRÍTICO:** Las filas de caja ya **NO aparecen en el tbody** de la tabla — la info de caja vive únicamente en las tarjetas.
+
 ### `getPortfolioStateAtDate(fecha)`
 Itera `Object.keys(_ledger)`, para cada ticker busca el último `_snap` en `t.fecha <= fecha`. Solo incluye tickers con `balAR > 0` o `balEEUU > 0` en ese snapshot. Para fechas intermedias sin movimiento usa el último snap anterior.
 
-### Columnas de la tabla:
-| Columna | Descripción |
-|---|---|
-| Instrumento | Ticker canonicalizado |
-| Cantidad | Balance del slot a la fecha (del `_snap` del ledger) |
-| P. Prom. s/comis. | Precio promedio sin comisiones — del `_snap` del ledger a esa fecha |
-| P. Prom. c/comis. | Precio promedio con comisiones — del `_snap` del ledger a esa fecha (ver abajo) |
-| Precio Actual | Precio de mercado EOD a la fecha seleccionada (EEUU); `—` para AR |
-| Gan./Pérd. | (Precio a la fecha − P. Prom. s/comis.) × cantidad + % (solo EEUU con precio real) |
-| Valor Tenencia | Precio a la fecha × cantidad (solo EEUU) |
+### Columnas de la tabla (v11):
+| Columna | Sort key | Descripción |
+|---|---|---|
+| Instrumento | `ticker` | Ticker canonicalizado |
+| Cantidad | `net` | Balance del slot a la fecha |
+| P. Prom. s/comis. | `avg` | `snap.avgAR_ars/usd` o `snap.EEUU.avgNoC` |
+| P. Prom. c/comis. | `avgWithCom` | `snap.avgAR_ars_wc/usd_wc` o `snap.avgEEUU_usd_wc` |
+| Costo Total | `costoTotal` | `avgWithC × bal` en moneda del toggle |
+| Precio Actual | — | `getPriceForDate()` — solo EEUU |
+| Valor Tenencia | `valorTenencia` | `precio × bal` — solo EEUU con precio real |
+| Gan./Pérd. $ | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
+| Gan./Pérd. % | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
+
+AR: Precio Actual, Valor Tenencia, Gan./Pérd. $ y % quedan en `—` (preparado para Fase 2 con precios BYMA).
+
+### Acumuladores en `renderPortfolioTable()`
+```javascript
+let sumCostoTotal = 0;      // suma de avgWithC × bal por posición
+let sumValorTenencia = 0;   // suma de precio × bal (solo EEUU con precio real)
+let sumPL = 0;              // suma de P&L (solo !isEstimated)
+let anyPriceForTotal = false;
+```
+Estos alimentan tanto la fila "Total posiciones" del footer como `renderPortfolioCards()`.
+
+### Fila "Total posiciones" en el footer
+Muestra: Costo Total acumulado · Valor Tenencia acumulado · Gan./Pérd. $ total · Gan./Pérd. % total (vs costo).
 
 ### Avg s/comis — fuente: `_snap` del ledger
-Lee directamente del `_snap` del ledger a la fecha seleccionada:
-- **AR modo origen:** `snap.AR_ARS.avgNoC` ($) y `snap.AR_USD.avgNoC` (U$S)
-- **AR modo ARS:** `snap.avgAR_ars` (blended en $, FX histórico por compra)
-- **AR modo USD:** `snap.avgAR_usd` (blended en U$S, FX histórico por compra)
-- **EEUU:** `snap.EEUU.avgNoC` (U$S)
+- **AR modo ARS:** `snap.avgAR_ars`
+- **AR modo USD:** `snap.avgAR_usd`
+- **EEUU:** `snap.EEUU.avgNoC`
 
-### Avg c/comis — fuente: `_snap` del ledger (desde v7)
-También viene del `_snap` del ledger. Los campos nuevos en `snapTotals()`:
-- **AR modo origen:** `snap.AR_ARS.avgWithC` ($) y `snap.AR_USD.avgWithC` (U$S)
-- **AR modo ARS:** `snap.avgAR_ars_wc` (blended en $, FX histórico por compra)
-- **AR modo USD:** `snap.avgAR_usd_wc` (blended en U$S, FX histórico por compra)
-- **EEUU:** `snap.avgEEUU_usd_wc` (U$S)
+### Avg c/comis — fuente: `_snap` del ledger
+- **AR modo ARS:** `snap.avgAR_ars_wc`
+- **AR modo USD:** `snap.avgAR_usd_wc`
+- **EEUU:** `snap.avgEEUU_usd_wc ?? snap.EEUU.avgWithC`
 
-**CRÍTICO:** el avg c/comis YA NO viene de `_instruments[ticker].avgByAcct`. Viene del snap del ledger. Funciona para fechas históricas y para tickers cerrados hoy que tenían posición en el pasado.
+**CRÍTICO:** el avg c/comis YA NO viene de `_instruments[ticker].avgByAcct`. Viene del snap del ledger.
 
 ### Precio actual y P&L (EEUU)
-- Usa `getPriceForDate(ticker, _portfolioDate, avgRef)` — precio a la fecha seleccionada, no siempre "hoy"
-- Si `_portfolioDate` es una fecha pasada, muestra el precio de ese día
+- Usa `getPriceForDate(ticker, _portfolioDate, avgRef)`
+- `estimated: true` solo cuando no hay **ningún** precio histórico para ese ticker en `_pricesHistory`
+- Si hay precio anterior a la fecha (ej: último EOD disponible), se usa y `estimated: false`
+- Gan./Pérd. solo se calcula cuando `!isEstimated`
 
-### Cash histórico
-En `renderPortfolioTable()` el cash también se recalcula a la fecha seleccionada:
+### Cash histórico — CRÍTICO (v11)
 ```javascript
-const txnsUpTo = _historicalTxns.filter(t => t.fecha <= fecha);
+// Filtro usa fecha_liq para Pago de Renta cuando difiere de fecha
+const txnsUpTo = _historicalTxns.filter(t => {
+  const fechaRef = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+    ? t.fecha_liq : t.fecha;
+  return fechaRef <= fecha;
+});
 const { balances } = buildCash(txnsUpTo, usdCaucionMovs);
 ```
-Refleja el saldo de caja real en esa fecha, no el de hoy.
+Esto evita picos en el valor del portfolio cuando el Pago de Renta llega antes que la Amortización.
 
-### Total Argentina — toggle 3 modos:
-- **Moneda origen:** ARS en ARS (suma `snap.AR_ARS.avgNoC × bal`) + USD en USD (suma `snap.AR_USD.avgNoC × bal`)
-- **Todo ARS:** `snap.avgAR_ars × balAR` + caja en ARS + caja USD convertida
-- **Todo USD:** `snap.avgAR_usd × balAR` + caja en USD + caja ARS convertida
-- FX para conversiones: `getFXForDate(fecha)` — FX histórico exacto de la fecha seleccionada (no el input)
-- El label del footer muestra la fecha y el FX histórico si no es hoy
+### Total Argentina (footer):
+- **Todo ARS:** `snap.avgAR_ars × balAR` + caja ARS + caja USD × FX
+- **Todo USD:** `snap.avgAR_usd × balAR` + caja USD + caja ARS / FX
+- FX: `getFXForDate(fecha)` — **nunca `getCurrentFX()`**
 
-**CRÍTICO:** `renderPortfolioTable()` usa `getFXForDate(fecha)` — **nunca `getCurrentFX()`** — para convertir cash ARS a USD. Esto garantiza que el total en modo "Todo USD" coincida exactamente con el valor que muestra Evolución para esa misma fecha.
+### Total EEUU (footer):
+- `getPriceForDate()` por posición + caja USD
 
-### Total EEUU:
-- `getPriceForDate(ticker, _portfolioDate, avgRef)` por posición + caja USD a la fecha
-- `*` cuando alguna posición usa precio estimado al costo
+### Re-render triggers
+`renderPortfolioTable()` se llama al final de:
+- `fetchLatestPrices()` — siempre
+- `fetchFXHistory()` — si `_historicalTxns` cargado
+- `fetchPricesHistory()` — si `_historicalTxns` cargado
+- `rebuildBlendedAvgs()` — siempre
+
+---
+
+## Precios históricos — `fetchPricesHistory()` ★ CORREGIDO v11
+
+### Paginación correcta
+```javascript
+// CORRECTO — solo Range header, sin limit en URL
+const r = await fetch(
+  `${SUPABASE_URL}/rest/v1/prices?select=ticker,date,close&order=ticker.asc,date.asc`,
+  { headers: { ..., 'Range-Unit': 'items', 'Range': `${from}-${from+999}` } }
+);
+```
+**CRÍTICO:** No usar `limit` en la URL junto con `Range` header — da error 416 y corta el resultado (solo traía EWZ). Mismo patrón que `fetchFXHistory` y `fetchSnapshots`.
+
+### Estructura
+```javascript
+_pricesHistory = { 'NU': { '2026-04-02': 14.15, ... }, 'EWZ': {...}, ... }
+```
+11 tickers activos: `EWZ, IREN, IVV, MELI, MSTR, NU, SHV, SPY, STRC, VGSH, VIST`
 
 ---
 
@@ -229,7 +301,6 @@ cuenta Argentina (USD) → slot 'AR_USD'
 
 ### Consulta de balance a fecha dada
 ```javascript
-// Patrón usado por getPortfolioStateAtDate y Especies
 let lastSnap = null;
 for(const t of inst.txns) {
   if(t.fecha > fecha) break;
@@ -246,7 +317,7 @@ const { usCards, arCards, ... } = buildPortfolio(clean, _fxHistory);  // DESPUÉ
 ```
 
 ### Rebuild en `fetchFXHistory`
-Cuando llega el FX history, se reconstruye el ledger y el portfolio completo.
+Cuando llega el FX history, se reconstruye el ledger y el portfolio completo, y se llama `renderPortfolioTable()`.
 
 ---
 
@@ -307,8 +378,10 @@ let _especiesState = {};  // {ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsL
 
 ## Tab 📋 Transacciones — detalle
 
-### Columnas de la tabla:
-Fecha · Cuenta · Instrumento · Operación · Cantidad · Precio · Monto · Comisión · IVA · **Otros Imp.** · Ret. NRA · Saldo Cash · Nro. Boleto · **Nro. Mov.**
+### Columnas de la tabla (v11):
+Fecha Concert. · **Fecha Liq.** · Cuenta · Instrumento · Operación · Cantidad · Precio · Monto · Comisión · IVA · Otros Imp. · Ret. NRA · Saldo Cash · Nro. Boleto · Nro. Mov.
+
+**Fecha Liq.** viene de `t.fecha_liq` tal como llega del broker. Se muestra siempre para todas las operaciones. `buildAuditRows()` la incluye en el objeto de cada fila como `fecha_liq`.
 
 ### Filtros multi-valor (dropdown con checkboxes):
 - **Cuenta** — `ms-panel-cuenta`
@@ -325,7 +398,7 @@ Fecha · Cuenta · Instrumento · Operación · Cantidad · Precio · Monto · C
 function isDeposito(op)   { return op && op.startsWith('Depósito de Fondos'); }
 function isExtraccion(op) { return op && op.startsWith('Extracción de Fondos'); }
 ```
-Esto cubre todas las variantes bancarias (COMAFI, SUPERVIELLE, BBVA, etc.) sin listarlas. Estas operaciones fueron **sacadas de `OTHER_OPS`** — ya no aparecen bajo "Otras".
+Esto cubre todas las variantes bancarias (COMAFI, SUPERVIELLE, BBVA, etc.) sin listarlas.
 
 **CRÍTICO:** `rebuildYearDropdown()` puebla `ms-panel-year` con checkboxes — no hay `<select id="aYear">`.
 
@@ -381,6 +454,7 @@ Overrides por `nro_mov` en tabla `nra_overrides` de Supabase (PK: `nro_mov, sess
 [1]  Nro. de Boleto → nro_boleto
 [2]  Tipo Mov.      → "Compra(STRC)", "Venta(AL30D)", etc.
 [3]  Concert.       → fecha "dd/mm/yy"
+[4]  Liquidación    → fecha_liq "dd/mm/yy"
 [5]  Est            → "Terminada" | "Cancelada"
 [6]  Cant. titulos  → cantidad
 [7]  Precio         → en moneda de la cuenta, coma decimal AR
@@ -395,6 +469,9 @@ Overrides por `nro_mov` en tabla `nra_overrides` de Supabase (PK: `nro_mov, sess
 Cuando un instrumento opera fuera de su cuenta nativa, el broker registra DOS filas con el mismo `nro_mov`:
 - **Fila 1** en la cuenta real: títulos + monto
 - **Fila 2** en Argentina (ARS): solo comisiones — NO mueve títulos
+
+**CRÍTICO — gap fecha concert. vs fecha liq. en Pago de Renta:**
+El broker puede registrar el Pago de Renta con `fecha` (concertación) anterior a `fecha_liq` (liquidación). El dinero no está disponible hasta `fecha_liq`. Ver sección buildCash para el tratamiento correcto.
 
 ---
 
@@ -424,11 +501,21 @@ Función pura. `isEffectivelyClosed()`:
 
 ---
 
-## Cálculo de cash — `buildCash()` y `buildAuditRows()`
+## Cálculo de cash — `buildCash()` y `buildCashDaily()` ★ ACTUALIZADO v11
 
 **CASH_SKIP_OPS:** `Transferencia de Titulos IN -`, `Depósito por transferencia interna`, `Extracción por Transferencia interna`
 
 **Cauciones en Dólares:** `buildUsdCaucionMovs()` + `isCashSkip()`
+
+### Pago de Renta — uso de fecha_liq (v11)
+**CRÍTICO:** Para operaciones `Pago de Renta` donde `fecha_liq !== fecha`, tanto `buildCash` como `buildCashDaily` usan `fecha_liq` como fecha de impacto en la caja:
+```javascript
+const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+  ? t.fecha_liq : t.fecha;
+```
+Esto evita picos artificiales en el valor del portfolio histórico cuando el Pago de Renta llega (concertación) 1-2 días antes que la Amortización (liquidación).
+
+El mismo criterio aplica al filtro `txnsUpTo` en `renderPortfolioTable()` para el cash histórico.
 
 **CRÍTICO — `buildAuditRows(clean, rawClean, usdCaucionMovs)`:**
 - `clean`: deduped + canonicalized → para mostrar en tabla
@@ -443,9 +530,9 @@ Función pura. `isEffectivelyClosed()`:
 - **Tablas:** `instruments`, `prices`, `nra_overrides`, `fx_rates`, `portfolio_snapshots`
 
 ### Fetch en el dashboard:
-- `fetchLatestPrices()` — último EOD + NRA overrides + recálculo cash post-overrides
-- `fetchPricesHistory()` — histórico completo
-- `fetchFXHistory()` — histórico FX + `rebuildBlendedAvgs()` + rebuild ledger + rebuild portfolio
+- `fetchLatestPrices()` — último EOD + NRA overrides + recálculo cash post-overrides + `renderPortfolioTable()`
+- `fetchPricesHistory()` — histórico completo paginado de a 1000 + `renderPortfolioTable()` si hay txns
+- `fetchFXHistory()` — histórico FX + `rebuildBlendedAvgs()` + rebuild ledger + rebuild portfolio + `renderPortfolioTable()`
 - `fetchSnapshots()` — snapshots guardados
 
 **`fetchFXHistory` usa `order=date.desc`** — intencional (cap Supabase 1000 filas, trae los más recientes).
@@ -495,15 +582,10 @@ Después del loop, calcula flujos e índice:
 
 Requiere `_fxHistory` cargado. **Después de cualquier cambio en Portfolio o Especies, hay que hacer ⟳ Recalcular.**
 
-### Flujos en el gráfico
-Calculados en `renderEvolChart()` desde `_historicalTxns` (no desde Supabase):
-- Depósitos: barras verdes `rgba(34,197,94,0.5)` — monto positivo en USD
-- Extracciones: barras rojas `rgba(239,68,68,0.5)` — monto positivo en USD
-- Conversión ARS→USD: usa `data[i].fx_rate` (el FX del snapshot de esa fecha)
-- `null` en fechas sin flujo (las barras no aparecen)
+### `ar_ars` en snapshots siempre es 0 desde v9
+`ar_usd` ya contiene el total AR en USD.
 
 ### `fetchFXHistory()` — paginación
-Supabase cappea en 1000 filas por request. Se pagina con `Range` header hasta traer todo:
 ```javascript
 while(true) {
   // Range: from-(from+999)
@@ -544,7 +626,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 
 ## Fase 2 — pendiente
 
-- **Precios BYMA (Argentina):** conectar IOL API para CEDEARs, acciones y bonos AR
+- **Precios BYMA (Argentina):** conectar IOL API para CEDEARs, acciones y bonos AR — cuando esté, las tarjetas y columnas de Gan./Pérd. y Portfolio Total para AR dejarán de ser placeholders
 - **Backfill BYMA:** histórico desde 2020
 - **FX automático:** automatizar ingreso diario del tipo de cambio en `fx_rates`
 
@@ -591,6 +673,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Caución en Dólares distorsiona saldos | Broker registra -USD y +ARS | `buildUsdCaucionMovs()` + `isCashSkip()` |
 | Cash EEUU incorrecto (factor ~10x) | NRA no descontada | `calcNRA()` en `buildCash()` |
 | Cash incorrecto al abrir | Race condition con overrides | `fetchLatestPrices()` recalcula cash post-overrides |
+| Picos en portfolio histórico AR | Pago de Renta impacta caja en fecha concert. antes que la Amortización | `buildCash`/`buildCashDaily` usan `fecha_liq` para Pago de Renta cuando difiere |
 
 ### NRA overrides
 
@@ -608,11 +691,14 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Instrumentos cerrados no aparecen en dropdown | Leía de `AR`/`US` | Fuente: `Object.keys(_ledger)` |
 | Tab FX solo mostraba hasta 2023 | `order=date.asc` traía los más antiguos | `order=date.desc` con `Range: 0-9999` |
 | Fechas XLS exportadas como número | `parseFloat("28/03/2026")` → `28` | Leer de `_especiesRows` directamente |
-| Evolución AR no coincidía con Portfolio | `recalcSnapshots` usaba `buildPortfolio` → `avgByAcct` en vez del ledger; convertía ARS a USD con FX del momento del render | Leer `_ledger` → `snap.avgAR_usd × balAR`; cash con `getFXForDate(date)` |
-| Portfolio modo "Todo USD" no coincidía con Evolución en fechas históricas | `renderPortfolioTable` usaba `getCurrentFX()` (FX de hoy) para convertir cash ARS | Reemplazado por `getFXForDate(fecha)` en tbody y footer |
-| Índice base 100 inflado | Fórmula incorrecta: `(total - total_ayer - flujo) / total_ayer` | Corregida: `(total - flujo) / total_ayer - 1` (Modified Dietz) |
-| FX history solo desde 2023 | `fetchFXHistory` traía solo 1000 filas (cap Supabase) con `limit` en URL | Paginación con `Range` header — **no combinar `limit` en URL con `Range` header (error 416)** |
+| Evolución AR no coincidía con Portfolio | `recalcSnapshots` usaba `buildPortfolio` → `avgByAcct` en vez del ledger | Leer `_ledger` → `snap.avgAR_usd × balAR` |
+| Portfolio modo "Todo USD" no coincidía con Evolución en fechas históricas | `renderPortfolioTable` usaba `getCurrentFX()` | Reemplazado por `getFXForDate(fecha)` |
+| Índice base 100 inflado | Fórmula incorrecta | Corregida: Modified Dietz `(total - flujo) / total_ayer - 1` |
+| FX history solo desde 2023 | `fetchFXHistory` traía solo 1000 filas con `limit` en URL | Paginación con `Range` header — **no combinar `limit` en URL con `Range` header (error 416)** |
 | Snapshots potencialmente cortados | `fetchSnapshots` con mismo problema | Ídem paginación |
+| Datos de Portfolio AR vacíos al abrir | `renderPortfolioTable` corría antes de `fetchFXHistory` | `renderPortfolioTable()` al final de `fetchFXHistory` |
+| Precios EEUU no cargaban (solo EWZ) | `fetchPricesHistory` combinaba `limit` en URL + `Range` header → error 416 | Paginación correcta sin `limit` en URL |
+| P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
 
 ---
 
@@ -628,6 +714,8 @@ Pegá este documento + el HTML al inicio del chat.
 - Antes de cualquier fix de cash, validar con Python usando el .xls directamente
 - El archivo del broker es HTML disfrazado — **nunca procesar con SheetJS directamente**
 - Ofrecer actualizar `contexto.md` después de cada sesión de cambios
+- **Plan primero, código después** — presentar plan completo para confirmación antes de escribir código
+- **Preguntar dudas antes de implementar** — no a mitad del cambio
 
 **Reglas críticas de arquitectura — NUNCA violar:**
 - **`_ledger` es la fuente de verdad para balances y avgs** — Tab Portfolio y Tab Especies leen de `_ledger`, no de `AR[]`/`US[]`
@@ -642,7 +730,7 @@ Pegá este documento + el HTML al inicio del chat.
 - **`rebuildYearDropdown()` puebla `ms-panel-year` con checkboxes** — no hay `<select id="aYear">`
 - **Los filtros de Transacciones son multi-valor** — `aFilter()` usa `msGetSelected()`, no `.value`
 - **`isEffectivelyClosed` consulta `_ledger` antes de declarar stale** — no eliminar ese check
-- **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown al resolverse** — no eliminar
+- **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown + `renderPortfolioTable` al resolverse** — no eliminar
 - **`movesTitle()` determina qué fila mueve títulos** — la fila de comisión (cuenta ARS) NO mueve
 - **Ventas desde AR:** consumir slot propio → otro slot AR → EEUU→AR
 - **Ventas desde EEUU:** xfer implícita AR→EEUU proporcional SOLO si sufijo C (`isMEP_C`)
@@ -652,7 +740,7 @@ Pegá este documento + el HTML al inicio del chat.
 - **FX siempre desde `_fxHistory`/`_fxLatest`** — no agregar inputs manuales de FX
 - **`exportEspeciesXLS()` lee de `_especiesRows`/`_especiesState`** — no del DOM
 - **`calcBuyCost(t, false)` descuenta comis + IVA + otros_imp. `calcBuyCost(t, true)` = `|monto|`**
-- **`buildPortfolio(clean, fxHistory)` es pura** — no muta globals, segura para llamar con subsets
+- **`buildPortfolio(clean, fxHistory)` es pura** — no muta globals
 - **`recalcSnapshots()` requiere `_fxHistory` cargado** — el guard lo verifica
 - **`recalcSnapshots()` usa `_ledger` para AR** — no `buildPortfolio` → `avgByAcct`
 - **`recalcSnapshots()` usa `getFXForDate(date)` para convertir cash ARS** — no `getCurrentFX()`
@@ -661,5 +749,10 @@ Pegá este documento + el HTML al inicio del chat.
 - **`isDeposito()`/`isExtraccion()` detectan por prefijo** — no por nombre exacto del banco
 - **Depósitos/Extracciones fuera de `OTHER_OPS`** — tienen pseudo-valores `__depositos__`/`__extracciones__` en el dropdown
 - **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
-- **`fetchFXHistory` y `fetchSnapshots` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
-- **Cash histórico en Portfolio** — se recalcula filtrando `_historicalTxns` por `t.fecha <= _portfolioDate`
+- **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
+- **Cash histórico en Portfolio** — filtro `txnsUpTo` usa `fecha_liq` para Pago de Renta cuando difiere de `fecha`
+- **`buildCash` y `buildCashDaily` usan `fecha_liq` para Pago de Renta** — no usar `fecha` directamente para esas operaciones
+- **`_arMode` solo tiene valores `'ars'` y `'usd'`** — el modo `'origin'` fue eliminado en v11
+- **Las filas de caja NO están en el tbody de la tabla Portfolio** — están en las tarjetas `renderPortfolioCards()`
+- **`renderPortfolioCards()` recibe `sumPL` como parámetro** — no recalcular `sumValorTenencia - sumCostoTotal` internamente
+- **`renderPortfolioTable()` se llama al final de `fetchPricesHistory` y `fetchFXHistory`** — necesario para resolver race conditions de carga
