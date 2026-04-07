@@ -2742,6 +2742,15 @@ async function recalcSnapshots() {
   if(progressLbl) progressLbl.textContent = `Guardando ${snapshots.length} snapshots en Supabase...`;
   if(progressBar) progressBar.style.width = '100%';
 
+  // Borrar todos los snapshots existentes antes de re-insertar
+  // Esto evita que queden fechas huérfanas del cálculo anterior
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/portfolio_snapshots?date=gte.2000-01-01`, {
+      method: 'DELETE',
+      headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` }
+    });
+  } catch(e) { console.warn('Snapshot delete failed:', e); }
+
   // Upsert to Supabase in batches of 200
   const BATCH = 200;
   for(let i = 0; i < snapshots.length; i += BATCH) {
