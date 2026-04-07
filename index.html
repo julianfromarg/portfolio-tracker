@@ -272,9 +272,8 @@ tbody tr:hover td{background:var(--s2);}
     <!-- AR total mode toggle (only shown for Argentina) -->
     <div id="ar-mode-wrap" style="display:none;margin-left:auto;display:flex;gap:8px;align-items:center;">
       <div style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
-        <button class="evol-rb act" id="armode-origin" onclick="setARMode('origin')">Moneda origen</button>
-        <button class="evol-rb" id="armode-ars"    onclick="setARMode('ars')">Todo ARS</button>
-        <button class="evol-rb" id="armode-usd"    onclick="setARMode('usd')">Todo USD</button>
+        <button class="evol-rb" id="armode-ars" onclick="setARMode('ars')">Todo ARS</button>
+        <button class="evol-rb act" id="armode-usd" onclick="setARMode('usd')">Todo USD</button>
       </div>
       <input class="fi" id="fx-input" type="number" step="0.01" placeholder="FX hoy (ARS/USD)" style="width:160px;" oninput="renderPortfolioTable()">
       <button class="fb" onclick="saveFXRate()" style="color:var(--usd);border-color:var(--usd);">💾 Guardar FX</button>
@@ -287,13 +286,15 @@ tbody tr:hover td{background:var(--s2);}
     <table id="portfolio-tbl" style="width:100%;border-collapse:collapse;min-width:700px;">
       <thead>
         <tr>
-          <th onclick="pSort('ticker')"   style="text-align:left;"   id="pth-ticker">Instrumento</th>
-          <th onclick="pSort('net')"      style="text-align:right;"  id="pth-net">Cantidad</th>
-          <th onclick="pSort('avg')"      style="text-align:right;"  id="pth-avg">P. Prom. s/comis.</th>
-          <th onclick="pSort('avgWithCom')" style="text-align:right;" id="pth-avgWithCom">P. Prom. c/comis.</th>
-          <th                             style="text-align:right;"              >Precio Actual</th>
-          <th                             style="text-align:right;"              >Gan./Pérd.</th>
-          <th                             style="text-align:right;"              >Valor Tenencia</th>
+          <th onclick="pSort('ticker')"      style="text-align:left;"  id="pth-ticker">Instrumento</th>
+          <th onclick="pSort('net')"         style="text-align:right;" id="pth-net">Cantidad</th>
+          <th onclick="pSort('avg')"         style="text-align:right;" id="pth-avg">P. Prom. s/comis.</th>
+          <th onclick="pSort('avgWithCom')"  style="text-align:right;" id="pth-avgWithCom">P. Prom. c/comis.</th>
+          <th onclick="pSort('costoTotal')"  style="text-align:right;" id="pth-costoTotal">Costo Total</th>
+          <th                                style="text-align:right;">Precio Actual</th>
+          <th onclick="pSort('valorTenencia')" style="text-align:right;" id="pth-valorTenencia">Valor Tenencia</th>
+          <th                                style="text-align:right;">Gan./Pérd. $</th>
+          <th                                style="text-align:right;">Gan./Pérd. %</th>
         </tr>
       </thead>
       <tbody id="portfolio-tbody"></tbody>
@@ -755,7 +756,7 @@ let _pricesHistory = {};   // { ticker: { 'YYYY-MM-DD': close } } — full histo
 let _fxHistory = {};       // { 'YYYY-MM-DD': usd_ars }
 let _fxLatest = null;      // latest fx rate loaded from DB
 let _snapshots = [];       // [{date, ar_ars, ar_usd, us_usd, fx_rate}] sorted asc
-let _arMode = 'origin';    // 'origin' | 'ars' | 'usd'
+let _arMode = 'usd';       // 'ars' | 'usd'
 let _portfolioDate = new Date().toISOString().slice(0,10); // fecha seleccionada en el date picker
 
 async function fetchLatestPrices() {
@@ -1024,7 +1025,7 @@ function setFXStatus(msg, color) {
 // ══════ AR MODE TOGGLE ══════
 function setARMode(mode) {
   _arMode = mode;
-  ['origin','ars','usd'].forEach(m => {
+  ['ars','usd'].forEach(m => {
     const btn = document.getElementById(`armode-${m}`);
     if(btn) btn.classList.toggle('act', m === mode);
   });
@@ -1177,11 +1178,18 @@ function renderPortfolioTable() {
   const rows = positions.map(p => {
     const snap = p.snap;
     const bal  = isAr ? p.balAR : p.balEEUU;
-    const avgNoC_ARS_blended = snap.avgAR_ars ?? 0;
-    const avgNoC_EEUU        = snap.EEUU?.avgNoC ?? 0;
+    const avgNoC_val = isAr
+      ? (_arMode === 'ars' ? (snap.avgAR_ars ?? 0) : (snap.avgAR_usd ?? 0))
+      : (snap.EEUU?.avgNoC ?? 0);
+    const avgWithC_val = isAr
+      ? (_arMode === 'ars' ? (snap.avgAR_ars_wc ?? 0) : (snap.avgAR_usd_wc ?? 0))
+      : (snap.avgEEUU_usd_wc ?? snap.EEUU?.avgWithC ?? 0);
+    const costoTotal = avgWithC_val * bal;
     return { ticker: p.ticker, bal, snap, p,
              net: bal,
-             avg: isAr ? avgNoC_ARS_blended : avgNoC_EEUU };
+             avg: avgNoC_val,
+             costoTotal,
+             valorTenencia: 0 }; // valorTenencia se calcula abajo para EEUU
   });
 
   rows.sort((a, b) => {
@@ -1196,25 +1204,21 @@ function renderPortfolioTable() {
 
   const tbody = document.getElementById('portfolio-tbody');
 
+  // Acumuladores para totales de posiciones
+  let sumCostoTotal = 0, sumValorTenencia = 0, anyPriceForTotal = false;
+
   tbody.innerHTML = rows.map(row => {
     const { ticker, bal, snap } = row;
     const netFmt = isAr ? N(bal, 0) : N(bal, 2);
     const fx = getFXForDate(fecha);
 
-    // ── Avg sin comisiones (del ledger/snap) ──────────────────────────────
+    // ── Avg sin comisiones ──────────────────────────────────────────────
     let avgFmt = '—';
     if(isAr) {
-      const hasARS = (snap.AR_ARS?.bal ?? 0) > 0;
-      const hasUSD = (snap.AR_USD?.bal ?? 0) > 0;
-      if(_arMode === 'origin') {
-        const parts = [];
-        if(hasARS && snap.AR_ARS.avgNoC > 0) parts.push('$ '   + fmtP(snap.AR_ARS.avgNoC, snap.AR_ARS.avgNoC));
-        if(hasUSD && snap.AR_USD.avgNoC > 0) parts.push('U$S ' + fmtP(snap.AR_USD.avgNoC, snap.AR_USD.avgNoC));
-        avgFmt = parts.length ? parts.join(' / ') : '—';
-      } else if(_arMode === 'ars') {
+      if(_arMode === 'ars') {
         const v = snap.avgAR_ars ?? 0;
         avgFmt = v > 0 ? '$ ' + fmtP(v, v) : '—';
-      } else { // usd
+      } else {
         const v = snap.avgAR_usd ?? 0;
         avgFmt = v > 0 ? 'U$S ' + fmtP(v, v) : '—';
       }
@@ -1223,20 +1227,13 @@ function renderPortfolioTable() {
       avgFmt = v > 0 ? fmtP(v, v) : '—';
     }
 
-    // ── Avg con comisiones (del snap del ledger — histórico a la fecha) ──
+    // ── Avg con comisiones ──────────────────────────────────────────────
     let avgComFmt = '—';
     if(isAr) {
-      const hasARS = (snap.AR_ARS?.bal ?? 0) > 0;
-      const hasUSD = (snap.AR_USD?.bal ?? 0) > 0;
-      if(_arMode === 'origin') {
-        const parts = [];
-        if(hasARS && snap.AR_ARS.avgWithC > 0) parts.push('$ '   + fmtP(snap.AR_ARS.avgWithC, snap.AR_ARS.avgWithC));
-        if(hasUSD && snap.AR_USD.avgWithC > 0) parts.push('U$S ' + fmtP(snap.AR_USD.avgWithC, snap.AR_USD.avgWithC));
-        avgComFmt = parts.length ? parts.join(' / ') : '—';
-      } else if(_arMode === 'ars') {
+      if(_arMode === 'ars') {
         const v = snap.avgAR_ars_wc ?? 0;
         avgComFmt = v > 0 ? '$ ' + fmtP(v, v) : '—';
-      } else { // usd
+      } else {
         const v = snap.avgAR_usd_wc ?? 0;
         avgComFmt = v > 0 ? 'U$S ' + fmtP(v, v) : '—';
       }
@@ -1245,7 +1242,16 @@ function renderPortfolioTable() {
       avgComFmt = v > 0 ? fmtP(v, v) : '—';
     }
 
-    // ── Precio actual (solo EEUU, a la fecha seleccionada) ────────────────
+    // ── Costo Total ────────────────────────────────────────────────────
+    const costoTotalVal = row.costoTotal;
+    sumCostoTotal += costoTotalVal;
+    const costoTotalFmt = costoTotalVal > 0
+      ? (isAr
+          ? (_arMode === 'ars' ? '$ ' + N(costoTotalVal, 2) : 'U$S ' + N(costoTotalVal, 2))
+          : 'U$S ' + N(costoTotalVal, 2))
+      : '—';
+
+    // ── Precio actual (solo EEUU, a la fecha seleccionada) ─────────────
     let currentPrice = null, isEstimated = false;
     if(!isAr) {
       const avgRef = snap.EEUU?.avgNoC ?? 0;
@@ -1258,19 +1264,31 @@ function renderPortfolioTable() {
       ? (fmtP(currentPrice, currentPrice) + (isEstimated ? ' *' : ''))
       : '—';
 
-    // ── Gan./Pérd. y Valor Tenencia ───────────────────────────────────────
-    let plCell  = '<td class="num" style="color:var(--muted)">—</td>';
+    // ── Valor Tenencia ─────────────────────────────────────────────────
     let valCell = '<td class="num" style="color:var(--muted)">—</td>';
     if(!isAr && currentPrice !== null && bal > 0) {
-      const valor  = currentPrice * bal;
-      const avgRef = snap.EEUU?.avgNoC ?? 0;
-      const pl     = avgRef > 0 && !isEstimated ? (currentPrice - avgRef) * bal : null;
-      const plPct  = avgRef > 0 && !isEstimated ? ((currentPrice / avgRef) - 1) * 100 : null;
+      const valor = currentPrice * bal;
+      sumValorTenencia += valor;
+      anyPriceForTotal = true;
+      row.valorTenencia = valor;
       valCell = `<td class="num mp">U$S ${N(valor, 2)}</td>`;
-      if(pl !== null) {
-        const cls = pl >= 0 ? 'mp' : 'mn';
-        const sign = pl >= 0 ? '+' : '';
-        plCell = `<td class="num ${cls}">${sign}U$S ${N(Math.abs(pl),2)} <span style="font-size:9px;opacity:.7">(${sign}${N(plPct,1)}%)</span></td>`;
+    } else {
+      valCell = `<td class="num" style="color:var(--muted)">—</td>`;
+    }
+
+    // ── Gan./Pérd. $ y % ───────────────────────────────────────────────
+    // AR: preparado para Fase 2 (precios BYMA), por ahora —
+    let plCellAmt = '<td class="num" style="color:var(--muted)">—</td>';
+    let plCellPct = '<td class="num" style="color:var(--muted)">—</td>';
+    if(!isAr && currentPrice !== null && bal > 0 && !isEstimated) {
+      const avgRef = snap.EEUU?.avgNoC ?? 0;
+      if(avgRef > 0) {
+        const pl    = (currentPrice - avgRef) * bal;
+        const plPct = ((currentPrice / avgRef) - 1) * 100;
+        const cls   = pl >= 0 ? 'mp' : 'mn';
+        const sign  = pl >= 0 ? '+' : '';
+        plCellAmt = `<td class="num ${cls}">${sign}U$S ${N(Math.abs(pl), 2)}</td>`;
+        plCellPct = `<td class="num ${cls}">${sign}${N(plPct, 2)}%</td>`;
       }
     }
 
@@ -1279,9 +1297,11 @@ function renderPortfolioTable() {
       <td class="num">${netFmt}</td>
       <td class="num">${avgFmt}</td>
       <td class="num" style="color:var(--muted);font-size:11px">${avgComFmt}</td>
+      <td class="num" style="color:var(--muted);font-size:11px">${costoTotalFmt}</td>
       <td class="num" style="${priceColor}">${priceFmt}</td>
-      ${plCell}
       ${valCell}
+      ${plCellAmt}
+      ${plCellPct}
     </tr>`;
   }).join('');
 
@@ -1296,25 +1316,27 @@ function renderPortfolioTable() {
     }
   }
 
+  // ── Filas de caja (colspan=8 porque ahora hay 9 columnas) ────────────
   let cashRows = '';
+  const CASH_COLSPAN = 7; // columnas vacías antes de la última
   if(isAr) {
     const bARS = historicCash?.['Argentina (ARS)'] ?? null;
     const bUSD = historicCash?.['Argentina (USD)'] ?? null;
     if(bARS !== null) cashRows += `<tr class="row-cash">
       <td>💵 Caja ARS</td>
-      <td class="num" colspan="5"></td>
+      <td class="num" colspan="${CASH_COLSPAN}"></td>
       <td class="num ${bARS>=0?'mp':'mn'}">${(bARS<0?'-':'') + '$ ' + N(Math.abs(bARS),2)}</td>
     </tr>`;
     if(bUSD !== null) cashRows += `<tr class="row-cash">
       <td>💵 Caja USD</td>
-      <td class="num" colspan="5"></td>
+      <td class="num" colspan="${CASH_COLSPAN}"></td>
       <td class="num ${bUSD>=0?'mp':'mn'}">${(bUSD<0?'-':'') + 'U$S ' + N(Math.abs(bUSD),2)}</td>
     </tr>`;
   } else {
     const bUS = historicCash?.['EEUU (USD)'] ?? null;
     if(bUS !== null) cashRows += `<tr class="row-cash">
       <td>💵 Caja USD</td>
-      <td class="num" colspan="5"></td>
+      <td class="num" colspan="${CASH_COLSPAN}"></td>
       <td class="num ${bUS>=0?'mp':'mn'}">${(bUS<0?'-':'') + 'U$S ' + N(Math.abs(bUS),2)}</td>
     </tr>`;
   }
@@ -1324,52 +1346,48 @@ function renderPortfolioTable() {
   const tfoot = document.getElementById('portfolio-tfoot');
   const dateLabel = isToday ? '' : ` <span style="font-size:9px;color:var(--usd)">· al ${fecha}</span>`;
   const note = `<span style="font-size:9px;color:var(--muted)">(posiciones al costo + caja)</span>`;
+  // Símbolo según modo
+  const sym = (!isAr && _arMode === 'ars') ? '$ ' : 'U$S ';
+
+  // Fila 1: total de posiciones (Costo Total y Valor Tenencia)
+  const costoTotalFmtTot = sumCostoTotal > 0 ? sym + N(sumCostoTotal, 2) : '—';
+  const valTenenciaFmtTot = anyPriceForTotal ? 'U$S ' + N(sumValorTenencia, 2) : '—';
+  let tfootHtml = `<tr>
+    <td colspan="4" style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">Total posiciones</td>
+    <td class="num mp" style="font-weight:700">${costoTotalFmtTot}</td>
+    <td class="num"></td>
+    <td class="num mp" style="font-weight:700">${valTenenciaFmtTot}</td>
+    <td class="num" colspan="2"></td>
+  </tr>`;
 
   if(isAr) {
     const bARS = historicCash?.['Argentina (ARS)'] ?? 0;
     const bUSD = historicCash?.['Argentina (USD)'] ?? 0;
     const fx   = getFXForDate(fecha);
 
-    // Sumar posiciones desde los snaps del ledger
-    let posARS = 0, posUSD_AR = 0;
+    // Sumar posiciones al costo (sin comisiones, como era antes) para el total final
+    let posTotal = 0;
     for(const row of rows) {
       const snap = row.snap;
       if(_arMode === 'ars') {
-        // Todo en ARS: AR_ARS al costo ARS, AR_USD convertido
-        posARS += (snap.avgAR_ars ?? 0) * row.p.balAR;
-      } else if(_arMode === 'usd') {
-        posUSD_AR += (snap.avgAR_usd ?? 0) * row.p.balAR;
+        posTotal += (snap.avgAR_ars ?? 0) * row.p.balAR;
       } else {
-        // origin: separar por slot
-        posARS    += (snap.AR_ARS?.avgNoC ?? 0) * (snap.AR_ARS?.bal ?? 0);
-        posUSD_AR += (snap.AR_USD?.avgNoC ?? 0) * (snap.AR_USD?.bal ?? 0);
+        posTotal += (snap.avgAR_usd ?? 0) * row.p.balAR;
       }
     }
 
-    if(_arMode === 'origin') {
-      tfoot.innerHTML = `
-        <tr class="total-ars">
-          <td colspan="6">TOTAL ARGENTINA (ARS) ${note}${dateLabel}</td>
-          <td class="num mp" style="font-size:13px">$ ${N(posARS + bARS, 2)}</td>
-        </tr>
-        <tr class="total-usd">
-          <td colspan="6">TOTAL ARGENTINA (USD) ${note}${dateLabel}</td>
-          <td class="num mp" style="font-size:13px">U$S ${N(posUSD_AR + bUSD, 2)}</td>
-        </tr>`;
-    } else if(_arMode === 'ars') {
-      const totalARS = posARS + bARS + bUSD * fx;
-      tfoot.innerHTML = `
-        <tr class="total-ars">
-          <td colspan="6">TOTAL ARGENTINA (ARS) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
-          <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
-        </tr>`;
-    } else { // usd
-      const totalUSD = posUSD_AR + bUSD + bARS / fx;
-      tfoot.innerHTML = `
-        <tr class="total-usd">
-          <td colspan="6">TOTAL ARGENTINA (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
-          <td class="num mp" style="font-size:13px">U$S ${N(totalUSD, 2)}</td>
-        </tr>`;
+    if(_arMode === 'ars') {
+      const totalARS = posTotal + bARS + bUSD * fx;
+      tfootHtml += `<tr class="total-ars">
+        <td colspan="8">TOTAL ARGENTINA (ARS) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+        <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
+      </tr>`;
+    } else {
+      const totalUSD = posTotal + bUSD + bARS / fx;
+      tfootHtml += `<tr class="total-usd">
+        <td colspan="8">TOTAL ARGENTINA (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+        <td class="num mp" style="font-size:13px">U$S ${N(totalUSD, 2)}</td>
+      </tr>`;
     }
   } else {
     // EEUU — precio a la fecha seleccionada
@@ -1381,17 +1399,17 @@ function renderPortfolioTable() {
     }
     const bUS = historicCash?.['EEUU (USD)'] ?? 0;
     const grandTotal = totalVal + bUS;
-    tfoot.innerHTML = anyPrice
+    tfootHtml += anyPrice
       ? `<tr>
-          <td colspan="5" style="color:var(--us)">TOTAL EEUU (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· * = al costo</span></td>
-          <td class="num"></td>
+          <td colspan="8" style="color:var(--us)">TOTAL EEUU (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· * = al costo</span></td>
           <td class="num mp" style="font-size:14px">U$S ${N(grandTotal, 2)}</td>
         </tr>`
       : `<tr>
-          <td colspan="6" style="color:var(--us)">TOTAL EEUU (USD)${dateLabel}</td>
+          <td colspan="8" style="color:var(--us)">TOTAL EEUU (USD)${dateLabel}</td>
           <td class="num" style="color:var(--muted)">— (presioná 🔄 para cargar precios)</td>
         </tr>`;
   }
+  tfoot.innerHTML = tfootHtml;
 
   // Options disclaimer — solo relevante en fecha actual
   const disc = document.getElementById('options-disclaimer-inline');
