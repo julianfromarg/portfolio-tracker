@@ -861,7 +861,8 @@ async function fetchPricesHistory() {
       _pricesHistory[row.ticker][row.date] = row.close;
     }
     console.log(`Loaded price history: ${rows.length} rows, ${Object.keys(_pricesHistory).length} tickers`);
-    renderPortfolioTable();
+    console.log('Price history tickers:', Object.keys(_pricesHistory).sort().join(', '));
+    if(_historicalTxns && _historicalTxns.length) renderPortfolioTable();
   } catch(e) { console.warn('fetchPricesHistory failed:', e); }
 }
 
