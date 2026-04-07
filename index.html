@@ -923,13 +923,13 @@ function rebuildBlendedAvgs() {
 // ══════ FETCH FX HISTORY ══════
 async function fetchFXHistory() {
   try {
-    // Supabase cappea en 1000 filas por request — paginamos hasta traer todo
+    // Supabase cappea en 1000 filas por request — paginamos con Range header
     const PAGE = 1000;
     let allRows = [];
     let from = 0;
     while(true) {
       const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.desc&limit=${PAGE}`,
+        `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.desc`,
         { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
                      'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
       );
@@ -977,7 +977,7 @@ async function fetchSnapshots() {
     let from = 0;
     while(true) {
       const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate,idx&order=date.asc&limit=${PAGE}`,
+        `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate,idx&order=date.asc`,
         { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
                      'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
       );
