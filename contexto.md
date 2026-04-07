@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 06/04/2026 v9
+## Versión: 07/04/2026 v10
 
 ---
 
@@ -27,7 +27,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 ### 8 tabs:
 - **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tabla de posiciones con date picker para ver el estado en cualquier fecha histórica. Prices live para EEUU. Argentina con toggle de modo (moneda origen / todo ARS / todo USD). FX siempre desde `fx_rates` en Supabase.
-- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes), agrupación, columnas Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. y botón `↓ CSV`.
+- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes), agrupación, columnas Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. y botón `↓ CSV`. El filtro Operación incluye opciones explícitas para **Depósito de Fondos** y **Extracción de Fondos** (detectados por prefijo, no por nombre exacto del banco).
 - **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
 - **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
 - **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
@@ -312,13 +312,20 @@ Fecha · Cuenta · Instrumento · Operación · Cantidad · Precio · Monto · C
 
 ### Filtros multi-valor (dropdown con checkboxes):
 - **Cuenta** — `ms-panel-cuenta`
-- **Operación** — `ms-panel-op`: lista fija + opción "Otras" (mapea a `OTHER_OPS`)
+- **Operación** — `ms-panel-op`: lista fija + **Depósito de Fondos** + **Extracción de Fondos** + opción "Otras" (mapea a `OTHER_OPS`)
 - **Año** — `ms-panel-year`: poblado dinámicamente por `rebuildYearDropdown()`
 - **Mes** — `ms-panel-month`
 
 **Funciones:** `msGetSelected(key)`, `msUpdateBadge(key)`, `msDrillToggle(key)`, `msChange(key)`
 
 **Lógica OR** dentro de cada filtro, **AND** entre filtros distintos.
+
+**Depósitos y extracciones** se detectan por prefijo con `isDeposito(op)` y `isExtraccion(op)`:
+```javascript
+function isDeposito(op)   { return op && op.startsWith('Depósito de Fondos'); }
+function isExtraccion(op) { return op && op.startsWith('Extracción de Fondos'); }
+```
+Esto cubre todas las variantes bancarias (COMAFI, SUPERVIELLE, BBVA, etc.) sin listarlas. Estas operaciones fueron **sacadas de `OTHER_OPS`** — ya no aparecen bajo "Otras".
 
 **CRÍTICO:** `rebuildYearDropdown()` puebla `ms-panel-year` con checkboxes — no hay `<select id="aYear">`.
 
@@ -456,21 +463,60 @@ Función pura. `isEffectivelyClosed()`:
 ### Invariante de consistencia
 **Cada punto del gráfico debe coincidir exactamente con el total que mostraría Portfolio en modo "Todo USD" para esa fecha.** Portfolio, Especies y Evolución leen todos del mismo `_ledger`.
 
-### `recalcSnapshots()` ★ REFACTORIZADO v9
+### Series del gráfico
+El gráfico es de tipo mixto (line + bar). Todos los datasets declaran `yAxisID`:
+- 🇦🇷 `arUSD = r.ar_usd` — eje Y izquierdo — color `#3d7fff`
+- 🇺🇸 `usUSD = r.us_usd` — eje Y izquierdo — color `#ef4444`
+- ∑ `totalUSD = arUSD + usUSD` — eje Y izquierdo — color `#a78bfa`
+- 💰 **Flujos** — barras verdes (depósitos) y rojas (extracciones) — eje Y izquierdo — prendido por default
+- 📈 **Índice base 100** — línea punteada naranja — eje Y derecho (`y2`) — apagado por default
+
+### Toggles
+`_evolSeries` es un `Set` que controla qué series se renderizan. Estado inicial: `['ar','us','total','flujos']`.
+Función: `evolToggleSeries(series)`.
+
+### Zoom
+`mode: 'xy'` en zoom y pan — permite zoom y pan en ambos ejes con scroll del mouse y click+drag.
+
+### `recalcSnapshots()` ★ REFACTORIZADO v10
 Por cada fecha en `_cashDaily`:
-1. Reconstruye posiciones EEUU con `buildPortfolio` → `getPriceForDate` (igual que antes)
-2. Calcula AR en USD leyendo directamente del `_ledger`: `snap.avgAR_usd × snap.balAR` para cada ticker con `balAR > 0` a esa fecha — **igual que `renderPortfolioTable()` modo "Todo USD"**
+1. Reconstruye posiciones EEUU con `buildPortfolio` → `getPriceForDate`
+2. Calcula AR en USD desde `_ledger`: `snap.avgAR_usd × snap.balAR` para cada ticker con `balAR > 0`
 3. Suma cash AR: `bUSD_AR + bARS / getFXForDate(date)`
-4. Guarda `{ date, ar_ars: 0, ar_usd, us_usd, fx_rate }` — `ar_ars` siempre 0 (columna existe en Supabase pero ya no se usa)
+4. Guarda `{ date, ar_ars: 0, ar_usd, us_usd, fx_rate }`
 
-Requiere `_fxHistory` cargado. El guard lo verifica antes de arrancar.
+Después del loop, calcula flujos e índice:
+5. **Flujos por fecha**: itera `_historicalTxns`, filtra por `isDeposito()`/`isExtraccion()`, convierte a USD con `getFXForDate`. ARS → divide por FX. USD → directo.
+6. **Índice base 100** (Modified Dietz simplificado):
+   - `retorno = (total_hoy - flujo_hoy) / total_ayer - 1`
+   - `idx_hoy = idx_ayer × (1 + retorno)`
+   - Huecos en la serie: el retorno acumulado se aplica de una vez (correcto matemáticamente)
+7. Guarda `idx` en cada snapshot → upsert a Supabase (columna `idx float8` en `portfolio_snapshots`)
 
-**Después de cualquier cambio en la lógica de Portfolio o Especies, hay que hacer ⟳ Recalcular para regenerar los snapshots en Supabase.**
+Requiere `_fxHistory` cargado. **Después de cualquier cambio en Portfolio o Especies, hay que hacer ⟳ Recalcular.**
 
-### `renderEvolChart()`:
-- 🇦🇷 `arUSD = r.ar_usd` — ya viene en USD desde `recalcSnapshots` — color `#3d7fff`
-- 🇺🇸 `usUSD = r.us_usd` — color `#ef4444`
-- ∑ `totalUSD = arUSD + usUSD` — color `#a78bfa`
+### Flujos en el gráfico
+Calculados en `renderEvolChart()` desde `_historicalTxns` (no desde Supabase):
+- Depósitos: barras verdes `rgba(34,197,94,0.5)` — monto positivo en USD
+- Extracciones: barras rojas `rgba(239,68,68,0.5)` — monto positivo en USD
+- Conversión ARS→USD: usa `data[i].fx_rate` (el FX del snapshot de esa fecha)
+- `null` en fechas sin flujo (las barras no aparecen)
+
+### `fetchFXHistory()` — paginación
+Supabase cappea en 1000 filas por request. Se pagina con `Range` header hasta traer todo:
+```javascript
+while(true) {
+  // Range: from-(from+999)
+  // Si rows.length < 1000 → última página, break
+}
+```
+**No usar `limit` en la URL junto con `Range` header — da error 416.**
+
+### `fetchSnapshots()` — ídem paginación
+Mismo patrón que `fetchFXHistory`.
+
+### FX histórico en Supabase
+5571 filas cargadas en tabla `fx_rates`, desde 2011-01-03 hasta 2026-04-06.
 
 ---
 
@@ -564,6 +610,9 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Fechas XLS exportadas como número | `parseFloat("28/03/2026")` → `28` | Leer de `_especiesRows` directamente |
 | Evolución AR no coincidía con Portfolio | `recalcSnapshots` usaba `buildPortfolio` → `avgByAcct` en vez del ledger; convertía ARS a USD con FX del momento del render | Leer `_ledger` → `snap.avgAR_usd × balAR`; cash con `getFXForDate(date)` |
 | Portfolio modo "Todo USD" no coincidía con Evolución en fechas históricas | `renderPortfolioTable` usaba `getCurrentFX()` (FX de hoy) para convertir cash ARS | Reemplazado por `getFXForDate(fecha)` en tbody y footer |
+| Índice base 100 inflado | Fórmula incorrecta: `(total - total_ayer - flujo) / total_ayer` | Corregida: `(total - flujo) / total_ayer - 1` (Modified Dietz) |
+| FX history solo desde 2023 | `fetchFXHistory` traía solo 1000 filas (cap Supabase) con `limit` en URL | Paginación con `Range` header — **no combinar `limit` en URL con `Range` header (error 416)** |
+| Snapshots potencialmente cortados | `fetchSnapshots` con mismo problema | Ídem paginación |
 
 ---
 
@@ -609,4 +658,8 @@ Pegá este documento + el HTML al inicio del chat.
 - **`recalcSnapshots()` usa `getFXForDate(date)` para convertir cash ARS** — no `getCurrentFX()`
 - **`renderPortfolioTable()` usa `getFXForDate(fecha)`** — nunca `getCurrentFX()` para cálculos de conversión
 - **`ar_ars` en snapshots siempre es 0 desde v9** — `ar_usd` ya contiene el total AR en USD
+- **`isDeposito()`/`isExtraccion()` detectan por prefijo** — no por nombre exacto del banco
+- **Depósitos/Extracciones fuera de `OTHER_OPS`** — tienen pseudo-valores `__depositos__`/`__extracciones__` en el dropdown
+- **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
+- **`fetchFXHistory` y `fetchSnapshots` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
 - **Cash histórico en Portfolio** — se recalcula filtrando `_historicalTxns` por `t.fecha <= _portfolioDate`
