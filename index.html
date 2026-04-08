@@ -1188,6 +1188,43 @@ function getPortfolioStateAtDate(fecha) {
   return result;
 }
 
+// ══════ CAUCIONES EN PESOS ══════
+// Matchea pares Caución / Liquidación de Caución por nro_mov.
+// Solo cauciones en ARS (Caución en Pesos Arg.). Las de dólares se manejan por buildUsdCaucionMovs.
+function buildCauciones(rawTxns) {
+  const aperturas = {};  // nro_mov → txn de apertura
+  const cierres   = {};  // nro_mov → txn de cierre
+
+  for(const t of rawTxns) {
+    if(!t.nro_mov || t.nro_mov === '0') continue;
+    if(t.ticker !== 'Caución en Pesos Arg.') continue;
+    if(t.operacion === 'Caución') {
+      aperturas[t.nro_mov] = t;
+    } else if(t.operacion === 'Liquidación de Caución') {
+      cierres[t.nro_mov] = t;
+    }
+  }
+
+  const result = [];
+  for(const [nro_mov, ap] of Object.entries(aperturas)) {
+    const cierre = cierres[nro_mov] || null;
+    const fechaApertura = ap.fecha;
+    const fechaCierre   = cierre ? cierre.fecha : null;
+    const monto = Math.abs(ap.monto || 0);
+    if(monto === 0) continue;
+
+    let dias = null;
+    if(fechaCierre) {
+      const d1 = new Date(fechaApertura), d2 = new Date(fechaCierre);
+      dias = Math.round((d2 - d1) / 86400000);
+    }
+    const label = dias !== null ? `Caución AR$ ${dias} días` : 'Caución AR$ (activa)';
+
+    result.push({ nro_mov, fechaApertura, fechaCierre, monto, label });
+  }
+  return result;
+}
+
 // ══════ PORTFOLIO SUMMARY CARDS ══════
 function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPrice) {
   const el = document.getElementById('portfolio-cards');
@@ -1445,6 +1482,34 @@ function renderPortfolioTable() {
       ${plCellPct}
     </tr>`;
   }).join('');
+
+  }).join('');
+
+  // ── Cauciones en pesos activas a la fecha (solo AR) ───────────────────
+  if(isAr && _historicalTxns && _historicalTxns.length) {
+    const cauciones = buildCauciones(_historicalTxns);
+    const fx = getFXForDate(fecha);
+    const caucionesActivas = cauciones.filter(c =>
+      c.fechaApertura <= fecha && (c.fechaCierre === null || c.fechaCierre > fecha)
+    );
+    for(const c of caucionesActivas) {
+      const montoEnModo = _arMode === 'ars' ? c.monto : (fx > 0 ? c.monto / fx : 0);
+      const sym = _arMode === 'ars' ? '$ ' : 'U$S ';
+      sumCostoTotal    += montoEnModo;
+      sumValorTenencia += montoEnModo;
+      tbody.innerHTML += `<tr data-ticker="${c.label}">
+        <td><b style="font-size:12px;color:var(--usd)">${c.label}</b></td>
+        <td class="num" style="color:var(--muted)">—</td>
+        <td class="num" style="color:var(--muted)">—</td>
+        <td class="num" style="color:var(--muted)">—</td>
+        <td class="num" style="color:var(--usd);font-size:11px">${sym}${N(montoEnModo, 2)}</td>
+        <td class="num" style="color:var(--muted)">—</td>
+        <td class="num" style="color:var(--usd);font-size:11px">${sym}${N(montoEnModo, 2)}</td>
+        <td class="num" style="color:var(--muted)">—</td>
+        <td class="num" style="color:var(--muted)">—</td>
+      </tr>`;
+    }
+  }
 
   // ── Cash histórico a la fecha seleccionada ────────────────────────────
   let historicCash = _cashBalances; // fallback: cash actual
