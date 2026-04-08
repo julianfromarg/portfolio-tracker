@@ -1101,17 +1101,39 @@ function getCurrentFX() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  FUENTE CANÓNICA DE VALOR DE PORTFOLIO
+//  FUENTES CANÓNICAS DE CASH Y VALOR DE PORTFOLIO
 //
-//  getARValueAtDate y getUSValueAtDate son el ÚNICO punto de definición
-//  del valor del portfolio. Todo el dashboard (tab Portfolio, tab Evolución,
-//  cualquier cálculo futuro) debe consumir estas funciones.
+//  getCashAtDate    — ÚNICA fuente de saldos de cash para cualquier fecha.
+//                     Lee de _cashDaily (construido una sola vez en
+//                     processAndRefresh). Mismo dato que tab Saldo Cash.
 //
-//  Para cambiar cómo se valúa el portfolio, SOLO hay que modificar aquí.
+//  getARValueAtDate — ÚNICA definición del valor AR en USD.
+//  getUSValueAtDate — ÚNICA definición del valor EEUU en USD.
 //
-//  precomputedData: objeto opcional { balances, cauciones } para evitar
-//  reconstruir cash/cauciones en loops de muchas fechas (recalcSnapshots).
+//  Para cambiar cómo se calcula cash o valor de portfolio, SOLO modificar aquí.
+//  Todos los tabs (Portfolio, Evolución, Saldo Cash) consumen estas funciones.
 // ══════════════════════════════════════════════════════════════════════
+
+// Devuelve {Argentina (ARS), Argentina (USD), EEUU (USD)} para una fecha dada,
+// leyendo de _cashDaily — la misma fuente que el tab Saldo Cash.
+// Si no hay movimiento en esa fecha exacta, usa el último registro anterior.
+function getCashAtDate(fecha) {
+  if(!_cashDaily || !_cashDaily.length) {
+    return { 'Argentina (ARS)': 0, 'Argentina (USD)': 0, 'EEUU (USD)': 0 };
+  }
+  // _cashDaily está ordenado desc. Buscar el último registro con fecha <= fecha pedida.
+  // Iteramos desde el final (más antiguo) hacia adelante.
+  let best = null;
+  for(let i = _cashDaily.length - 1; i >= 0; i--) {
+    if(_cashDaily[i].fecha <= fecha) { best = _cashDaily[i]; break; }
+  }
+  if(!best) return { 'Argentina (ARS)': 0, 'Argentina (USD)': 0, 'EEUU (USD)': 0 };
+  return {
+    'Argentina (ARS)': best.ars    ?? 0,
+    'Argentina (USD)': best.ar_usd ?? 0,
+    'EEUU (USD)':      best.us_usd ?? 0,
+  };
+}
 
 function getARValueAtDate(fecha, precomputedData) {
   const fx = getFXForDate(fecha);
@@ -1124,21 +1146,10 @@ function getARValueAtDate(fecha, precomputedData) {
     tenencias += (p.snap.avgAR_usd ?? 0) * p.balAR;
   }
 
-  // — Cash —
-  let balances;
-  if(precomputedData?.balances) {
-    balances = precomputedData.balances;
-  } else {
-    const txnsUpTo = (_historicalTxns || []).filter(t => {
-      const ref = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-        ? t.fecha_liq : t.fecha;
-      return ref <= fecha;
-    });
-    const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns || []);
-    ({ balances } = buildCash(txnsUpTo, usdCaucionMovs));
-  }
-  const bUSD = balances?.['Argentina (USD)'] ?? 0;
-  const bARS = balances?.['Argentina (ARS)'] ?? 0;
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUSD = balances['Argentina (USD)'] ?? 0;
+  const bARS = balances['Argentina (ARS)'] ?? 0;
 
   // — Cauciones en pesos activas a esta fecha —
   const cauciones = precomputedData?.cauciones ?? buildCauciones(_historicalTxns || []);
@@ -1163,16 +1174,9 @@ function getUSValueAtDate(fecha, precomputedData) {
     tenencias += (price ?? 0) * p.balEEUU;
   }
 
-  // — Cash —
-  let balances;
-  if(precomputedData?.balances) {
-    balances = precomputedData.balances;
-  } else {
-    const txnsUpTo = (_historicalTxns || []).filter(t => t.fecha <= fecha);
-    const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns || []);
-    ({ balances } = buildCash(txnsUpTo, usdCaucionMovs));
-  }
-  const bUS = balances?.['EEUU (USD)'] ?? 0;
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUS = balances['EEUU (USD)'] ?? 0;
 
   return tenencias + bUS;
 }
@@ -1589,20 +1593,8 @@ function renderPortfolioTable() {
   }
 
   // ── Cash histórico a la fecha seleccionada ────────────────────────────
-  let historicCash = _cashBalances; // fallback: cash actual
-  if(_historicalTxns && _historicalTxns.length) {
-    // Para Pago de Renta con fecha_liq distinta, usar fecha_liq para decidir si incluir
-    const txnsUpTo = _historicalTxns.filter(t => {
-      const fechaRef = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-        ? t.fecha_liq : t.fecha;
-      return fechaRef <= fecha;
-    });
-    if(txnsUpTo.length) {
-      const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
-      const { balances } = buildCash(txnsUpTo, usdCaucionMovs);
-      historicCash = balances;
-    }
-  }
+  // getCashAtDate es la fuente canónica — lee de _cashDaily, misma fuente que tab Saldo Cash.
+  const historicCash = getCashAtDate(fecha);
 
   // ── Render summary cards ──────────────────────────────────────────────
   renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPriceForTotal);
@@ -2778,7 +2770,6 @@ async function recalcSnapshots() {
   const dates = [...new Set(_cashDaily.map(r => r.fecha))].sort();
   if(!dates.length) { if(btn) btn.disabled = false; return; }
 
-  const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
   const cauciones = buildCauciones(_historicalTxns);
   const snapshots = [];
 
@@ -2788,15 +2779,8 @@ async function recalcSnapshots() {
     if(progressBar) progressBar.style.width = pct + '%';
     if(progressLbl) progressLbl.textContent = `Calculando ${date} (${i+1}/${dates.length})...`;
 
-    // Cash up to this date — pre-computado y pasado a las funciones canónicas
-    // Nota: usamos fecha_liq para Pago de Renta (igual que renderPortfolioTable)
-    const txnsUpTo = _historicalTxns.filter(t => {
-      const ref = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-        ? t.fecha_liq : t.fecha;
-      return ref <= date;
-    });
-    const {balances} = buildCash(txnsUpTo, usdCaucionMovs);
-    const precomputed = { balances, cauciones };
+    // Cash y valor: fuentes canónicas — misma lógica exacta que tab Portfolio y Saldo Cash
+    const precomputed = { balances: getCashAtDate(date), cauciones };
 
     // FX for this date
     const fx = getFXForDate(date);
