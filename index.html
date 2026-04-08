@@ -2716,6 +2716,7 @@ async function recalcSnapshots() {
   if(!dates.length) { if(btn) btn.disabled = false; return; }
 
   const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
+  const cauciones = buildCauciones(_historicalTxns);
   const snapshots = [];
 
   for(let i = 0; i < dates.length; i++) {
@@ -2762,6 +2763,13 @@ async function recalcSnapshots() {
     const bUSD_AR = balances['Argentina (USD)'] || 0;
     const bARS    = balances['Argentina (ARS)'] || 0;
     ar_usd += bUSD_AR + (fx > 0 ? bARS / fx : 0);
+
+    // Cauciones en pesos activas a esta fecha
+    for(const c of cauciones) {
+      if(c.fechaApertura <= date && (c.fechaCierre === null || c.fechaCierre > date)) {
+        ar_usd += fx > 0 ? c.monto / fx : 0;
+      }
+    }
 
     snapshots.push({ date, ar_ars: 0, ar_usd: Math.round(ar_usd*100)/100, us_usd: Math.round(us_usd*100)/100, fx_rate: fx });
 
