@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 07/04/2026 v11
+## Versión: 07/04/2026 v13
 
 ---
 
@@ -155,7 +155,33 @@ Estos alimentan tanto la fila "Total posiciones" del footer como `renderPortfoli
 ### Fila "Total posiciones" en el footer
 Muestra: Costo Total acumulado · Valor Tenencia acumulado · Gan./Pérd. $ total · Gan./Pérd. % total (vs costo).
 
-### Avg s/comis — fuente: `_snap` del ledger
+### Cauciones en pesos (v13)
+Las cauciones en pesos aparecen como filas especiales al final del tbody del tab Argentina. **No aparecen en EEUU.**
+
+**`buildCauciones(rawTxns)`** — matchea pares por `nro_mov`:
+- Apertura: `operacion === 'Caución'` AND `ticker === 'Caución en Pesos Arg.'`
+- Cierre: `operacion === 'Liquidación de Caución'` AND mismo `nro_mov`
+- Si no hay cierre → caución todavía activa
+
+```javascript
+{
+  nro_mov,
+  fechaApertura,  // fecha concert. de la Caución
+  fechaCierre,    // fecha concert. de la Liquidación (null si activa)
+  monto,          // Math.abs(monto de apertura) — siempre ARS
+  label,          // "Caución AR$ X días" o "Caución AR$ (activa)"
+}
+```
+
+**Visibilidad por fecha:** una caución es visible si `fechaApertura <= _portfolioDate && (fechaCierre === null || fechaCierre > _portfolioDate)`.
+
+**Rendering:** cada caución activa aparece como fila en color `--usd` con:
+- Costo Total = Valor Tenencia = `monto` en ARS (modo `ars`) o `monto / FX` (modo `usd`)
+- Cantidad, P. Prom. s/comis., P. Prom. c/comis., Precio Actual, Gan./Pérd. = `—`
+
+**Impacto en acumuladores:** `sumCostoTotal` y `sumValorTenencia` incluyen el monto de cada caución activa → las tarjetas (Costo+Caja, Portfolio Total) se actualizan automáticamente.
+
+**CRÍTICO — cauciones en dólares:** se manejan por separado vía `buildUsdCaucionMovs()` y `isCashSkip()`. `buildCauciones()` solo procesa ARS.
 - **AR modo ARS:** `snap.avgAR_ars`
 - **AR modo USD:** `snap.avgAR_usd`
 - **EEUU:** `snap.EEUU.avgNoC`
@@ -529,6 +555,16 @@ El mismo criterio aplica al filtro `txnsUpTo` en `renderPortfolioTable()` para e
 - **Anon key:** `sb_publishable_s5hodNiLD-8_OwX8NWHfRw_S1uylN2Y`
 - **Tablas:** `instruments`, `prices`, `nra_overrides`, `fx_rates`, `portfolio_snapshots`
 
+### Políticas RLS por tabla
+| Tabla | SELECT | INSERT | UPDATE | DELETE |
+|---|---|---|---|---|
+| `prices` | ✅ public | — | — | — |
+| `fx_rates` | ✅ public | ✅ public | ✅ public | — |
+| `nra_overrides` | ✅ public | ✅ public | ✅ public | ❌ no permitido (usar PATCH con `monto_override=null`) |
+| `portfolio_snapshots` | ✅ public | ✅ public | ✅ public | ✅ public (agregado v12) |
+
+**CRÍTICO:** El DELETE en `nra_overrides` no está permitido con anon key — siempre usar PATCH con `monto_override = null` para "limpiar" un override.
+
 ### Fetch en el dashboard:
 - `fetchLatestPrices()` — último EOD + NRA overrides + recálculo cash post-overrides + `renderPortfolioTable()`
 - `fetchPricesHistory()` — histórico completo paginado de a 1000 + `renderPortfolioTable()` si hay txns
@@ -565,12 +601,15 @@ Función: `evolToggleSeries(series)`.
 ### Zoom
 `mode: 'xy'` en zoom y pan — permite zoom y pan en ambos ejes con scroll del mouse y click+drag.
 
-### `recalcSnapshots()` ★ REFACTORIZADO v10
+### `recalcSnapshots()` ★ REFACTORIZADO v10, ACTUALIZADO v13
 Por cada fecha en `_cashDaily`:
 1. Reconstruye posiciones EEUU con `buildPortfolio` → `getPriceForDate`
 2. Calcula AR en USD desde `_ledger`: `snap.avgAR_usd × snap.balAR` para cada ticker con `balAR > 0`
 3. Suma cash AR: `bUSD_AR + bARS / getFXForDate(date)`
-4. Guarda `{ date, ar_ars: 0, ar_usd, us_usd, fx_rate }`
+4. **Suma cauciones en pesos activas a esa fecha:** `c.monto / fx` para cada caución con `fechaApertura <= date && (fechaCierre === null || fechaCierre > date)`
+5. Guarda `{ date, ar_ars: 0, ar_usd, us_usd, fx_rate }`
+
+`buildCauciones(_historicalTxns)` se llama **una sola vez antes del loop** y se reutiliza en cada iteración.
 
 Después del loop, calcula flujos e índice:
 5. **Flujos por fecha**: itera `_historicalTxns`, filtra por `isDeposito()`/`isExtraccion()`, convierte a USD con `getFXForDate`. ARS → divide por FX. USD → directo.
@@ -578,7 +617,25 @@ Después del loop, calcula flujos e índice:
    - `retorno = (total_hoy - flujo_hoy) / total_ayer - 1`
    - `idx_hoy = idx_ayer × (1 + retorno)`
    - Huecos en la serie: el retorno acumulado se aplica de una vez (correcto matemáticamente)
-7. Guarda `idx` en cada snapshot → upsert a Supabase (columna `idx float8` en `portfolio_snapshots`)
+7. Guarda `idx` en cada snapshot → **DELETE de todos los snapshots existentes** → upsert a Supabase (columna `idx float8` en `portfolio_snapshots`)
+
+**CRÍTICO — DELETE antes del upsert (v12):** `recalcSnapshots()` hace DELETE de todos los snapshots antes de insertar los nuevos. Esto evita que queden fechas huérfanas cuando `_cashDaily` cambia (ej: por el fix de `fecha_liq` en Pago de Renta que desplaza fechas). Sin el DELETE, los snapshots viejos persisten en Supabase y se cargan al abrir, mostrando datos incorrectos.
+
+```javascript
+// DELETE antes del upsert
+await fetch(`${SUPABASE_URL}/rest/v1/portfolio_snapshots?date=gte.2000-01-01`, {
+  method: 'DELETE',
+  headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` }
+});
+```
+
+**CRÍTICO — política RLS requerida:** la tabla `portfolio_snapshots` necesita política DELETE habilitada. Sin ella el DELETE falla silenciosamente. Las políticas actuales de la tabla son:
+```sql
+-- SELECT, INSERT, UPDATE ya existían
+-- DELETE agregado en v12:
+CREATE POLICY "public delete" ON portfolio_snapshots
+FOR DELETE TO public USING (true);
+```
 
 Requiere `_fxHistory` cargado. **Después de cualquier cambio en Portfolio o Especies, hay que hacer ⟳ Recalcular.**
 
@@ -673,7 +730,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Caución en Dólares distorsiona saldos | Broker registra -USD y +ARS | `buildUsdCaucionMovs()` + `isCashSkip()` |
 | Cash EEUU incorrecto (factor ~10x) | NRA no descontada | `calcNRA()` en `buildCash()` |
 | Cash incorrecto al abrir | Race condition con overrides | `fetchLatestPrices()` recalcula cash post-overrides |
-| Picos en portfolio histórico AR | Pago de Renta impacta caja en fecha concert. antes que la Amortización | `buildCash`/`buildCashDaily` usan `fecha_liq` para Pago de Renta cuando difiere |
+| Cauciones en pesos generaban "bache" en portfolio total | El monto inmovilizado salía de caja pero no figuraba como tenencia | `buildCauciones()` matchea pares por `nro_mov`; cauciones activas se muestran como filas en Portfolio y se suman a `ar_usd` en `recalcSnapshots()` |
 
 ### NRA overrides
 
@@ -695,7 +752,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Portfolio modo "Todo USD" no coincidía con Evolución en fechas históricas | `renderPortfolioTable` usaba `getCurrentFX()` | Reemplazado por `getFXForDate(fecha)` |
 | Índice base 100 inflado | Fórmula incorrecta | Corregida: Modified Dietz `(total - flujo) / total_ayer - 1` |
 | FX history solo desde 2023 | `fetchFXHistory` traía solo 1000 filas con `limit` en URL | Paginación con `Range` header — **no combinar `limit` en URL con `Range` header (error 416)** |
-| Snapshots potencialmente cortados | `fetchSnapshots` con mismo problema | Ídem paginación |
+| Evolución se reseteaba al reabrir | `recalcSnapshots()` hacía upsert pero no DELETE — fechas huérfanas persistían en Supabase con valores viejos | DELETE de todos los snapshots antes del upsert. Requirió agregar política RLS DELETE en `portfolio_snapshots` |
 | Datos de Portfolio AR vacíos al abrir | `renderPortfolioTable` corría antes de `fetchFXHistory` | `renderPortfolioTable()` al final de `fetchFXHistory` |
 | Precios EEUU no cargaban (solo EWZ) | `fetchPricesHistory` combinaba `limit` en URL + `Range` header → error 416 | Paginación correcta sin `limit` en URL |
 | P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
@@ -755,4 +812,8 @@ Pegá este documento + el HTML al inicio del chat.
 - **`_arMode` solo tiene valores `'ars'` y `'usd'`** — el modo `'origin'` fue eliminado en v11
 - **Las filas de caja NO están en el tbody de la tabla Portfolio** — están en las tarjetas `renderPortfolioCards()`
 - **`renderPortfolioCards()` recibe `sumPL` como parámetro** — no recalcular `sumValorTenencia - sumCostoTotal` internamente
+- **`buildCauciones()` solo procesa cauciones en ARS** — las cauciones en dólares se manejan por `buildUsdCaucionMovs()`
+- **`buildCauciones()` matchea por `nro_mov`** — no por `nro_boleto`
+- **`buildCauciones()` se llama una vez antes del loop en `recalcSnapshots()`** — no dentro del loop por fecha
+- **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
 - **`renderPortfolioTable()` se llama al final de `fetchPricesHistory` y `fetchFXHistory`** — necesario para resolver race conditions de carga
