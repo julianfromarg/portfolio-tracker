@@ -1192,22 +1192,26 @@ function getPortfolioStateAtDate(fecha) {
 // Matchea pares Caución / Liquidación de Caución por nro_mov.
 // Solo cauciones en ARS (Caución en Pesos Arg.). Las de dólares se manejan por buildUsdCaucionMovs.
 function buildCauciones(rawTxns) {
-  const aperturas = {};  // nro_mov → txn de apertura
-  const cierres   = {};  // nro_mov → txn de cierre
+  const TICKER_CAUCION = 'Cauci\u00F3n en Pesos Arg.';
+  const OP_APERTURA    = 'Cauci\u00F3n';
+  const OP_CIERRE      = 'Liquidaci\u00F3n de Cauci\u00F3n';
+
+  const aperturas = {};
+  const cierres   = {};
 
   for(const t of rawTxns) {
     if(!t.nro_mov || t.nro_mov === '0') continue;
-    if(t.ticker !== 'Caución en Pesos Arg.') continue;
-    if(t.operacion === 'Caución') {
+    if(t.ticker !== TICKER_CAUCION) continue;
+    if(t.operacion === OP_APERTURA) {
       aperturas[t.nro_mov] = t;
-    } else if(t.operacion === 'Liquidación de Caución') {
+    } else if(t.operacion === OP_CIERRE) {
       cierres[t.nro_mov] = t;
     }
   }
 
   const result = [];
   for(const [nro_mov, ap] of Object.entries(aperturas)) {
-    const cierre = cierres[nro_mov] || null;
+    const cierre       = cierres[nro_mov] || null;
     const fechaApertura = ap.fecha;
     const fechaCierre   = cierre ? cierre.fecha : null;
     const monto = Math.abs(ap.monto || 0);
@@ -1218,7 +1222,9 @@ function buildCauciones(rawTxns) {
       const d1 = new Date(fechaApertura), d2 = new Date(fechaCierre);
       dias = Math.round((d2 - d1) / 86400000);
     }
-    const label = dias !== null ? `Caución AR$ ${dias} días` : 'Caución AR$ (activa)';
+    const label = dias !== null
+      ? 'Cauci\u00F3n AR$ ' + dias + ' d\u00EDas'
+      : 'Cauci\u00F3n AR$ (activa)';
 
     result.push({ nro_mov, fechaApertura, fechaCierre, monto, label });
   }
@@ -1481,8 +1487,6 @@ function renderPortfolioTable() {
       ${plCellAmt}
       ${plCellPct}
     </tr>`;
-  }).join('');
-
   }).join('');
 
   // ── Cauciones en pesos activas a la fecha (solo AR) ───────────────────
