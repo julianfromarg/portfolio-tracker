@@ -1218,14 +1218,9 @@ function buildCauciones(rawTxns) {
     const monto = Math.abs(ap.monto || 0);
     if(monto === 0) continue;
 
-    let dias = null;
-    if(fechaCierre) {
-      const d1 = new Date(fechaApertura), d2 = new Date(fechaCierre);
-      dias = Math.round((d2 - d1) / 86400000);
-    }
-    const label = dias !== null
-      ? 'Cauci\u00F3n AR$ ' + dias + ' d\u00EDas'
-      : 'Cauci\u00F3n ' + fechaApertura;
+    const fmtFechaLabel = f => f && f.length >= 10
+      ? `${f.slice(8,10)}/${f.slice(5,7)}/${f.slice(0,4)}` : f;
+    const label = 'Cauci\u00F3n - ' + fmtFechaLabel(fechaApertura);
 
     result.push({ nro_mov, fechaApertura, fechaCierre, monto, label });
   }
@@ -1504,14 +1499,14 @@ function renderPortfolioTable() {
       sumValorTenencia += montoEnModo;
       tbody.innerHTML += `<tr data-ticker="${c.label}">
         <td><b style="font-size:12px">${c.label}</b></td>
-        <td class="num" style="color:var(--muted)">—</td>
-        <td class="num" style="color:var(--muted)">—</td>
-        <td class="num" style="color:var(--muted)">—</td>
-        <td class="num" style="color:var(--usd);font-size:11px">${sym}${N(montoEnModo, 2)}</td>
-        <td class="num" style="color:var(--muted)">—</td>
-        <td class="num" style="color:var(--usd);font-size:11px">${sym}${N(montoEnModo, 2)}</td>
-        <td class="num" style="color:var(--muted)">—</td>
-        <td class="num" style="color:var(--muted)">—</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+        <td class="num" style="font-size:11px">${sym}${N(montoEnModo, 2)}</td>
+        <td class="num">—</td>
+        <td class="num" style="font-size:11px">${sym}${N(montoEnModo, 2)}</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
       </tr>`;
     }
   }
