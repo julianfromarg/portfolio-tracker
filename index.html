@@ -1100,6 +1100,83 @@ function getCurrentFX() {
   return _fxLatest || 1;
 }
 
+// ══════════════════════════════════════════════════════════════════════
+//  FUENTE CANÓNICA DE VALOR DE PORTFOLIO
+//
+//  getARValueAtDate y getUSValueAtDate son el ÚNICO punto de definición
+//  del valor del portfolio. Todo el dashboard (tab Portfolio, tab Evolución,
+//  cualquier cálculo futuro) debe consumir estas funciones.
+//
+//  Para cambiar cómo se valúa el portfolio, SOLO hay que modificar aquí.
+//
+//  precomputedData: objeto opcional { balances, cauciones } para evitar
+//  reconstruir cash/cauciones en loops de muchas fechas (recalcSnapshots).
+// ══════════════════════════════════════════════════════════════════════
+
+function getARValueAtDate(fecha, precomputedData) {
+  const fx = getFXForDate(fecha);
+
+  // — Tenencias: avgAR_usd (sin comisiones) × balance —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balAR ?? 0) <= 0) continue;
+    tenencias += (p.snap.avgAR_usd ?? 0) * p.balAR;
+  }
+
+  // — Cash —
+  let balances;
+  if(precomputedData?.balances) {
+    balances = precomputedData.balances;
+  } else {
+    const txnsUpTo = (_historicalTxns || []).filter(t => {
+      const ref = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+        ? t.fecha_liq : t.fecha;
+      return ref <= fecha;
+    });
+    const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns || []);
+    ({ balances } = buildCash(txnsUpTo, usdCaucionMovs));
+  }
+  const bUSD = balances?.['Argentina (USD)'] ?? 0;
+  const bARS = balances?.['Argentina (ARS)'] ?? 0;
+
+  // — Cauciones en pesos activas a esta fecha —
+  const cauciones = precomputedData?.cauciones ?? buildCauciones(_historicalTxns || []);
+  let caucionesUSD = 0;
+  for(const c of cauciones) {
+    if(c.fechaApertura <= fecha && (c.fechaCierre === null || c.fechaCierre > fecha)) {
+      caucionesUSD += fx > 0 ? c.monto / fx : 0;
+    }
+  }
+
+  return tenencias + bUSD + (fx > 0 ? bARS / fx : 0) + caucionesUSD;
+}
+
+function getUSValueAtDate(fecha, precomputedData) {
+  // — Tenencias: precio de mercado (o avg sin comisiones como fallback) × balance —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balEEUU ?? 0) <= 0) continue;
+    const avgRef = p.snap.EEUU?.avgNoC ?? 0;
+    const { price } = getPriceForDate(p.ticker, fecha, avgRef);
+    tenencias += (price ?? 0) * p.balEEUU;
+  }
+
+  // — Cash —
+  let balances;
+  if(precomputedData?.balances) {
+    balances = precomputedData.balances;
+  } else {
+    const txnsUpTo = (_historicalTxns || []).filter(t => t.fecha <= fecha);
+    const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns || []);
+    ({ balances } = buildCash(txnsUpTo, usdCaucionMovs));
+  }
+  const bUS = balances?.['EEUU (USD)'] ?? 0;
+
+  return tenencias + bUS;
+}
+
 // ══════ TAB SWITCH ══════
 function switchTab(el,key){
   const panel = document.getElementById('panel-'+key);
@@ -1557,44 +1634,34 @@ function renderPortfolioTable() {
   </tr>`;
 
   if(isAr) {
-    const bARS = historicCash?.['Argentina (ARS)'] ?? 0;
-    const bUSD = historicCash?.['Argentina (USD)'] ?? 0;
-    const fx   = getFXForDate(fecha);
-
-    // Sumar posiciones al costo (sin comisiones, como era antes) para el total final
-    let posTotal = 0;
-    for(const row of rows) {
-      const snap = row.snap;
-      if(_arMode === 'ars') {
-        posTotal += (snap.avgAR_ars ?? 0) * row.p.balAR;
-      } else {
-        posTotal += (snap.avgAR_usd ?? 0) * row.p.balAR;
-      }
-    }
+    const fx = getFXForDate(fecha);
+    // getARValueAtDate es la fuente canónica — misma función que usa recalcSnapshots.
+    // Se pasa el cash ya computado arriba (historicCash) para no reconstruirlo.
+    const precomputed = { balances: historicCash, cauciones: buildCauciones(_historicalTxns || []) };
+    const totalUSD_ar = getARValueAtDate(fecha, precomputed);
 
     if(_arMode === 'ars') {
-      const totalARS = posTotal + bARS + bUSD * fx;
+      const totalARS = totalUSD_ar * fx;
       tfootHtml += `<tr class="total-ars">
         <td colspan="8">TOTAL ARGENTINA (ARS) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
         <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
       </tr>`;
     } else {
-      const totalUSD = posTotal + bUSD + bARS / fx;
       tfootHtml += `<tr class="total-usd">
         <td colspan="8">TOTAL ARGENTINA (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
-        <td class="num mp" style="font-size:13px">U$S ${N(totalUSD, 2)}</td>
+        <td class="num mp" style="font-size:13px">U$S ${N(totalUSD_ar, 2)}</td>
       </tr>`;
     }
   } else {
-    // EEUU — precio a la fecha seleccionada
-    let totalVal = 0, anyPrice = false;
-    for(const row of rows) {
-      const avgRef = row.snap.EEUU?.avgNoC ?? 0;
-      const lookup = getPriceForDate(row.ticker, fecha, avgRef);
-      if(lookup.price > 0) { totalVal += lookup.price * row.bal; anyPrice = true; }
-    }
-    const bUS = historicCash?.['EEUU (USD)'] ?? 0;
-    const grandTotal = totalVal + bUS;
+    // EEUU — getUSValueAtDate es la fuente canónica, misma función que usa recalcSnapshots
+    const precomputedUS = { balances: historicCash };
+    const grandTotal = getUSValueAtDate(fecha, precomputedUS);
+    // anyPrice: si hay al menos una posición con precio de mercado real
+    const anyPrice = positions.some(p => {
+      if((p.balEEUU ?? 0) <= 0) return false;
+      const avgRef = p.snap.EEUU?.avgNoC ?? 0;
+      return !getPriceForDate(p.ticker, fecha, avgRef).estimated;
+    });
     tfootHtml += anyPrice
       ? `<tr>
           <td colspan="8" style="color:var(--us)">TOTAL EEUU (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· * = al costo</span></td>
@@ -2721,51 +2788,22 @@ async function recalcSnapshots() {
     if(progressBar) progressBar.style.width = pct + '%';
     if(progressLbl) progressLbl.textContent = `Calculando ${date} (${i+1}/${dates.length})...`;
 
-    // Reconstruct positions up to this date
-    const txnsUpTo = _historicalTxns.filter(t => t.fecha <= date);
-    const deduped  = deduplicateMEP(txnsUpTo);
-    const clean    = canonicalizeTickers(deduped);
-
-    // buildPortfolio is pure (doesn't mutate globals — globals are set in processAndRefresh)
-    const {usCards} = buildPortfolio(clean, _fxHistory);
-
-    // Cash up to this date
+    // Cash up to this date — pre-computado y pasado a las funciones canónicas
+    // Nota: usamos fecha_liq para Pago de Renta (igual que renderPortfolioTable)
+    const txnsUpTo = _historicalTxns.filter(t => {
+      const ref = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+        ? t.fecha_liq : t.fecha;
+      return ref <= date;
+    });
     const {balances} = buildCash(txnsUpTo, usdCaucionMovs);
+    const precomputed = { balances, cauciones };
 
     // FX for this date
     const fx = getFXForDate(date);
 
-    // EEUU value: sum positions + cash
-    let us_usd = balances['EEUU (USD)'] || 0;
-    for(const d of usCards.filter(c => c.net > 0)) {
-      const {price} = getPriceForDate(d.ticker, date, d.avg);
-      us_usd += price * d.net;
-    }
-
-    // Argentina en USD: leer del _ledger (snap.avgAR_usd × balAR) — igual que Portfolio modo usd.
-    // Esto garantiza que Evolución coincida exactamente con Portfolio para cualquier fecha.
-    let ar_usd = 0;
-    for(const [, inst] of Object.entries(_ledger)) {
-      if(!inst || !inst.txns || !inst.txns.length) continue;
-      let lastSnap = null;
-      for(const t of inst.txns) {
-        if(t.fecha > date) break;
-        if(t._snap) lastSnap = t._snap;
-      }
-      if(!lastSnap || (lastSnap.balAR ?? 0) <= 0) continue;
-      ar_usd += (lastSnap.avgAR_usd ?? 0) * lastSnap.balAR;
-    }
-    // Cash AR: USD directo + ARS convertido al FX del día
-    const bUSD_AR = balances['Argentina (USD)'] || 0;
-    const bARS    = balances['Argentina (ARS)'] || 0;
-    ar_usd += bUSD_AR + (fx > 0 ? bARS / fx : 0);
-
-    // Cauciones en pesos activas a esta fecha
-    for(const c of cauciones) {
-      if(c.fechaApertura <= date && (c.fechaCierre === null || c.fechaCierre > date)) {
-        ar_usd += fx > 0 ? c.monto / fx : 0;
-      }
-    }
+    // Usar las funciones canónicas — misma lógica exacta que tab Portfolio
+    const ar_usd = getARValueAtDate(date, precomputed);
+    const us_usd = getUSValueAtDate(date, precomputed);
 
     snapshots.push({ date, ar_ars: 0, ar_usd: Math.round(ar_usd*100)/100, us_usd: Math.round(us_usd*100)/100, fx_rate: fx });
 
