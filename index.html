@@ -307,8 +307,7 @@ tbody tr:hover td{background:var(--s2);}
         <tr>
           <th onclick="pSort('ticker')"      style="text-align:left;"  id="pth-ticker">Instrumento</th>
           <th onclick="pSort('net')"         style="text-align:right;" id="pth-net">Cantidad</th>
-          <th onclick="pSort('avg')"         style="text-align:right;" id="pth-avg">P. Prom. s/comis.</th>
-          <th onclick="pSort('avgWithCom')"  style="text-align:right;" id="pth-avgWithCom">P. Prom. c/comis.</th>
+          <th onclick="pSort('avg')"         style="text-align:right;" id="pth-avg">P. Prom.</th>
           <th onclick="pSort('costoTotal')"  style="text-align:right;" id="pth-costoTotal">Costo Total</th>
           <th                                style="text-align:right;">Precio Actual</th>
           <th onclick="pSort('valorTenencia')" style="text-align:right;" id="pth-valorTenencia">Valor Tenencia</th>
@@ -1442,10 +1441,7 @@ function renderPortfolioTable() {
     const avgNoC_val = isAr
       ? (_arMode === 'ars' ? (snap.avgAR_ars ?? 0) : (snap.avgAR_usd ?? 0))
       : (snap.EEUU?.avgNoC ?? 0);
-    const avgWithC_val = isAr
-      ? (_arMode === 'ars' ? (snap.avgAR_ars_wc ?? 0) : (snap.avgAR_usd_wc ?? 0))
-      : (snap.avgEEUU_usd_wc ?? snap.EEUU?.avgWithC ?? 0);
-    const costoTotal = avgWithC_val * bal;
+    const costoTotal = avgNoC_val * bal;
     return { ticker: p.ticker, bal, snap, p,
              net: bal,
              avg: avgNoC_val,
@@ -1486,21 +1482,6 @@ function renderPortfolioTable() {
     } else {
       const v = snap.EEUU?.avgNoC ?? 0;
       avgFmt = v > 0 ? fmtP(v, v) : '—';
-    }
-
-    // ── Avg con comisiones ──────────────────────────────────────────────
-    let avgComFmt = '—';
-    if(isAr) {
-      if(_arMode === 'ars') {
-        const v = snap.avgAR_ars_wc ?? 0;
-        avgComFmt = v > 0 ? '$ ' + fmtP(v, v) : '—';
-      } else {
-        const v = snap.avgAR_usd_wc ?? 0;
-        avgComFmt = v > 0 ? 'U$S ' + fmtP(v, v) : '—';
-      }
-    } else {
-      const v = snap.avgEEUU_usd_wc ?? snap.EEUU?.avgWithC ?? 0;
-      avgComFmt = v > 0 ? fmtP(v, v) : '—';
     }
 
     // ── Costo Total ────────────────────────────────────────────────────
@@ -1558,7 +1539,6 @@ function renderPortfolioTable() {
       <td><b style="font-size:13px">${ticker}</b></td>
       <td class="num">${netFmt}</td>
       <td class="num">${avgFmt}</td>
-      <td class="num" style="color:var(--muted);font-size:11px">${avgComFmt}</td>
       <td class="num" style="color:var(--muted);font-size:11px">${costoTotalFmt}</td>
       <td class="num" style="${priceColor}">${priceFmt}</td>
       ${valCell}
@@ -1581,7 +1561,6 @@ function renderPortfolioTable() {
       sumValorTenencia += montoEnModo;
       tbody.innerHTML += `<tr data-ticker="${c.label}">
         <td><b style="font-size:12px">${c.label}</b></td>
-        <td class="num">—</td>
         <td class="num">—</td>
         <td class="num">—</td>
         <td class="num" style="font-size:11px">${sym}${N(montoEnModo, 2)}</td>
@@ -1618,7 +1597,7 @@ function renderPortfolioTable() {
     : '<span style="color:var(--muted)">—</span>';
 
   let tfootHtml = `<tr>
-    <td colspan="4" style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">Total posiciones</td>
+    <td colspan="3" style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">Total posiciones</td>
     <td class="num" style="font-weight:700">${costoTotalFmtTot}</td>
     <td class="num"></td>
     <td class="num" style="font-weight:700">${valTenenciaFmtTot}</td>
@@ -1636,12 +1615,12 @@ function renderPortfolioTable() {
     if(_arMode === 'ars') {
       const totalARS = totalUSD_ar * fx;
       tfootHtml += `<tr class="total-ars">
-        <td colspan="8">TOTAL ARGENTINA (ARS) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+        <td colspan="7">TOTAL ARGENTINA (ARS) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
         <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
       </tr>`;
     } else {
       tfootHtml += `<tr class="total-usd">
-        <td colspan="8">TOTAL ARGENTINA (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
+        <td colspan="7">TOTAL ARGENTINA (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
         <td class="num mp" style="font-size:13px">U$S ${N(totalUSD_ar, 2)}</td>
       </tr>`;
     }
@@ -1657,11 +1636,11 @@ function renderPortfolioTable() {
     });
     tfootHtml += anyPrice
       ? `<tr>
-          <td colspan="8" style="color:var(--us)">TOTAL EEUU (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· * = al costo</span></td>
+          <td colspan="7" style="color:var(--us)">TOTAL EEUU (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· * = al costo</span></td>
           <td class="num mp" style="font-size:14px">U$S ${N(grandTotal, 2)}</td>
         </tr>`
       : `<tr>
-          <td colspan="8" style="color:var(--us)">TOTAL EEUU (USD)${dateLabel}</td>
+          <td colspan="7" style="color:var(--us)">TOTAL EEUU (USD)${dateLabel}</td>
           <td class="num" style="color:var(--muted)">— (presioná 🔄 para cargar precios)</td>
         </tr>`;
   }
