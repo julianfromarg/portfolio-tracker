@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 08/04/2026 v14
+## Versión: 09/04/2026 v15
 
 ---
 
@@ -17,7 +17,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~4750 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~4950 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `contexto.md` | Este archivo |
 
@@ -25,14 +25,15 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 ## Estructura del dashboard
 
-### 8 tabs:
+### 9 tabs:
 - **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tarjetas de resumen arriba. Tabla de posiciones con date picker para ver el estado en cualquier fecha histórica. Prices live para EEUU. Argentina con toggle de modo **Todo ARS / Todo USD** (el modo "Moneda origen" fue eliminado). FX siempre desde `fx_rates` en Supabase.
-- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes), agrupación, columnas Fecha Concert. · **Fecha Liq.** · Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. y botón `↓ CSV`. El filtro Operación incluye opciones explícitas para **Depósito de Fondos** y **Extracción de Fondos** (detectados por prefijo, no por nombre exacto del banco).
+- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes), agrupación, columnas Fecha Concert. · **Fecha Liq.** · Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. · **Grupo** y botón `↓ CSV`. El filtro Operación incluye opciones explícitas para **Depósito de Fondos** y **Extracción de Fondos** (detectados por prefijo, no por nombre exacto del banco). La columna **Grupo** muestra el ticker canónico dinámico cuando el ticker original del broker difiere del canónico (ej: `I15G8-1505` → grupo `I15G8`); vacío para el resto.
 - **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
 - **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
 - **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
 - **🔍 Especies** — Tab de auditoría por instrumento. Selector dividido en 5 dropdowns por categoría: Acciones · Bonos · Letras · FCI · Otros.
 - **💱 Tipo de Cambio** — Tabla con la serie histórica de FX USD/ARS desde Supabase. Columnas: Fecha · ARS/USD · Var. diaria · Var. 30d. Filtros por año y texto. Orden clickeable por fecha o tasa.
+- **🔎 Checks** — Repositorio de checks de integridad de datos. Cada check muestra nombre, descripción breve, estado (✓ sin problemas / ● N warnings / ✗ no resuelto) y detalle de cada item. Se actualiza en cada `processAndRefresh`. Actualmente contiene 1 check: **Operaciones huérfanas**.
 - **Botones fijos:** `↑ Importar .xls` (en tabs bar)
 - **Header:** selector de sesiones con `＋ Nueva`, `✎ Renombrar`, `🗑 Borrar`
 
@@ -843,6 +844,116 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Datos de Portfolio AR vacíos al abrir | `renderPortfolioTable` corría antes de `fetchFXHistory` | `renderPortfolioTable()` al final de `fetchFXHistory` |
 | Precios EEUU no cargaban (solo EWZ) | `fetchPricesHistory` combinaba `limit` en URL + `Range` header → error 416 | Paginación correcta sin `limit` en URL |
 | P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
+| Posiciones fantasma de letras amortizadas (`I15G8-1505`, `I15G8-1906`) | Broker registró amortización con ticker truncado `I15G8`; `buildLedger` los trataba como instrumentos distintos | `detectOrphanTickers` genera grupo dinámico `I15G8 → [I15G8-1505, I15G8-1906]`; `buildLedger` consolida bajo el canónico |
+| Consolidación de huérfanos no persistía tras carga de FX | `fetchFXHistory` reconstruía `_ledger` sin los grupos dinámicos, sobreescribiendo la consolidación | Globals `_dynamicGroups`/`_dynamicTickerMap` persistidos en `processAndRefresh`; pasados también en llamada de `fetchFXHistory` |
+
+---
+
+---
+
+## Sistema de Checks de integridad (v15)
+
+### Concepto
+
+El tab 🔎 Checks es un repositorio de verificaciones automáticas que corren sobre los datos importados en cada `processAndRefresh`. Cada check detecta un patrón de problema específico, reporta su estado y —cuando es posible— lo resuelve automáticamente.
+
+### Global `_checksData`
+
+```js
+let _checksData = {
+  orphans: [], // array de { orphan, children, resolved, crossAccount }
+};
+```
+
+Se actualiza al inicio de cada `processAndRefresh`. Base extensible para futuros checks.
+
+### Globals de grupos dinámicos
+
+```js
+let _dynamicGroups    = {}; // { 'I15G8': ['I15G8','I15G8-1505','I15G8-1906'] }
+let _dynamicTickerMap = {}; // { 'I15G8':'I15G8', 'I15G8-1505':'I15G8', 'I15G8-1906':'I15G8' }
+```
+
+Persistidos para que `fetchFXHistory` (que reconstruye `_ledger` después de resolver) use los mismos grupos dinámicos que usó `processAndRefresh`.
+
+### Función `renderChecksTab()`
+
+Construye el HTML del panel desde `_checksData`. Se llama en:
+- `switchTab` cuando `key === 'checks'`
+- `processAndRefresh` (al final del bloque de Refresh UI)
+
+---
+
+## Check 1: Operaciones huérfanas (`detectOrphanTickers`)
+
+### Contexto y motivación
+
+El broker Balanz a veces registra operaciones de cierre (amortizaciones, ventas, pagos de renta) con un ticker que no coincide exactamente con el ticker de la suscripción original. El caso documentado es `I15G8`: el broker suscribió dos letras con tickers `I15G8-1505` e `I15G8-1906`, pero registró su amortización conjunta bajo el ticker truncado `I15G8` (sin sufijo), consolidando ambas en una sola fila.
+
+Esto hace que `buildLedger` trate `I15G8`, `I15G8-1505` e `I15G8-1906` como tres instrumentos distintos. Las suscripciones (`I15G8-1505` e `I15G8-1906`) nunca se amortizan → quedan con balance > 0 → aparecen como posiciones abiertas en Portfolio indefinidamente.
+
+### Patrón de detección
+
+Un ticker es **huérfano** si cumple todas estas condiciones:
+1. Tiene al menos una operación con `cantidad ≠ 0`
+2. No tiene ninguna operación en `BUY_OPS` (`Compra`, `Suscripción Primaria`, `Suscripción FCI`) ni `XFER_IN`
+3. Aparece en cuenta `Argentina (ARS)` (único scope actual)
+4. Existe al menos un ticker distinto en el dataset cuyo texto antes del primer `-` coincide exactamente con el ticker huérfano
+
+### Resolución automática
+
+Si los tickers "hijo" (con el mismo prefijo) están en `Argentina (ARS)`: se genera un grupo dinámico y se inyecta en `_dynamicGroups` / `_dynamicTickerMap`. `buildLedger` usa `dynamicTickerMap[raw]` con prioridad sobre `TICKER_TO_GROUP[raw]`, consolidando todas las operaciones bajo el ticker huérfano como canónico.
+
+Si los hijos están en una cuenta distinta (`crossAccount = true`): se registra el warning pero **no** se resuelve automáticamente — requiere revisión manual.
+
+### Firma de `detectOrphanTickers(rawTxns)`
+
+```js
+// Retorna:
+{
+  orphans: [{ orphan, children, resolved, crossAccount }],
+  dynamicGroups:    { 'I15G8': ['I15G8','I15G8-1505','I15G8-1906'] },
+  dynamicTickerMap: { 'I15G8':'I15G8', 'I15G8-1505':'I15G8', 'I15G8-1906':'I15G8' }
+}
+```
+
+### Impacto en otros tabs
+
+| Tab | Comportamiento |
+|---|---|
+| Portfolio | `I15G8-1505` e `I15G8-1906` dejan de aparecer como posiciones abiertas |
+| Especies | El dropdown muestra `I15G8` (canónico). Las 4 operaciones consolidadas bajo ese ticker |
+| Transacciones | Los tickers se muestran **tal como vienen del broker** (`I15G8-1505`, `I15G8`, etc.). La columna **Grupo** muestra `I15G8` para las filas que pertenecen al grupo dinámico |
+| Evolución | Los snapshots en Supabase quedan desactualizados → **el usuario debe presionar ⟳ Recalcular** después de cualquier cambio que afecte el ledger |
+| Cash | No se toca — el `Pago de Renta` de `I15G8` ya impactaba la caja correctamente antes del fix |
+
+### Bug resuelto en la implementación: race condition con `fetchFXHistory`
+
+`fetchFXHistory` reconstruye `_ledger` al resolverse (después de que `processAndRefresh` ya terminó) llamando `buildLedger(_historicalTxns, _fxHistory)` **sin** los grupos dinámicos. Esto sobreescribía el ledger correcto con uno sin la consolidación.
+
+Fix: persistir `_dynamicGroups` y `_dynamicTickerMap` como globals en `processAndRefresh` y pasarlos en la llamada de `fetchFXHistory`:
+```js
+_ledger = buildLedger(_historicalTxns, _fxHistory, _dynamicGroups, _dynamicTickerMap);
+```
+
+### Patrón de nomenclatura de letras del broker
+
+El patrón estándar es `XNNN[YY]-DDMM` donde el prefijo antes del `-` identifica la especie y el sufijo la fecha de emisión. El caso `I15G8` es una excepción documentada donde el broker truncó el ticker al consolidar dos posiciones.
+
+### Cómo desactivar / reemplazar este sistema
+
+Si en el futuro se decide eliminar la detección automática de huérfanos (por ejemplo, porque se implementan transacciones manuales que resuelven estos casos), los cambios necesarios son:
+
+1. **Eliminar `detectOrphanTickers`** — la función entera (~65 líneas)
+2. **Eliminar los globals** `_checksData`, `_dynamicGroups`, `_dynamicTickerMap`
+3. **Revertir `processAndRefresh`** — quitar las 4 líneas que llaman a `detectOrphanTickers` y asignan los globals
+4. **Revertir `buildLedger`** — volver a la firma `buildLedger(rawTxns, fxHistory = {})` y restaurar la línea de canonicalización a `TICKER_TO_GROUP[raw] || raw`
+5. **Revertir la llamada en `fetchFXHistory`** — volver a `buildLedger(_historicalTxns, _fxHistory)` sin los dos últimos parámetros
+6. **Revertir `buildAuditRows`** — quitar el parámetro `dynamicTickerMap` y el campo `grupo` del objeto retornado
+7. **Revertir `aRow()`** — quitar la celda `grupoCell` y la columna del thead
+8. **Revertir `exportAuditCSV`** — quitar `Grupo` de headers y rows
+9. **Eliminar el tab 🔎 Checks** — el `<div>` del tab button, el panel HTML, el CSS `.check-*`, y la llamada en `switchTab` y `processAndRefresh`
+10. **Manejo del caso I15G8** — sin detección automática, las posiciones `I15G8-1505` e `I15G8-1906` volverían a aparecer como abiertas; habría que resolverlo con transacciones manuales o con una entrada en `IMPLICIT_CLOSED`
 
 ---
 
@@ -910,6 +1021,14 @@ Pegá este documento + el HTML al inicio del chat.
 - **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
 - **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
 - **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
+
+**► CHECKS E INTEGRIDAD DE DATOS:**
+- **`detectOrphanTickers(rawTxns)` corre ANTES de `buildLedger` en `processAndRefresh`** — produce `_dynamicGroups` y `_dynamicTickerMap` que se pasan a `buildLedger`
+- **`_dynamicGroups` y `_dynamicTickerMap` son globals** — persistidos para que `fetchFXHistory` los reuse al reconstruir `_ledger`; sin esto, la segunda llamada a `buildLedger` en `fetchFXHistory` sobreescribe la consolidación
+- **`buildLedger` acepta `dynamicGroups` y `dynamicTickerMap` opcionales** — tienen prioridad sobre `TICKER_TO_GROUP`; si se agregan nuevos parámetros a `buildLedger`, verificar AMBAS llamadas: la de `processAndRefresh` y la de `fetchFXHistory`
+- **Tab Transacciones muestra tickers tal como vienen del broker** — la columna Grupo es informativa; `canonicalizeTickers` NO usa `_dynamicTickerMap`, solo `TICKER_TO_GROUP` estático
+- **`renderChecksTab()` se llama en `switchTab` (key=checks) y en `processAndRefresh`** — no llamarla desde `fetchFXHistory` ni `fetchLatestPrices`
+- **Después de cualquier cambio que afecte `_ledger`, el usuario debe presionar ⟳ Recalcular** — los snapshots en Supabase no se actualizan automáticamente
 
 **► MISC:**
 - **`fetchLatestPrices()` recalcula cash post-overrides** — no eliminar
