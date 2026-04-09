@@ -812,6 +812,9 @@ let _portfolioDate = new Date().toISOString().slice(0,10); // fecha seleccionada
 let _checksData = {
   orphans: [], // resultado de detectOrphanTickers — array de { orphan, children, resolved, crossAccount }
 };
+// Grupos dinámicos generados por detectOrphanTickers — persistidos para reusar en fetchFXHistory
+let _dynamicGroups    = {};
+let _dynamicTickerMap = {};
 
 async function fetchLatestPrices() {
   if(_pricesLoading) return;
@@ -1021,7 +1024,7 @@ async function fetchFXHistory() {
     // Rebuild ledger with FX history now available, then rebuild portfolio
     // so isEffectivelyClosed re-evaluates with correct ledger balances
     if(_historicalTxns && _historicalTxns.length) {
-      _ledger = buildLedger(_historicalTxns, _fxHistory);
+      _ledger = buildLedger(_historicalTxns, _fxHistory, _dynamicGroups, _dynamicTickerMap);
       const deduped2 = deduplicateMEP(_historicalTxns);
       const clean2   = canonicalizeTickers(deduped2);
       const {usCards:uc, arCards:ac, optionsExcluded:oe, instruments:ins} = buildPortfolio(clean2, _fxHistory);
@@ -3190,18 +3193,7 @@ function detectOrphanTickers(rawTxns) {
     tickerAccounts[tk].has(TARGET_ACCOUNT)
   );
 
-  console.log('[orphans] tickersWithQty:', [...tickersWithQty].filter(t => t.startsWith('I15')));
-  console.log('[orphans] tickersWithOrigin (I15):', [...tickersWithOrigin].filter(t => t.startsWith('I15')));
-  console.log('[orphans] candidates:', candidates);
   if(!candidates.length) return { orphans: [], dynamicGroups: {}, dynamicTickerMap: {} };
-
-  // LOG EXTRA: trazar cada candidato
-  for(const dbgOrphan of candidates) {
-    const dbgPrefix = dbgOrphan + '-';
-    const dbgChildren = [...tickersWithOrigin].filter(tk => tk.startsWith(dbgPrefix));
-    const dbgInAR = dbgChildren.filter(tk => tickerAccounts[tk]?.has(TARGET_ACCOUNT));
-    console.log('[orphans] candidate:', dbgOrphan, '| children:', dbgChildren, '| childrenInAR:', dbgInAR, '| accounts:', tickerAccounts[dbgOrphan] ? [...tickerAccounts[dbgOrphan]] : []);
-  }
 
   // Paso 3: buscar hijos para cada candidato
   const orphans         = [];
@@ -3241,7 +3233,9 @@ function processAndRefresh(rawMerged) {
 
   // ── Deteccion de tickers huerfanos (antes de buildLedger) ──
   const { orphans, dynamicGroups, dynamicTickerMap } = detectOrphanTickers(rawMerged);
-  _checksData.orphans = orphans;
+  _checksData.orphans  = orphans;
+  _dynamicGroups       = dynamicGroups;    // persistir para fetchFXHistory
+  _dynamicTickerMap    = dynamicTickerMap;
 
   // Construir ledger PRIMERO — isEffectivelyClosed lo consulta dentro de buildPortfolio
   // Se pasan los grupos dinamicos para que consolide tickers huerfanos con sus hijos
