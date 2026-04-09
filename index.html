@@ -3190,6 +3190,9 @@ function detectOrphanTickers(rawTxns) {
     tickerAccounts[tk].has(TARGET_ACCOUNT)
   );
 
+  console.log('[orphans] tickersWithQty:', [...tickersWithQty].filter(t => t.startsWith('I15')));
+  console.log('[orphans] tickersWithOrigin (I15):', [...tickersWithOrigin].filter(t => t.startsWith('I15')));
+  console.log('[orphans] candidates:', candidates);
   if(!candidates.length) return { orphans: [], dynamicGroups: {}, dynamicTickerMap: {} };
 
   // Paso 3: buscar hijos para cada candidato
