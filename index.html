@@ -3195,6 +3195,14 @@ function detectOrphanTickers(rawTxns) {
   console.log('[orphans] candidates:', candidates);
   if(!candidates.length) return { orphans: [], dynamicGroups: {}, dynamicTickerMap: {} };
 
+  // LOG EXTRA: trazar cada candidato
+  for(const dbgOrphan of candidates) {
+    const dbgPrefix = dbgOrphan + '-';
+    const dbgChildren = [...tickersWithOrigin].filter(tk => tk.startsWith(dbgPrefix));
+    const dbgInAR = dbgChildren.filter(tk => tickerAccounts[tk]?.has(TARGET_ACCOUNT));
+    console.log('[orphans] candidate:', dbgOrphan, '| children:', dbgChildren, '| childrenInAR:', dbgInAR, '| accounts:', tickerAccounts[dbgOrphan] ? [...tickerAccounts[dbgOrphan]] : []);
+  }
+
   // Paso 3: buscar hijos para cada candidato
   const orphans         = [];
   const dynamicGroups   = {};
