@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 07/04/2026 v13
+## Versión: 08/04/2026 v14
 
 ---
 
@@ -17,7 +17,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~4650 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~4750 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `contexto.md` | Este archivo |
 
@@ -82,7 +82,7 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 
 ---
 
-## Tab Portfolio — diseño ★ REFACTORIZADO v11
+## Tab Portfolio — diseño ★ REFACTORIZADO v14
 
 ### Fuente de datos — CRÍTICO
 **El tab Portfolio ya NO lee de `AR[]`/`US[]` (output de `buildPortfolio`).** Lee directamente de `_ledger` a través de `getPortfolioStateAtDate(fecha)`. Esta es la fuente de verdad canónica — los mismos datos que usa el tab Especies.
@@ -100,7 +100,7 @@ El modo "Moneda origen" fue **eliminado**. Solo existen:
 
 `_arMode` default: `'usd'`. `setARMode()` solo itera `['ars','usd']`. El botón `armode-origin` ya no existe.
 
-### Tarjetas de resumen (v11) — `renderPortfolioCards()`
+### Tarjetas de resumen — `renderPortfolioCards()`
 Función separada llamada desde `renderPortfolioTable()`. Renderiza en `<div id="portfolio-cards">` ubicado entre la toolbar y la tabla.
 
 **Tab Argentina — 5 tarjetas:**
@@ -109,7 +109,7 @@ Función separada llamada desde `renderPortfolioTable()`. Renderiza en `<div id=
 | 💵 Caja ARS | `pc-cash-ars` | `$ X` + sub `≈ U$S Y` |
 | 💵 Caja USD | `pc-cash-usd` | `U$S X` + sub `≈ $ Y` |
 | 🏦 Total Caja | `pc-cash-total` | en modo toggle + sub `FX X` |
-| 📦 Costo + Caja | `pc-costo` | Costo Total acumulado + caja en toggle + sub `Costo: X` |
+| 📦 Costo + Caja | `pc-costo` | `avgNoC × bal` + caja en toggle + sub `Costo: X` |
 | 🏦 Portfolio Total | `pc-total` | placeholder hasta Fase 2 |
 | 📈 Ganancia | `pc-pl` | placeholder hasta Fase 2 |
 
@@ -128,24 +128,25 @@ Función separada llamada desde `renderPortfolioTable()`. Renderiza en `<div id=
 ### `getPortfolioStateAtDate(fecha)`
 Itera `Object.keys(_ledger)`, para cada ticker busca el último `_snap` en `t.fecha <= fecha`. Solo incluye tickers con `balAR > 0` o `balEEUU > 0` en ese snapshot. Para fechas intermedias sin movimiento usa el último snap anterior.
 
-### Columnas de la tabla (v11):
+### Columnas de la tabla (v14) — SIN comisiones:
 | Columna | Sort key | Descripción |
 |---|---|---|
 | Instrumento | `ticker` | Ticker canonicalizado |
 | Cantidad | `net` | Balance del slot a la fecha |
-| P. Prom. s/comis. | `avg` | `snap.avgAR_ars/usd` o `snap.EEUU.avgNoC` |
-| P. Prom. c/comis. | `avgWithCom` | `snap.avgAR_ars_wc/usd_wc` o `snap.avgEEUU_usd_wc` |
-| Costo Total | `costoTotal` | `avgWithC × bal` en moneda del toggle |
+| P. Prom. | `avg` | `snap.avgAR_ars/usd` o `snap.EEUU.avgNoC` — **sin comisiones** |
+| Costo Total | `costoTotal` | `avgNoC × bal` en moneda del toggle — **sin comisiones** |
 | Precio Actual | — | `getPriceForDate()` — solo EEUU |
 | Valor Tenencia | `valorTenencia` | `precio × bal` — solo EEUU con precio real |
 | Gan./Pérd. $ | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
 | Gan./Pérd. % | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
 
+**CRÍTICO (v14):** La columna "P. Prom. c/comis." fue **eliminada**. `costoTotal` usa `avgNoC_val × bal`, no `avgWithC_val × bal`. Esto garantiza consistencia con `getARValueAtDate` y el tab Evolución. **No restaurar `avgWithC` en la tabla Portfolio.**
+
 AR: Precio Actual, Valor Tenencia, Gan./Pérd. $ y % quedan en `—` (preparado para Fase 2 con precios BYMA).
 
 ### Acumuladores en `renderPortfolioTable()`
 ```javascript
-let sumCostoTotal = 0;      // suma de avgWithC × bal por posición
+let sumCostoTotal = 0;      // suma de avgNoC × bal por posición (sin comisiones)
 let sumValorTenencia = 0;   // suma de precio × bal (solo EEUU con precio real)
 let sumPL = 0;              // suma de P&L (solo !isEstimated)
 let anyPriceForTotal = false;
@@ -169,29 +170,24 @@ Las cauciones en pesos aparecen como filas especiales al final del tbody del tab
   fechaApertura,  // fecha concert. de la Caución
   fechaCierre,    // fecha concert. de la Liquidación (null si activa)
   monto,          // Math.abs(monto de apertura) — siempre ARS
-  label,          // "Caución AR$ X días" o "Caución AR$ (activa)"
+  label,          // "Caución - DD/MM/YYYY"
 }
 ```
 
 **Visibilidad por fecha:** una caución es visible si `fechaApertura <= _portfolioDate && (fechaCierre === null || fechaCierre > _portfolioDate)`.
 
-**Rendering:** cada caución activa aparece como fila en color `--usd` con:
+**Rendering:** cada caución activa aparece como fila con:
 - Costo Total = Valor Tenencia = `monto` en ARS (modo `ars`) o `monto / FX` (modo `usd`)
-- Cantidad, P. Prom. s/comis., P. Prom. c/comis., Precio Actual, Gan./Pérd. = `—`
+- Cantidad, P. Prom., Precio Actual, Gan./Pérd. = `—`
 
 **Impacto en acumuladores:** `sumCostoTotal` y `sumValorTenencia` incluyen el monto de cada caución activa → las tarjetas (Costo+Caja, Portfolio Total) se actualizan automáticamente.
 
 **CRÍTICO — cauciones en dólares:** se manejan por separado vía `buildUsdCaucionMovs()` y `isCashSkip()`. `buildCauciones()` solo procesa ARS.
+
+### Avg sin comisiones — fuente: `_snap` del ledger
 - **AR modo ARS:** `snap.avgAR_ars`
 - **AR modo USD:** `snap.avgAR_usd`
 - **EEUU:** `snap.EEUU.avgNoC`
-
-### Avg c/comis — fuente: `_snap` del ledger
-- **AR modo ARS:** `snap.avgAR_ars_wc`
-- **AR modo USD:** `snap.avgAR_usd_wc`
-- **EEUU:** `snap.avgEEUU_usd_wc ?? snap.EEUU.avgWithC`
-
-**CRÍTICO:** el avg c/comis YA NO viene de `_instruments[ticker].avgByAcct`. Viene del snap del ledger.
 
 ### Precio actual y P&L (EEUU)
 - Usa `getPriceForDate(ticker, _portfolioDate, avgRef)`
@@ -199,25 +195,21 @@ Las cauciones en pesos aparecen como filas especiales al final del tbody del tab
 - Si hay precio anterior a la fecha (ej: último EOD disponible), se usa y `estimated: false`
 - Gan./Pérd. solo se calcula cuando `!isEstimated`
 
-### Cash histórico — CRÍTICO (v11)
+### Cash histórico — CRÍTICO (v14)
 ```javascript
-// Filtro usa fecha_liq para Pago de Renta cuando difiere de fecha
-const txnsUpTo = _historicalTxns.filter(t => {
-  const fechaRef = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-    ? t.fecha_liq : t.fecha;
-  return fechaRef <= fecha;
-});
-const { balances } = buildCash(txnsUpTo, usdCaucionMovs);
+// Fuente canónica: getCashAtDate(fecha) — lee de _cashDaily
+const historicCash = getCashAtDate(fecha);
 ```
-Esto evita picos en el valor del portfolio cuando el Pago de Renta llega antes que la Amortización.
+**NUNCA reconstruir `buildCash(txnsUpTo, ...)` inline en `renderPortfolioTable` para obtener el cash histórico.** Usar siempre `getCashAtDate()`. Ver sección "Fuentes canónicas" más abajo.
 
 ### Total Argentina (footer):
-- **Todo ARS:** `snap.avgAR_ars × balAR` + caja ARS + caja USD × FX
-- **Todo USD:** `snap.avgAR_usd × balAR` + caja USD + caja ARS / FX
+- Calculado por `getARValueAtDate(fecha, precomputed)` — **fuente canónica**
+- **Todo ARS:** `totalUSD_ar × FX`
+- **Todo USD:** `totalUSD_ar` directo
 - FX: `getFXForDate(fecha)` — **nunca `getCurrentFX()`**
 
 ### Total EEUU (footer):
-- `getPriceForDate()` por posición + caja USD
+- Calculado por `getUSValueAtDate(fecha, precomputed)` — **fuente canónica**
 
 ### Re-render triggers
 `renderPortfolioTable()` se llama al final de:
@@ -225,6 +217,101 @@ Esto evita picos en el valor del portfolio cuando el Pago de Renta llega antes q
 - `fetchFXHistory()` — si `_historicalTxns` cargado
 - `fetchPricesHistory()` — si `_historicalTxns` cargado
 - `rebuildBlendedAvgs()` — siempre
+
+---
+
+## ★★★ FUENTES CANÓNICAS — CASH Y VALOR DE PORTFOLIO ★★★
+
+Esta es la sección más importante del documento. Toda discrepancia entre tabs en el pasado se originó en calcular cash o valor de portfolio en múltiples lugares con lógica ligeramente diferente. Está **terminantemente prohibido** calcular cualquiera de estos valores fuera de las funciones canónicas.
+
+### Las tres funciones canónicas
+
+```javascript
+getCashAtDate(fecha)
+  → { 'Argentina (ARS)': n, 'Argentina (USD)': n, 'EEUU (USD)': n }
+
+getARValueAtDate(fecha, precomputedData?)
+  → number  // valor total Argentina en USD
+
+getUSValueAtDate(fecha, precomputedData?)
+  → number  // valor total EEUU en USD
+```
+
+### Qué calcula cada una
+
+**`getCashAtDate(fecha)`**
+- Lee de `_cashDaily` (construido UNA SOLA VEZ en `processAndRefresh`)
+- Busca el último registro con `fecha <= fecha pedida` (array ordenado desc → iterar desde el inicio)
+- Es exactamente el mismo dato que muestra el tab Saldo Cash
+- **Si no hay movimiento en esa fecha exacta, usa el registro anterior** — correcto porque el cash no cambia sin movimiento
+
+**`getARValueAtDate(fecha, precomputedData?)`**
+- Tenencias: `snap.avgAR_usd × balAR` para cada posición AR abierta a esa fecha (via `getPortfolioStateAtDate`)
+- Cash: `getCashAtDate(fecha)` — USD directo + ARS / FX
+- Cauciones ARS activas a esa fecha: `monto / FX`
+- FX: `getFXForDate(fecha)` — siempre histórico, nunca `getCurrentFX()`
+- `precomputedData`: objeto opcional `{ balances, cauciones }` para evitar reconstruir en loops
+
+**`getUSValueAtDate(fecha, precomputedData?)`**
+- Tenencias: `getPriceForDate(ticker, fecha, avgNoC) × balEEUU` para cada posición EEUU abierta
+- Cash: `getCashAtDate(fecha)` — solo `EEUU (USD)`
+- `precomputedData`: objeto opcional `{ balances }` para evitar reconstruir en loops
+
+### Quién consume estas funciones
+
+| Consumidor | Función usada |
+|---|---|
+| `renderPortfolioTable()` footer AR | `getARValueAtDate(fecha, precomputed)` |
+| `renderPortfolioTable()` footer EEUU | `getUSValueAtDate(fecha, precomputed)` |
+| `renderPortfolioTable()` tarjetas | `getCashAtDate(fecha)` → pasa como `historicCash` |
+| `recalcSnapshots()` loop por fecha | `getARValueAtDate(date, precomputed)` + `getUSValueAtDate(date, precomputed)` |
+| Tab Saldo Cash | `_cashDaily` directamente (es la misma fuente que `getCashAtDate`) |
+
+### Regla de performance en loops
+
+`recalcSnapshots()` itera ~300-400 fechas. Para evitar reconstruir cash N veces, pre-computa `getCashAtDate(date)` por fecha y lo pasa como `precomputed.balances`. Las cauciones también se pre-computan una sola vez antes del loop.
+
+```javascript
+// CORRECTO — en recalcSnapshots
+const cauciones = buildCauciones(_historicalTxns);  // una vez, fuera del loop
+for(const date of dates) {
+  const precomputed = { balances: getCashAtDate(date), cauciones };
+  const ar_usd = getARValueAtDate(date, precomputed);
+  const us_usd = getUSValueAtDate(date, precomputed);
+}
+```
+
+### Lo que está PROHIBIDO
+
+```javascript
+// ❌ NUNCA HACER ESTO — calcular cash inline fuera de getCashAtDate
+const txnsUpTo = _historicalTxns.filter(t => t.fecha <= fecha);
+const { balances } = buildCash(txnsUpTo, usdCaucionMovs);
+
+// ❌ NUNCA HACER ESTO — calcular valor AR inline fuera de getARValueAtDate
+let ar_usd = 0;
+for(const [, inst] of Object.entries(_ledger)) { ... snap.avgAR_usd × snap.balAR ... }
+
+// ❌ NUNCA HACER ESTO — calcular valor EEUU inline fuera de getUSValueAtDate
+let us_usd = balances['EEUU (USD)'];
+for(const d of usCards) { us_usd += getPriceForDate(...) × d.net; }
+```
+
+### Cuándo llamar a `buildCash` directamente
+
+`buildCash()` y `buildCashDaily()` solo se llaman en dos lugares para **construir** `_cashDaily`:
+- `processAndRefresh()` — al importar o cargar datos
+- `saveNRAOverride()` — al cambiar un override (reconstruye `_cashDaily` con los nuevos valores)
+
+En cualquier otro lugar, **usar `getCashAtDate()`**.
+
+### Qué hacer después de cambiar la fórmula de valuación
+
+Si se modifica `getARValueAtDate`, `getUSValueAtDate` o `getCashAtDate`:
+1. Deployar el cambio
+2. El tab Portfolio refleja el cambio inmediatamente (tiempo real)
+3. El tab Evolución muestra datos **stale** hasta que el usuario presione **⟳ Recalcular**
+4. Recordar avisar al usuario que debe recalcular
 
 ---
 
@@ -775,45 +862,66 @@ Pegá este documento + el HTML al inicio del chat.
 - **Preguntar dudas antes de implementar** — no a mitad del cambio
 
 **Reglas críticas de arquitectura — NUNCA violar:**
+
+**► FUENTES CANÓNICAS DE CASH Y VALOR (v14) — LAS MÁS IMPORTANTES:**
+- **`getCashAtDate(fecha)` es la ÚNICA fuente de cash histórico** — nunca reconstruir `buildCash(txnsUpTo, ...)` inline para consultar cash de una fecha puntual
+- **`getARValueAtDate(fecha)` es la ÚNICA definición del valor AR** — nunca calcular `snap.avgAR_usd × balAR + cash` inline fuera de esta función
+- **`getUSValueAtDate(fecha)` es la ÚNICA definición del valor EEUU** — nunca calcular `precio × balEEUU + cash` inline fuera de esta función
+- **`buildCash()` y `buildCashDaily()` solo se llaman en `processAndRefresh()` y `saveNRAOverride()`** — solo para construir `_cashDaily`, nunca para consultar una fecha puntual
+- **Todo cambio de fórmula de valuación va EXCLUSIVAMENTE en las funciones canónicas** — después de deployar, el usuario debe presionar ⟳ Recalcular para actualizar Evolución
+- **`getCashAtDate` itera `_cashDaily` desde el inicio (índice 0 = más reciente)** — el array está ordenado desc; iterar desde el final daría siempre el valor más antiguo
+
+**► LEDGER Y PORTFOLIO:**
 - **`_ledger` es la fuente de verdad para balances y avgs** — Tab Portfolio y Tab Especies leen de `_ledger`, no de `AR[]`/`US[]`
 - **`renderPortfolioTable()` usa `getPortfolioStateAtDate(_portfolioDate)`** — no leer de `AR[]`/`US[]` directamente
-- **El avg c/comis en Portfolio viene del `_snap` del ledger** — no de `_instruments[ticker].avgByAcct`
+- **`costoTotal` en la tabla Portfolio usa `avgNoC_val × bal`** — sin comisiones; no restaurar `avgWithC`; la columna "P. Prom. c/comis." fue eliminada en v14
 - **`buildLedger` se llama ANTES de `buildPortfolio` en `processAndRefresh`** — no cambiar este orden
 - **`buildLedger` opera sobre rawTxns (pre-dedup)** — nunca pasarle txns ya deduplicadas
+- **`recalcSnapshots()` usa `getARValueAtDate` y `getUSValueAtDate`** — no `buildPortfolio` → `avgByAcct`, no loops inline sobre `_ledger`
+- **`recalcSnapshots()` usa `getCashAtDate(date)` por fecha** — no `buildCash(txnsUpTo, ...)`
+
+**► ESPECIES:**
 - **`renderEspecies()` lee de `_ledger[ticker]`** — no de `_instruments[ticker]`
 - **`rebuildEspeciesDropdown()` usa `Object.keys(_ledger)` como fuente** — no `AR`/`US`
 - **`rebuildEspeciesDropdown()` puebla 5 selectores** — no hay `esp-ticker-select` único
 - **`renderEspecies()` obtiene ticker con `espGetSelectedTicker()`** — no leer de un selector fijo
+
+**► TRANSACCIONES:**
 - **`rebuildYearDropdown()` puebla `ms-panel-year` con checkboxes** — no hay `<select id="aYear">`
 - **Los filtros de Transacciones son multi-valor** — `aFilter()` usa `msGetSelected()`, no `.value`
+- **`isDeposito()`/`isExtraccion()` detectan por prefijo** — no por nombre exacto del banco
+- **Depósitos/Extracciones fuera de `OTHER_OPS`** — tienen pseudo-valores `__depositos__`/`__extracciones__` en el dropdown
+
+**► LEDGER INTERNO:**
 - **`isEffectivelyClosed` consulta `_ledger` antes de declarar stale** — no eliminar ese check
-- **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown + `renderPortfolioTable` al resolverse** — no eliminar
 - **`movesTitle()` determina qué fila mueve títulos** — la fila de comisión (cuenta ARS) NO mueve
 - **Ventas desde AR:** consumir slot propio → otro slot AR → EEUU→AR
 - **Ventas desde EEUU:** xfer implícita AR→EEUU proporcional SOLO si sufijo C (`isMEP_C`)
 - **`_xferAR` y `_xferEEUU` en cada txn de venta** — los usa `renderEspecies`, no eliminar
-- **`fetchLatestPrices()` recalcula cash post-overrides** — no eliminar
-- **`fetchFXHistory()` llama `rebuildBlendedAvgs()` al final** — no eliminar
+
+**► FX Y PRECIOS:**
 - **FX siempre desde `_fxHistory`/`_fxLatest`** — no agregar inputs manuales de FX
+- **`renderPortfolioTable()` usa `getFXForDate(fecha)`** — nunca `getCurrentFX()` para cálculos de conversión
+- **`recalcSnapshots()` usa `getFXForDate(date)`** — no `getCurrentFX()`
+- **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown + `renderPortfolioTable` al resolverse** — no eliminar
+- **`fetchFXHistory()` llama `rebuildBlendedAvgs()` al final** — no eliminar
+
+**► SUPABASE Y PAGINACIÓN:**
+- **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
+- **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
+- **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
+
+**► MISC:**
+- **`fetchLatestPrices()` recalcula cash post-overrides** — no eliminar
 - **`exportEspeciesXLS()` lee de `_especiesRows`/`_especiesState`** — no del DOM
 - **`calcBuyCost(t, false)` descuenta comis + IVA + otros_imp. `calcBuyCost(t, true)` = `|monto|`**
 - **`buildPortfolio(clean, fxHistory)` es pura** — no muta globals
 - **`recalcSnapshots()` requiere `_fxHistory` cargado** — el guard lo verifica
-- **`recalcSnapshots()` usa `_ledger` para AR** — no `buildPortfolio` → `avgByAcct`
-- **`recalcSnapshots()` usa `getFXForDate(date)` para convertir cash ARS** — no `getCurrentFX()`
-- **`renderPortfolioTable()` usa `getFXForDate(fecha)`** — nunca `getCurrentFX()` para cálculos de conversión
 - **`ar_ars` en snapshots siempre es 0 desde v9** — `ar_usd` ya contiene el total AR en USD
-- **`isDeposito()`/`isExtraccion()` detectan por prefijo** — no por nombre exacto del banco
-- **Depósitos/Extracciones fuera de `OTHER_OPS`** — tienen pseudo-valores `__depositos__`/`__extracciones__` en el dropdown
-- **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
-- **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
-- **Cash histórico en Portfolio** — filtro `txnsUpTo` usa `fecha_liq` para Pago de Renta cuando difiere de `fecha`
-- **`buildCash` y `buildCashDaily` usan `fecha_liq` para Pago de Renta** — no usar `fecha` directamente para esas operaciones
-- **`_arMode` solo tiene valores `'ars'` y `'usd'`** — el modo `'origin'` fue eliminado en v11
-- **Las filas de caja NO están en el tbody de la tabla Portfolio** — están en las tarjetas `renderPortfolioCards()`
-- **`renderPortfolioCards()` recibe `sumPL` como parámetro** — no recalcular `sumValorTenencia - sumCostoTotal` internamente
 - **`buildCauciones()` solo procesa cauciones en ARS** — las cauciones en dólares se manejan por `buildUsdCaucionMovs()`
 - **`buildCauciones()` matchea por `nro_mov`** — no por `nro_boleto`
 - **`buildCauciones()` se llama una vez antes del loop en `recalcSnapshots()`** — no dentro del loop por fecha
-- **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
+- **`_arMode` solo tiene valores `'ars'` y `'usd'`** — el modo `'origin'` fue eliminado en v11
+- **Las filas de caja NO están en el tbody de la tabla Portfolio** — están en las tarjetas `renderPortfolioCards()`
+- **`renderPortfolioCards()` recibe `sumPL` como parámetro** — no recalcular `sumValorTenencia - sumCostoTotal` internamente
 - **`renderPortfolioTable()` se llama al final de `fetchPricesHistory` y `fetchFXHistory`** — necesario para resolver race conditions de carga
