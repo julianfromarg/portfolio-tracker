@@ -1121,10 +1121,11 @@ function getCashAtDate(fecha) {
   if(!_cashDaily || !_cashDaily.length) {
     return { 'Argentina (ARS)': 0, 'Argentina (USD)': 0, 'EEUU (USD)': 0 };
   }
-  // _cashDaily está ordenado desc. Buscar el último registro con fecha <= fecha pedida.
-  // Iteramos desde el final (más antiguo) hacia adelante.
+  // _cashDaily está ordenado desc (más reciente primero).
+  // Iteramos desde el inicio hasta encontrar el primer registro con fecha <= fecha pedida.
+  // Ese es el más reciente en o antes de la fecha solicitada.
   let best = null;
-  for(let i = _cashDaily.length - 1; i >= 0; i--) {
+  for(let i = 0; i < _cashDaily.length; i++) {
     if(_cashDaily[i].fecha <= fecha) { best = _cashDaily[i]; break; }
   }
   if(!best) return { 'Argentina (ARS)': 0, 'Argentina (USD)': 0, 'EEUU (USD)': 0 };
