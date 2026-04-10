@@ -2870,6 +2870,42 @@ function evolToggleSeries(series) {
   renderEvolChart();
 }
 
+function buildDepositSeries(dates) {
+  // Construye la serie acumulada de depósitos netos en USD.
+  // ARS → convierte con FX del día. USD → directo.
+  // dates: array de strings YYYY-MM-DD (fechas del gráfico, ordenadas asc)
+  if(!_historicalTxns || !_historicalTxns.length) return new Array(dates.length).fill(null);
+
+  // Acumular por fecha
+  const flujosPorFecha = {};
+  for(const t of _historicalTxns) {
+    if(!t.fecha || !t.monto) continue;
+    if(!isDeposito(t.operacion) && !isExtraccion(t.operacion)) continue;
+    const fx_t = getFXForDate(t.fecha);
+    const montoUSD = t.cuenta === 'Argentina (ARS)'
+      ? t.monto / (fx_t > 0 ? fx_t : 1)
+      : t.monto;
+    flujosPorFecha[t.fecha] = (flujosPorFecha[t.fecha] || 0) + montoUSD;
+  }
+
+  // Construir serie rolling sobre las fechas del gráfico
+  // Para fechas sin snapshot usamos el acumulado anterior
+  const allFlujoDates = Object.keys(flujosPorFecha).sort();
+  let acum = 0;
+  // Pre-calcular acumulado hasta cada fecha del gráfico
+  const result = [];
+  let flujIdx = 0;
+  for(const date of dates) {
+    // Sumar todos los flujos hasta esta fecha inclusive
+    while(flujIdx < allFlujoDates.length && allFlujoDates[flujIdx] <= date) {
+      acum += flujosPorFecha[allFlujoDates[flujIdx]];
+      flujIdx++;
+    }
+    result.push(Math.round(acum * 100) / 100);
+  }
+  return result;
+}
+
 function renderEvolChart() {
   const canvas = document.getElementById('evol-chart');
   const emptyEl = document.getElementById('evol-empty');
@@ -2894,6 +2930,7 @@ function renderEvolChart() {
   }
 
   const labels = data.map(r => r.date);
+  const isoLabels = labels; // alias explícito — fechas YYYY-MM-DD para cálculos
   const fmtLbl = d => `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
 
   // Series de valor (eje Y izquierdo)
@@ -2968,6 +3005,18 @@ function renderEvolChart() {
     fill: false, borderDash: [4, 3],
   });
 
+  const showDepNeto = _evolSeries.has('depNeto');
+  if(showDepNeto) {
+    const depNetoData = buildDepositSeries(isoLabels);
+    datasets.push({
+      type: 'line', yAxisID: 'y',
+      label: '💵 Dep. Netos (USD)', data: depNetoData,
+      borderColor: '#ffffff', backgroundColor: 'transparent',
+      borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+      borderDash: [6, 3],
+    });
+  }
+
   if(_evolChart) { _evolChart.destroy(); _evolChart = null; }
 
   const ctx = canvas.getContext('2d');
@@ -3039,6 +3088,7 @@ function renderEvolChart() {
           ${_evolSeries.has('us')    ? `<span style="color:var(--us)">🇺🇸 ${fmtU(lastUS)}</span>` : ''}
           ${_evolSeries.has('total') ? `<span style="color:var(--purple)">∑ ${fmtU(lastTotal)}</span>` : ''}
           ${showIdx && lastIdx !== null ? `<span style="color:var(--usd)">📈 Índice: ${N(lastIdx,2)}</span>` : ''}
+          ${_evolSeries.has('depNeto') ? `<span style="color:#ffffff">💵 Dep. Netos: ${fmtU(buildDepositSeries(isoLabels)[isoLabels.length-1])}</span>` : ''}
           <span style="color:var(--muted);font-size:10px;">FX: ${N(last.fx_rate,2)} ARS/USD</span>
         </div>
       </div>`;
@@ -4614,6 +4664,7 @@ function renderFXTab() {
       <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:#a78bfa;color:#a78bfa;">∑ Total</button>
       <button class="evol-series act" data-series="flujos" onclick="evolToggleSeries('flujos')" style="border-color:#22c55e;color:#22c55e;">💰 Flujos</button>
       <button class="evol-series" data-series="idx" onclick="evolToggleSeries('idx')" style="border-color:#f59e0b;color:#f59e0b;">📈 Índice</button>
+      <button class="evol-series" data-series="depNeto" onclick="evolToggleSeries('depNeto')" style="border-color:#ffffff;color:#ffffff;">💵 Dep. Netos</button>
       <!-- Recalc button -->
       <button class="fb" id="evol-recalc-btn" onclick="recalcSnapshots()" style="color:var(--usd);border-color:var(--usd);white-space:nowrap;">⟳ Recalcular</button>
     </div>
