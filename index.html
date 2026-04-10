@@ -177,24 +177,6 @@ tbody tr:hover td{background:var(--s2);}
 /* ── ESPECIES TAB ── */
 .tab.act-especies{color:var(--us);border-bottom-color:var(--us);}
 .tab.act-fx{color:var(--ar);border-bottom-color:var(--ar);}
-.tab.act-checks{color:var(--purple);border-bottom-color:var(--purple);}
-/* ── CHECKS TAB ── */
-.check-card{background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin-bottom:12px;max-width:720px;}
-.check-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
-.check-card-title{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text);}
-.check-card-desc{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:12px;line-height:1.6;}
-.check-badge{padding:2px 8px;border-radius:3px;font-family:var(--mono);font-size:10px;font-weight:700;white-space:nowrap;}
-.check-badge.ok{background:rgba(34,197,94,.12);color:var(--green);}
-.check-badge.warn{background:rgba(245,158,11,.12);color:var(--usd);}
-.check-badge.err{background:rgba(239,68,68,.12);color:var(--red);}
-.check-item{display:flex;align-items:flex-start;gap:10px;padding:7px 10px;border-radius:5px;background:var(--surface);margin-bottom:6px;font-family:var(--mono);font-size:11px;}
-.check-item:last-child{margin-bottom:0;}
-.check-item-icon{flex-shrink:0;margin-top:1px;}
-.check-item-body{flex:1;}
-.check-item-main{color:var(--text);margin-bottom:2px;}
-.check-item-detail{font-size:10px;color:var(--muted);}
-.check-item.resolved .check-item-main{color:var(--green);}
-.check-item.unresolved .check-item-main{color:var(--red);}
 #esp-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 8px;font-family:var(--mono);font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
 #esp-tbl tbody td{padding:5px 8px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
 #esp-tbl tbody tr:hover td{background:var(--s2);}
@@ -285,7 +267,6 @@ tbody tr:hover td{background:var(--s2);}
   <div class="tab" onclick="switchTab(this,'evol')">📈 Evolución</div>
   <div class="tab" onclick="switchTab(this,'especies')">🔍 Especies</div>
   <div class="tab" onclick="switchTab(this,'fx')">💱 Tipo de Cambio</div>
-  <div class="tab" onclick="switchTab(this,'checks')">🔎 Checks</div>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
     <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
   </div>
@@ -424,7 +405,6 @@ tbody tr:hover td{background:var(--s2);}
         <th id="th-fecha_liq" onclick="aSort('fecha_liq')">Fecha Liq.</th>
         <th id="th-cuenta" onclick="aSort('cuenta')">Cuenta</th>
         <th id="th-ticker" onclick="aSort('ticker')">Instrumento</th>
-        <th id="th-grupo" style="color:var(--muted)">Grupo</th>
         <th id="th-operacion" onclick="aSort('operacion')">Operación</th>
         <th id="th-cantidad" onclick="aSort('cantidad')" class="num">Cantidad</th>
         <th id="th-precio" onclick="aSort('precio')" class="num">Precio</th>
@@ -700,7 +680,7 @@ function aRender(){
       const totM=rows.reduce((s,r)=>s+r.monto,0);
       const totC=rows.reduce((s,r)=>s+r.comision,0);
       const kEsc=key.replace(/'/g,"\'");
-      html+=`<tr class="gh" onclick="toggleG('${kEsc}')"><td colspan="12">
+      html+=`<tr class="gh" onclick="toggleG('${kEsc}')"><td colspan="11">
         <span class="arrow">${coll?'▶':'▼'}</span>
         ${key} &nbsp;·&nbsp; ${rows.length} op.
         &emsp; monto: <span style="color:${totM>=0?'var(--green)':'var(--red)'}">${N(totM,2)}</span>
@@ -709,7 +689,7 @@ function aRender(){
       if(!coll) html+=rows.map(aRow).join('');
     });
   }
-  tbody.innerHTML=html||'<tr><td colspan="12" class="no-r">Sin resultados.</td></tr>';
+  tbody.innerHTML=html||'<tr><td colspan="11" class="no-r">Sin resultados.</td></tr>';
 }
 
 function aRow(r){
@@ -731,15 +711,11 @@ function aRow(r){
     }
   }
   const fmtFecha = d => d && d.length >= 10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : (d||'—');
-  const grupoCell = r.grupo
-    ? `<td style="font-family:var(--mono);font-size:9px;color:var(--purple)">${r.grupo}</td>`
-    : `<td style="color:var(--muted)">—</td>`;
   return`<tr>
     <td>${fmtFecha(r.fecha)}</td>
     <td style="color:var(--muted);font-size:10px">${fmtFecha(r.fecha_liq)}</td>
     <td><span class="ac-p ${acP(r.cuenta)}">${r.cuenta}</span></td>
     <td><b>${r.ticker}</b>${raw}</td>
-    ${grupoCell}
     <td><span class="op-p ${opP(r.operacion)}">${r.operacion}</span></td>
     <td class="num">${r.cantidad>0?N(r.cantidad,0):'—'}</td>
     <td class="num">${r.precio>0?N(r.precio,r.precio<200?4:2):'—'}</td>
@@ -758,13 +734,12 @@ function toggleG(key){gCollapsed[key]=!gCollapsed[key];aRender();}
 
 function exportAuditCSV() {
   if(!aData.length) { alert('No hay filas para exportar.'); return; }
-  const headers = ['Fecha Concert.','Fecha Liq.','Cuenta','Instrumento','Grupo','Operación','Cantidad','Precio','Monto','Comisión','IVA','Otros Imp.','Ret. NRA','Saldo Cash','Nro. Boleto','Nro. Mov.'];
+  const headers = ['Fecha Concert.','Fecha Liq.','Cuenta','Instrumento','Operación','Cantidad','Precio','Monto','Comisión','IVA','Otros Imp.','Ret. NRA','Saldo Cash','Nro. Boleto','Nro. Mov.'];
   const rows = aData.map(r => [
     r.fecha||'',
     r.fecha_liq||'',
     r.cuenta||'',
     r.ticker||'',
-    r.grupo||'',
     r.operacion||'',
     r.cantidad>0 ? r.cantidad : '',
     r.precio>0   ? r.precio   : '',
@@ -805,16 +780,6 @@ let _fxLatest = null;      // latest fx rate loaded from DB
 let _snapshots = [];       // [{date, ar_ars, ar_usd, us_usd, fx_rate}] sorted asc
 let _arMode = 'usd';       // 'ars' | 'usd'
 let _portfolioDate = new Date().toISOString().slice(0,10); // fecha seleccionada en el date picker
-
-// ══════ CHECKS GLOBAL ══════
-// Repositorio de resultados de checks de integridad de datos.
-// Cada check agrega su resultado aquí; renderChecksTab() lo consume.
-let _checksData = {
-  orphans: [], // resultado de detectOrphanTickers — array de { orphan, children, resolved, crossAccount }
-};
-// Grupos dinámicos generados por detectOrphanTickers — persistidos para reusar en fetchFXHistory
-let _dynamicGroups    = {};
-let _dynamicTickerMap = {};
 
 async function fetchLatestPrices() {
   if(_pricesLoading) return;
@@ -1024,7 +989,7 @@ async function fetchFXHistory() {
     // Rebuild ledger with FX history now available, then rebuild portfolio
     // so isEffectivelyClosed re-evaluates with correct ledger balances
     if(_historicalTxns && _historicalTxns.length) {
-      _ledger = buildLedger(_historicalTxns, _fxHistory, _dynamicGroups, _dynamicTickerMap);
+      _ledger = buildLedger(_historicalTxns, _fxHistory);
       const deduped2 = deduplicateMEP(_historicalTxns);
       const clean2   = canonicalizeTickers(deduped2);
       const {usCards:uc, arCards:ac, optionsExcluded:oe, instruments:ins} = buildPortfolio(clean2, _fxHistory);
@@ -1227,66 +1192,6 @@ function switchTab(el,key){
   localStorage.setItem('active_tab', key);
   if(key === 'especies') rebuildEspeciesDropdown();
   if(key === 'fx') renderFXTab();
-  if(key === 'checks') renderChecksTab();
-}
-
-// ══════ CHECKS TAB ══════
-function renderChecksTab() {
-  const el = document.getElementById('checks-content');
-  if(!el) return;
-
-  let html = '';
-
-  // ── Check 1: Tickers huerfanos ──
-  const orphans = _checksData.orphans || [];
-  const warnCount = orphans.length;
-  const badgeCls  = warnCount === 0 ? 'ok' : 'warn';
-  const badgeTxt  = warnCount === 0 ? '✓ Sin problemas' : warnCount + ' warning' + (warnCount > 1 ? 's' : '');
-
-  let itemsHtml = '';
-  if(orphans.length === 0) {
-    itemsHtml = `<div class="check-item resolved">
-      <span class="check-item-icon">✓</span>
-      <div class="check-item-body">
-        <div class="check-item-main">No se detectaron operaciones huérfanas.</div>
-      </div>
-    </div>`;
-  } else {
-    for(const o of orphans) {
-      const icon     = o.resolved ? '✓' : o.crossAccount ? '⚠️' : '✗';
-      const itemCls  = o.resolved ? 'resolved' : 'unresolved';
-      const childList = o.children.join(', ');
-      let statusLine;
-      if(o.resolved) {
-        statusLine = `<div class="check-item-detail">✓ Consolidado automáticamente con: <span style="color:var(--ar)">${childList}</span></div>`;
-      } else if(o.crossAccount) {
-        statusLine = `<div class="check-item-detail" style="color:var(--red)">⚠ Hijos encontrados en cuenta distinta (${childList}) — requiere revisión manual.</div>`;
-      } else {
-        statusLine = `<div class="check-item-detail" style="color:var(--red)">✗ No se encontraron hijos con el mismo prefijo — requiere revisión manual.</div>`;
-      }
-      itemsHtml += `<div class="check-item ${itemCls}">
-        <span class="check-item-icon">${icon}</span>
-        <div class="check-item-body">
-          <div class="check-item-main">Ticker huérfano: <b>${o.orphan}</b></div>
-          ${statusLine}
-        </div>
-      </div>`;
-    }
-  }
-
-  html += `<div class="check-card">
-    <div class="check-card-header">
-      <span class="check-card-title">Operaciones huérfanas</span>
-      <span class="check-badge ${badgeCls}">${badgeTxt}</span>
-    </div>
-    <div class="check-card-desc">
-      Detecta operaciones (amortizaciones, ventas, pagos de renta) que no tienen un instrumento de origen (compra / suscripción) con el mismo ticker.<br>
-      Si existe un instrumento con el mismo prefijo antes del guión, se consolidan automáticamente. Solo aplica a cuenta Argentina (ARS).
-    </div>
-    ${itemsHtml}
-  </div>`;
-
-  el.innerHTML = html;
 }
 
 // ══════ PORTFOLIO TABLE ══════
@@ -2288,35 +2193,6 @@ function isCashSkip(t, usdCaucionMovs) {
   return false;
 }
 
-// ══════ FECHA CASH — regla de imputación de caja ══════
-// Determina en qué fecha impacta una transacción el saldo de caja (Disponible Pesos).
-// Regla:
-//   - EEUU (USD): contado inmediato → fecha de concertación
-//   - Depósitos / Extracciones en Argentina: cash inmediato → fecha de concertación
-//   - Todo lo demás en Argentina (ARS o USD): fecha_liq - 1 día (T+1/T+2 de mercado)
-//     Si fecha_liq == fecha o está vacía: usar fecha de concertación como fallback
-function dateMinusOne(dateStr) {
-  // Resta 1 día a un string YYYY-MM-DD sin depender de timezone
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() - 1);
-  const yy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getDate()).padStart(2, '0');
-  return `${yy}-${mm}-${dd}`;
-}
-
-function calcFechaCash(t) {
-  // EEUU: contado inmediato
-  if(t.cuenta === 'EEUU (USD)') return t.fecha;
-  // Depósitos y extracciones en Argentina: cash inmediato
-  if(isDeposito(t.operacion) || isExtraccion(t.operacion)) return t.fecha;
-  // Argentina (ARS y USD): fecha_liq - 1 día
-  if(t.fecha_liq && t.fecha_liq !== t.fecha) return dateMinusOne(t.fecha_liq);
-  // Fallback: fecha de concertación (cuando fecha_liq == fecha o está vacía)
-  return t.fecha;
-}
-
 function buildCash(rawTxns, usdCaucionMovs) {
   const balances  = {'EEUU (USD)':0, 'Argentina (ARS)':0, 'Argentina (USD)':0};
   const movements = {'EEUU (USD)':[], 'Argentina (ARS)':[], 'Argentina (USD)':[]};
@@ -2327,7 +2203,9 @@ function buildCash(rawTxns, usdCaucionMovs) {
     if(!(acct in balances)) continue;
     const m = t.monto || 0;
     if(m === 0) continue;
-    const fechaCash = calcFechaCash(t);
+    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
+    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+      ? t.fecha_liq : t.fecha;
     balances[acct] += m;
     // Deduct estimated NRA withholding for US dividends
     const nra = calcNRA(t);
@@ -2443,7 +2321,7 @@ function buildPortfolio(clean, fxHistory = {}) {
   return {usCards, arCards:arClean, optionsExcluded, instruments};
 }
 
-function buildAuditRows(clean, rawTxns, usdCaucionMovs, dynamicTickerMap = {}) {
+function buildAuditRows(clean, rawTxns, usdCaucionMovs) {
   // clean: deduped+canonicalized rows shown in the table
   // rawTxns: pre-dedup rows used for accurate cash balance (includes commission rows
   //          that deduplicateMEP drops as "cross-account duplicates")
@@ -2484,16 +2362,12 @@ function buildAuditRows(clean, rawTxns, usdCaucionMovs, dynamicTickerMap = {}) {
         : `0|${t.fecha}|${t.operacion}|${t.cuenta}|${Math.round((t.monto||0)*100)}`;
       saldo_cash = rawBalMap.has(k) ? rawBalMap.get(k) : null;
     }
-    // Grupo canónico: si el ticker_raw pertenece a un grupo dinámico y difiere del canónico, mostrar el grupo
-    const tickerRaw = t.ticker_raw || t.ticker;
-    const grupoCanon = dynamicTickerMap[tickerRaw];
-    const grupo = (grupoCanon && grupoCanon !== tickerRaw) ? grupoCanon : null;
     return {
       fecha:t.fecha, fecha_liq:t.fecha_liq||'', year:t.fecha.slice(0,4), cuenta:t.cuenta,
-      ticker:t.ticker, ticker_raw:tickerRaw,
+      ticker:t.ticker, ticker_raw:t.ticker_raw||t.ticker,
       operacion:t.operacion, cantidad:t.cantidad, precio:t.precio,
       monto:t.monto, comision:t.comision, iva:t.iva, otros_imp:t.otros_imp||0, nro_boleto:t.nro_boleto,
-      nro_mov:t.nro_mov||0, saldo_cash, grupo,
+      nro_mov:t.nro_mov||0, saldo_cash,
       nra: calcNRA(t)
     };
   });
@@ -2508,32 +2382,29 @@ function buildCashDaily(rawTxns, usdCaucionMovs) {
   const CASH_ACCOUNTS = new Set(['EEUU (USD)', 'Argentina (ARS)', 'Argentina (USD)']);
   // uses global isCashSkip(t, usdCaucionMovs)
 
-  // Running balance per account, accumulate by day.
-  // CRÍTICO: ordenar y acumular por fechaCash (no por fecha de concertación).
-  // Si se acumula runBal en orden de fecha pero se escribe el snapshot en fechaCash,
-  // las operaciones con fecha_liq futura contaminan el runBal de fechas intermedias.
+  // Running balance per account, accumulate by day
   const runBal = {'Argentina (ARS)':0, 'Argentina (USD)':0, 'EEUU (USD)':0};
-  const dayMap = {}; // fechaCash -> {ars, ar_usd, us_usd}
+  const dayMap = {}; // fecha -> {ars, ar_usd, us_usd}
 
-  // Pre-calcular fechaCash y filtrar antes de ordenar
-  const eligible = rawTxns
-    .filter(t => CASH_ACCOUNTS.has(t.cuenta) && !isCashSkip(t, usdCaucionMovs) && t.monto)
-    .map(t => ({ ...t, _fechaCash: calcFechaCash(t) }));
-
-  // Ordenar por fechaCash (no por fecha de concertación)
-  eligible.sort((a, b) => {
-    const d = a._fechaCash.localeCompare(b._fechaCash);
+  const sorted = [...rawTxns].sort((a,b) => {
+    const d = a.fecha.localeCompare(b.fecha);
     return d !== 0 ? d : (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
   });
 
-  for(const t of eligible) {
+  for(const t of sorted) {
+    if(!CASH_ACCOUNTS.has(t.cuenta)) continue;
+    if(isCashSkip(t, usdCaucionMovs)) continue;
+    if(!t.monto) continue;
+    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
+    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
+      ? t.fecha_liq : t.fecha;
     runBal[t.cuenta] = (runBal[t.cuenta] || 0) + t.monto;
     const nra = calcNRA(t);
     if(nra !== 0) runBal[t.cuenta] += nra;
-    if(!dayMap[t._fechaCash]) dayMap[t._fechaCash] = {};
-    dayMap[t._fechaCash].ars    = runBal['Argentina (ARS)'];
-    dayMap[t._fechaCash].ar_usd = runBal['Argentina (USD)'];
-    dayMap[t._fechaCash].us_usd = runBal['EEUU (USD)'];
+    if(!dayMap[fechaCash]) dayMap[fechaCash] = {};
+    dayMap[fechaCash].ars    = runBal['Argentina (ARS)'];
+    dayMap[fechaCash].ar_usd = runBal['Argentina (USD)'];
+    dayMap[fechaCash].us_usd = runBal['EEUU (USD)'];
   }
 
   return Object.entries(dayMap)
@@ -3173,110 +3044,17 @@ function renderEvolChart() {
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════
-//  DETECCIÓN DE TICKERS HUÉRFANOS
-//
-//  Un ticker es "huérfano" si:
-//  1. Tiene al menos una operación con cantidad ≠ 0
-//  2. No tiene ninguna operación en BUY_OPS ni XFER_IN (sin origen)
-//  3. Solo aplica a cuenta Argentina (ARS)
-//  4. Existe al menos un ticker distinto en el dataset cuyo prefijo
-//     antes del primer '-' coincide exactamente con el ticker huérfano
-//
-//  Si los hijos matcheantes están en cuentas distintas a Argentina (ARS):
-//  se registra el warning como "no resuelto" (crossAccount = true).
-//
-//  Retorna:
-//  {
-//    orphans: [{ orphan, children, resolved, crossAccount }],
-//    dynamicGroups:    { 'I15G8': ['I15G8','I15G8-1505','I15G8-1906'] },
-//    dynamicTickerMap: { 'I15G8':'I15G8', 'I15G8-1505':'I15G8', 'I15G8-1906':'I15G8' }
-//  }
-// ══════════════════════════════════════════════════════════════════════
-function detectOrphanTickers(rawTxns) {
-  const TARGET_ACCOUNT = 'Argentina (ARS)';
-
-  // Paso 1: clasificar todos los tickers
-  const tickersWithOrigin = new Set();   // tienen al menos una compra/suscripción/xfer_in
-  const tickersWithQty    = new Set();   // tienen al menos una operación con cantidad ≠ 0
-  const tickerAccounts    = {};          // ticker → Set de cuentas donde aparece
-
-  for(const t of rawTxns) {
-    const raw = t.ticker || '';
-    if(!raw || raw.includes(' ') || isOption(raw)) continue;
-
-    if(!tickerAccounts[raw]) tickerAccounts[raw] = new Set();
-    tickerAccounts[raw].add(t.cuenta);
-
-    if(BUY_OPS.includes(t.operacion) || t.operacion === XFER_IN) {
-      tickersWithOrigin.add(raw);
-    }
-    if((t.cantidad || 0) !== 0) {
-      tickersWithQty.add(raw);
-    }
-  }
-
-  // Paso 2: candidatos huérfanos — tienen cantidad ≠ 0, sin origen, en cuenta AR ARS
-  const candidates = [...tickersWithQty].filter(tk =>
-    !tickersWithOrigin.has(tk) &&
-    tickerAccounts[tk] &&
-    tickerAccounts[tk].has(TARGET_ACCOUNT)
-  );
-
-  if(!candidates.length) return { orphans: [], dynamicGroups: {}, dynamicTickerMap: {} };
-
-  // Paso 3: buscar hijos para cada candidato
-  const orphans         = [];
-  const dynamicGroups   = {};
-  const dynamicTickerMap = {};
-
-  for(const orphan of candidates) {
-    // Hijos: tickers que empiezan con orphan + '-'
-    const prefix = orphan + '-';
-    const allChildren = [...tickersWithOrigin].filter(tk => tk.startsWith(prefix));
-
-    if(!allChildren.length) continue; // no hay hijos → no es un huérfano detectable
-
-    // Verificar que los hijos estén en Argentina (ARS)
-    const childrenInAR    = allChildren.filter(tk => tickerAccounts[tk]?.has(TARGET_ACCOUNT));
-    const childrenCrossAcct = allChildren.filter(tk => !tickerAccounts[tk]?.has(TARGET_ACCOUNT));
-    const crossAccount    = childrenInAR.length === 0 && childrenCrossAcct.length > 0;
-    const resolved        = childrenInAR.length > 0 && !crossAccount;
-
-    orphans.push({ orphan, children: allChildren, resolved, crossAccount });
-
-    // Solo inyectar grupo dinámico si está resuelto (hijos en misma cuenta)
-    if(resolved) {
-      const groupMembers = [orphan, ...childrenInAR];
-      dynamicGroups[orphan] = groupMembers;
-      for(const tk of groupMembers) {
-        dynamicTickerMap[tk] = orphan;
-      }
-    }
-  }
-
-  return { orphans, dynamicGroups, dynamicTickerMap };
-}
-
 function processAndRefresh(rawMerged) {
   _historicalTxns = rawMerged;
-
-  // ── Deteccion de tickers huerfanos (antes de buildLedger) ──
-  const { orphans, dynamicGroups, dynamicTickerMap } = detectOrphanTickers(rawMerged);
-  _checksData.orphans  = orphans;
-  _dynamicGroups       = dynamicGroups;    // persistir para fetchFXHistory
-  _dynamicTickerMap    = dynamicTickerMap;
-
   // Construir ledger PRIMERO — isEffectivelyClosed lo consulta dentro de buildPortfolio
-  // Se pasan los grupos dinamicos para que consolide tickers huerfanos con sus hijos
-  _ledger = buildLedger(rawMerged, _fxHistory, dynamicGroups, dynamicTickerMap);
+  _ledger = buildLedger(rawMerged, _fxHistory);
   const deduped = deduplicateMEP(rawMerged);
   const clean   = canonicalizeTickers(deduped);
   const {usCards, arCards, optionsExcluded, instruments} = buildPortfolio(clean, _fxHistory);
   // Build cash balances from raw (pre-dedup) transactions
   const usdCaucionMovs = buildUsdCaucionMovs(rawMerged);
   const rawClean  = canonicalizeTickers(rawMerged); // canonical tickers, pre-dedup, for cash
-  const auditRows = buildAuditRows(clean, rawClean, usdCaucionMovs, dynamicTickerMap);
+  const auditRows = buildAuditRows(clean, rawClean, usdCaucionMovs);
 
   // Swap global data arrays in-place
   AUDIT.length=0; AUDIT.push(...auditRows);
@@ -3299,7 +3077,6 @@ function processAndRefresh(rawMerged) {
   rebuildYearDropdown();
   renderNRATab();
   rebuildEspeciesDropdown();
-  renderChecksTab();
 
   // Cash strips removed — cash is now shown inline in the Portfolio table
   // Options disclaimer is now handled inside renderPortfolioTable()
@@ -3713,7 +3490,7 @@ function exportNRAcsv() {
 //  Toda venta consume del pool regional proporcionalmente (una sola bolsa).
 // ══════════════════════════════════════════════════════════════════════
 
-function buildLedger(rawTxns, fxHistory = {}, dynamicGroups = {}, dynamicTickerMap = {}) {
+function buildLedger(rawTxns, fxHistory = {}) {
   if(!rawTxns || !rawTxns.length) return {};
 
   function movesTitle(ticker_raw, cuenta) {
@@ -3810,12 +3587,11 @@ function buildLedger(rawTxns, fxHistory = {}, dynamicGroups = {}, dynamicTickerM
   }
 
   // Agrupar por ticker canónico
-  // dynamicTickerMap tiene prioridad sobre TICKER_TO_GROUP (grupos generados por detectOrphanTickers)
   const byTicker = {};
   for(const t of rawTxns) {
     const raw = t.ticker || '';
     if(!raw || raw.includes(' ') || isOption(raw)) continue;
-    const canonical = dynamicTickerMap[raw] || TICKER_TO_GROUP[raw] || raw;
+    const canonical = TICKER_TO_GROUP[raw] || raw;
     byTicker[canonical] = byTicker[canonical] || [];
     byTicker[canonical].push(t);
   }
@@ -4959,17 +4735,6 @@ function renderFXTab() {
       <button onclick="hideClearConfirm()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;">Cancelar</button>
       <button onclick="clearAllData()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--red);background:rgba(239,68,68,.15);color:var(--red);font-family:var(--mono);font-size:11px;cursor:pointer;font-weight:600;">🗑 Borrar sesión</button>
     </div>
-  </div>
-</div>
-
-<!-- Checks Panel -->
-<div id="panel-checks" class="panel" style="padding:18px 24px;">
-  <div style="margin-bottom:16px;">
-    <div style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--purple);margin-bottom:4px;">🔎 Checks de integridad</div>
-    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);">Revisiones automáticas sobre los datos importados. Se actualizan cada vez que se importa un archivo.</div>
-  </div>
-  <div id="checks-content">
-    <div style="font-family:var(--mono);font-size:12px;color:var(--muted);padding:40px 0;text-align:center;">Sin datos — importá un archivo .xls para ejecutar los checks.</div>
   </div>
 </div>
 
