@@ -717,7 +717,7 @@ function aRow(r){
     <td><span class="ac-p ${acP(r.cuenta)}">${r.cuenta}</span></td>
     <td><b>${r.ticker}</b>${raw}</td>
     <td><span class="op-p ${opP(r.operacion)}">${r.operacion}</span></td>
-    <td class="num">${r.cantidad!==0?N(r.cantidad,0):'—'}</td>
+    <td class="num">${r.cantidad>0?N(r.cantidad,0):'—'}</td>
     <td class="num">${r.precio>0?N(r.precio,r.precio<200?4:2):'—'}</td>
     <td class="num ${r.monto>=0?'mp':'mn'}">${N(r.monto,2)}</td>
     <td class="num">${r.comision>0?N(r.comision,2):'—'}</td>
@@ -741,7 +741,7 @@ function exportAuditCSV() {
     r.cuenta||'',
     r.ticker||'',
     r.operacion||'',
-    r.cantidad!==0 ? r.cantidad : '',
+    r.cantidad>0 ? r.cantidad : '',
     r.precio>0   ? r.precio   : '',
     r.monto      != null ? r.monto    : '',
     r.comision>0 ? r.comision : '',
@@ -1669,11 +1669,12 @@ const INSTRUMENT_GROUPS = {
   GD30:['GD30','GD30D'], AO20:['AO20','AO20D'],
   MELI:['MELI','MELID'], VIST:['VIST','VISTD'],
   SPY:['SPY','SPYD'], PARY:['PARY','PARYD'],
+  I15G8:['I15G8','I15G8-1505','I15G8-1906'],
 };
 const TICKER_TO_GROUP = {};
 for(const [g,ts] of Object.entries(INSTRUMENT_GROUPS)) ts.forEach(t=>TICKER_TO_GROUP[t]=g);
 
-const IMPLICIT_CLOSED = new Set(['I15G8-1505','I15G8-1906']);
+const IMPLICIT_CLOSED = new Set([]);
 
 // Bonos: precio cotiza por cada 100 de valor nominal → costo = precio * cantidad / 100
 // Determinado por análisis de la data cruda de Balanz (precio * cant / 100 ≈ monto_sin_comis)
