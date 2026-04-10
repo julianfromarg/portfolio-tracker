@@ -2288,6 +2288,35 @@ function isCashSkip(t, usdCaucionMovs) {
   return false;
 }
 
+// ══════ FECHA CASH — regla de imputación de caja ══════
+// Determina en qué fecha impacta una transacción el saldo de caja (Disponible Pesos).
+// Regla:
+//   - EEUU (USD): contado inmediato → fecha de concertación
+//   - Depósitos / Extracciones en Argentina: cash inmediato → fecha de concertación
+//   - Todo lo demás en Argentina (ARS o USD): fecha_liq - 1 día (T+1/T+2 de mercado)
+//     Si fecha_liq == fecha o está vacía: usar fecha de concertación como fallback
+function dateMinusOne(dateStr) {
+  // Resta 1 día a un string YYYY-MM-DD sin depender de timezone
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() - 1);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+function calcFechaCash(t) {
+  // EEUU: contado inmediato
+  if(t.cuenta === 'EEUU (USD)') return t.fecha;
+  // Depósitos y extracciones en Argentina: cash inmediato
+  if(isDeposito(t.operacion) || isExtraccion(t.operacion)) return t.fecha;
+  // Argentina (ARS y USD): fecha_liq - 1 día
+  if(t.fecha_liq && t.fecha_liq !== t.fecha) return dateMinusOne(t.fecha_liq);
+  // Fallback: fecha de concertación (cuando fecha_liq == fecha o está vacía)
+  return t.fecha;
+}
+
 function buildCash(rawTxns, usdCaucionMovs) {
   const balances  = {'EEUU (USD)':0, 'Argentina (ARS)':0, 'Argentina (USD)':0};
   const movements = {'EEUU (USD)':[], 'Argentina (ARS)':[], 'Argentina (USD)':[]};
@@ -2298,9 +2327,7 @@ function buildCash(rawTxns, usdCaucionMovs) {
     if(!(acct in balances)) continue;
     const m = t.monto || 0;
     if(m === 0) continue;
-    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
-    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-      ? t.fecha_liq : t.fecha;
+    const fechaCash = calcFechaCash(t);
     balances[acct] += m;
     // Deduct estimated NRA withholding for US dividends
     const nra = calcNRA(t);
@@ -2481,29 +2508,32 @@ function buildCashDaily(rawTxns, usdCaucionMovs) {
   const CASH_ACCOUNTS = new Set(['EEUU (USD)', 'Argentina (ARS)', 'Argentina (USD)']);
   // uses global isCashSkip(t, usdCaucionMovs)
 
-  // Running balance per account, accumulate by day
+  // Running balance per account, accumulate by day.
+  // CRÍTICO: ordenar y acumular por fechaCash (no por fecha de concertación).
+  // Si se acumula runBal en orden de fecha pero se escribe el snapshot en fechaCash,
+  // las operaciones con fecha_liq futura contaminan el runBal de fechas intermedias.
   const runBal = {'Argentina (ARS)':0, 'Argentina (USD)':0, 'EEUU (USD)':0};
-  const dayMap = {}; // fecha -> {ars, ar_usd, us_usd}
+  const dayMap = {}; // fechaCash -> {ars, ar_usd, us_usd}
 
-  const sorted = [...rawTxns].sort((a,b) => {
-    const d = a.fecha.localeCompare(b.fecha);
+  // Pre-calcular fechaCash y filtrar antes de ordenar
+  const eligible = rawTxns
+    .filter(t => CASH_ACCOUNTS.has(t.cuenta) && !isCashSkip(t, usdCaucionMovs) && t.monto)
+    .map(t => ({ ...t, _fechaCash: calcFechaCash(t) }));
+
+  // Ordenar por fechaCash (no por fecha de concertación)
+  eligible.sort((a, b) => {
+    const d = a._fechaCash.localeCompare(b._fechaCash);
     return d !== 0 ? d : (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
   });
 
-  for(const t of sorted) {
-    if(!CASH_ACCOUNTS.has(t.cuenta)) continue;
-    if(isCashSkip(t, usdCaucionMovs)) continue;
-    if(!t.monto) continue;
-    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
-    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-      ? t.fecha_liq : t.fecha;
+  for(const t of eligible) {
     runBal[t.cuenta] = (runBal[t.cuenta] || 0) + t.monto;
     const nra = calcNRA(t);
     if(nra !== 0) runBal[t.cuenta] += nra;
-    if(!dayMap[fechaCash]) dayMap[fechaCash] = {};
-    dayMap[fechaCash].ars    = runBal['Argentina (ARS)'];
-    dayMap[fechaCash].ar_usd = runBal['Argentina (USD)'];
-    dayMap[fechaCash].us_usd = runBal['EEUU (USD)'];
+    if(!dayMap[t._fechaCash]) dayMap[t._fechaCash] = {};
+    dayMap[t._fechaCash].ars    = runBal['Argentina (ARS)'];
+    dayMap[t._fechaCash].ar_usd = runBal['Argentina (USD)'];
+    dayMap[t._fechaCash].us_usd = runBal['EEUU (USD)'];
   }
 
   return Object.entries(dayMap)
