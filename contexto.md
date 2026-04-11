@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 11/04/2026 v17
+## Versión: 11/04/2026 v18
 
 ---
 
@@ -10,6 +10,33 @@ Hosteado en GitHub Pages — URL pública: **https://julianfromarg.github.io/por
 
 Repositorio del dashboard: **github.com/julianfromarg/portfolio-tracker** (público)
 Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (privado)
+
+---
+
+## Supabase y precios externos
+
+**Proyecto Supabase:** `ghxisfkgwfqqxndfpmgp.supabase.co`
+**Anon key:** `sb_publishable_s5hodNiLD-8_OwX8NWHfRw_S1uylN2Y`
+
+### Tablas
+- `instruments` — catálogo de instrumentos con `yahoo_ticker`. PK: `ticker`. **Convención crítica: tickers AR llevan sufijo `_AR` (ej: `GGAL_AR`, `MELI_AR`) para evitar conflicto con los mismos tickers en EEUU.**
+- `prices` — precios EOD históricos (`ticker, date, close, currency, volume, source`). Los precios AR se guardan en ARS con `ticker = TICKER_AR`.
+- `fx_rates` — tipo de cambio USD/ARS diario
+- `portfolio_snapshots` — valor diario del portfolio (`date, ar_ars, ar_usd, us_usd, fx_rate, idx`)
+- `nra_overrides` — overrides de retención NRA. PK: `(nro_mov, session_id)`
+
+### Tickers EEUU activos
+`NU, STRC, VGSH, SHV, EWZ, IREN, MSTR, IVV, MELI, VIST, SPY`
+
+### Tickers AR activos (CEDEARs / acciones locales)
+`EWZ_AR, GGAL_AR, GLOB_AR, IBIT_AR, JNJ_AR, MELI_AR, PAMP_AR, QQQ_AR, SPY_AR, TGNO4_AR, TGSU2_AR, TRAN_AR, UBER_AR, VIST_AR, YPFD_AR`
+Sin precio (al costo): `ADRO, CO26, TO26`
+
+### GitHub Actions — repo portfolio-tracker-prices
+- **Script:** `update_prices.py` — fetchea Yahoo Finance, upsert en Supabase
+- **Cron:** lunes a viernes **22:00 UTC** (19:00 ART) — cambiado de 21:00 a 22:00 para dar margen a Yahoo Finance de publicar el EOD con fecha correcta
+- **Modos:** `daily` (default), `backfill --from YYYY-MM-DD`, `today`
+- **Nota:** el script lee dinámicamente de la tabla `instruments` — para agregar un ticker nuevo basta con insertar una fila ahí, sin tocar el script
 
 ---
 
@@ -918,6 +945,8 @@ Pegá este documento + el HTML al inicio del chat.
 - **`recalcSnapshots()` usa `getFXForDate(date)`** — no `getCurrentFX()`
 - **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown + `renderPortfolioTable` al resolverse** — no eliminar
 - **`fetchFXHistory()` llama `rebuildBlendedAvgs()` al final** — no eliminar
+- **Precios AR (CEDEARs/acciones locales): se guardan en Supabase con ticker `TICKER_AR`** — convención universal, sin excepciones. La función `getPriceForDateAR(ticker, date, avgCostUSD)` busca `ticker + '_AR'` en `_pricesHistory`, convierte ARS→USD dividiendo por `getFXForDate(date)`, y hace fallback al costo si no hay precio. El tab Portfolio AR llama a esta función para "Precio Actual", "Valor Tenencia" y "Gan./Pérd."
+- **Tickers AR en tabla `instruments` de Supabase llevan siempre sufijo `_AR`** — ej: `GGAL_AR`, `MELI_AR`, `SPY_AR`. Esto permite que el mismo ticker exista en EEUU (sin sufijo) y en Argentina (con sufijo) sin conflicto de PK. Los `yahoo_ticker` correspondientes tienen sufijo `.BA` (ej: `GGAL.BA`).
 
 **► SUPABASE Y PAGINACIÓN:**
 - **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
