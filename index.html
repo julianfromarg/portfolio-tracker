@@ -3677,7 +3677,28 @@ function buildLedger(rawTxns, fxHistory = {}) {
 
   const ledger = {};
 
-  for(const [canonical, txns] of Object.entries(byTicker)) {
+  for(const [canonical, txnsRaw] of Object.entries(byTicker)) {
+    // ── Adelantar fecha de Pago de Amortización para letras con gap Renta→Amort ──
+    // Patrón: existe un "Pago de Renta" con fecha_conc != fecha_liq (liquidación demorada)
+    //         y un "Pago de Amortización" cuya fecha == fecha_liq del Pago de Renta.
+    // En ese caso el broker registra la caja en fecha_conc (por concertación) pero
+    // la baja de títulos recién en fecha_liq, generando double counting en el gap.
+    // Fix: usar la fecha del Pago de Renta como fecha efectiva de la Amortización,
+    //      para que ambos eventos caigan el mismo día en el ledger.
+    // Solo se modifica la copia local — los datos crudos (_historicalTxns) no se tocan.
+    const rentasConGap = txnsRaw
+      .filter(t => t.operacion === 'Pago de Renta' && t.fecha && t.fecha_liq && t.fecha !== t.fecha_liq)
+      .map(t => ({ fechaRenta: normFecha(t.fecha), fechaLiq: normFecha(t.fecha_liq) }));
+
+    const txns = rentasConGap.length === 0 ? txnsRaw : txnsRaw.map(t => {
+      if(t.operacion !== 'Pago de Amortización') return t;
+      const fechaAmort = normFecha(t.fecha);
+      const match = rentasConGap.find(r => r.fechaLiq === fechaAmort);
+      if(!match) return t;
+      // Reemplazar fecha efectiva por la del Pago de Renta (sin mutar el objeto original)
+      return { ...t, fecha: match.fechaRenta };
+    });
+
     txns.sort((a, b) => {
       const da = normFecha(a.fecha), db = normFecha(b.fecha);
       if(da !== db) return da.localeCompare(db);
