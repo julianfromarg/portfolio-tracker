@@ -280,7 +280,9 @@ tbody tr:hover td{background:var(--s2);}
       <button id="ptog-us"  onclick="switchPortfolio('us')"   style="padding:6px 20px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;border:none;cursor:pointer;transition:all .15s;background:transparent;color:var(--muted);">🇺🇸 EEUU (USD)</button>
     </div>
     <input class="fi" id="portfolio-search" style="width:180px" type="text" placeholder="Buscar ticker..." oninput="filterPortfolioTable(this.value)">
-    <input class="fi" id="portfolio-date" type="date" style="width:150px;" oninput="onPortfolioDateChange()" title="Ver estado del portfolio en esta fecha">
+    <button class="fb" onclick="shiftPortfolioDate(-1)" style="font-size:12px;padding:5px 9px;">‹</button>
+    <input class="fi" id="portfolio-date" type="text" style="width:100px;text-align:center;" placeholder="dd/mm/yyyy" oninput="onPortfolioDateChange()" title="Ver estado del portfolio en esta fecha">
+    <button class="fb" onclick="shiftPortfolioDate(1)" style="font-size:12px;padding:5px 9px;">›</button>
     <button class="fb" id="portfolio-date-today" onclick="setPortfolioDateToday()" style="font-size:10px;">Hoy</button>
     <button class="fb" onclick="fetchLatestPrices()" style="color:var(--green);border-color:var(--green);">🔄 Actualizar precios</button>
     <span id="price-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
@@ -1224,23 +1226,55 @@ function filterPortfolioTable(q) {
 }
 
 // ══════ PORTFOLIO DATE SELECTOR ══════
+
+// Convierte dd/mm/yyyy → YYYY-MM-DD. Devuelve '' si el formato no es válido.
+function parseDateDMY(s) {
+  if(!s) return '';
+  const m = s.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(!m) return '';
+  const [, dd, mm, yyyy] = m;
+  const y = parseInt(yyyy), mo = parseInt(mm), d = parseInt(dd);
+  if(y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  return `${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+}
+
+// Convierte YYYY-MM-DD → dd/mm/yyyy para mostrar en el input
+function fmtDateDMY(iso) {
+  if(!iso || iso.length < 10) return '';
+  return `${iso.slice(8,10)}/${iso.slice(5,7)}/${iso.slice(0,4)}`;
+}
+
 function onPortfolioDateChange() {
   const inp = document.getElementById('portfolio-date');
-  if(inp && inp.value) _portfolioDate = inp.value;
-  renderPortfolioTable();
+  if(!inp) return;
+  const iso = parseDateDMY(inp.value);
+  if(iso) { _portfolioDate = iso; renderPortfolioTable(); }
 }
 
 function setPortfolioDateToday() {
   const today = new Date().toISOString().slice(0,10);
   _portfolioDate = today;
   const inp = document.getElementById('portfolio-date');
-  if(inp) inp.value = today;
+  if(inp) inp.value = fmtDateDMY(today);
   renderPortfolioTable();
 }
 
 function initPortfolioDateInput() {
   const inp = document.getElementById('portfolio-date');
-  if(inp && !inp.value) inp.value = _portfolioDate;
+  if(inp && !inp.value) inp.value = fmtDateDMY(_portfolioDate);
+}
+
+// Navega la fecha del portfolio en +/- días
+function shiftPortfolioDate(delta) {
+  const parts = _portfolioDate.split('-');
+  if(parts.length !== 3) return;
+  const d = new Date(_portfolioDate + 'T12:00:00');
+  d.setDate(d.getDate() + delta);
+  const iso = d.toISOString().slice(0,10);
+  _portfolioDate = iso;
+  const inp = document.getElementById('portfolio-date');
+  if(inp) inp.value = fmtDateDMY(iso);
+  renderPortfolioTable();
 }
 
 // ══════ PORTFOLIO STATE FROM LEDGER ══════
@@ -3445,7 +3479,7 @@ async function clearAllData() {
   renderSessionDropdown();
   // Inicializar date picker del Portfolio con la fecha de hoy
   const pdInp = document.getElementById('portfolio-date');
-  if(pdInp) pdInp.value = _portfolioDate;
+  if(pdInp) pdInp.value = fmtDateDMY(_portfolioDate);
   // Load active session data
   const stored = localStorage.getItem(getSessionTxnsKey(getActiveSessionId()));
   if(stored) {
