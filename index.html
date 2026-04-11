@@ -1083,6 +1083,33 @@ function getPriceForDate(ticker, date, avgCost) {
   return { price: avgCost || 0, estimated: true };
 }
 
+// ══════ PRICE FOR AR TICKER (CEDEAR / acción local) ══════
+// Busca el precio en ARS usando el ticker + '_AR' en _pricesHistory,
+// y lo convierte a USD dividiendo por el FX de la fecha.
+// Devuelve {price, estimated} igual que getPriceForDate.
+// Si no hay precio disponible, hace fallback al avgCost (estimated=true).
+function getPriceForDateAR(ticker, date, avgCostUSD) {
+  const fx = getFXForDate(date);
+  if(fx > 0) {
+    const arKey = ticker + '_AR';
+    const byTicker = _pricesHistory[arKey];
+    if(byTicker) {
+      let priceARS = null;
+      if(byTicker[date] !== undefined) {
+        priceARS = byTicker[date];
+      } else {
+        const dates = Object.keys(byTicker).filter(d => d <= date).sort();
+        if(dates.length) priceARS = byTicker[dates[dates.length-1]];
+      }
+      if(priceARS !== null && priceARS > 0) {
+        return { price: priceARS / fx, estimated: false };
+      }
+    }
+  }
+  // Fallback: al costo
+  return { price: avgCostUSD || 0, estimated: true };
+}
+
 // Get latest FX rate on or before a given date
 function getFXForDate(date) {
   if(!date) return _fxLatest || 1;
@@ -1527,13 +1554,22 @@ function renderPortfolioTable() {
           : 'U$S ' + N(costoTotalVal, 2))
       : '—';
 
-    // ── Precio actual (solo EEUU, a la fecha seleccionada) ─────────────
+    // ── Precio actual ──────────────────────────────────────────────────
     let currentPrice = null, isEstimated = false;
     if(!isAr) {
       const avgRef = snap.EEUU?.avgNoC ?? 0;
       const lookup = getPriceForDate(ticker, fecha, avgRef);
       currentPrice = lookup.price > 0 ? lookup.price : null;
       isEstimated  = lookup.estimated;
+    } else {
+      // AR: buscar precio en ARS via ticker_AR, convertir a USD por FX
+      const avgRef = snap.avgAR_usd ?? 0;
+      const lookup = getPriceForDateAR(ticker, fecha, avgRef);
+      if(!lookup.estimated) {
+        currentPrice = lookup.price > 0 ? lookup.price : null;
+        isEstimated  = false;
+      }
+      // Si estimated=true (no hay precio AR), dejamos currentPrice=null → muestra —
     }
     const priceColor = currentPrice !== null ? (isEstimated ? 'color:var(--usd)' : 'color:var(--text)') : 'color:var(--muted)';
     const priceFmt   = currentPrice !== null
@@ -1542,22 +1578,24 @@ function renderPortfolioTable() {
 
     // ── Valor Tenencia ─────────────────────────────────────────────────
     let valCell = '<td class="num" style="color:var(--muted)">—</td>';
-    if(!isAr && currentPrice !== null && bal > 0) {
-      const valor = currentPrice * bal;
-      sumValorTenencia += valor;
+    if(currentPrice !== null && bal > 0) {
+      const valor = isAr
+        ? (_arMode === 'ars' ? currentPrice * getFXForDate(fecha) * bal : currentPrice * bal)
+        : currentPrice * bal;
+      sumValorTenencia += isAr ? currentPrice * bal : valor; // siempre acumular en USD
       anyPriceForTotal = true;
-      row.valorTenencia = valor;
-      valCell = `<td class="num mp">U$S ${N(valor, 2)}</td>`;
-    } else {
-      valCell = `<td class="num" style="color:var(--muted)">—</td>`;
+      row.valorTenencia = isAr ? currentPrice * bal : valor;
+      const valFmt = isAr
+        ? (_arMode === 'ars' ? `$ ${N(currentPrice * getFXForDate(fecha) * bal, 2)}` : `U$S ${N(currentPrice * bal, 2)}`)
+        : `U$S ${N(valor, 2)}`;
+      valCell = `<td class="num mp">${valFmt}</td>`;
     }
 
     // ── Gan./Pérd. $ y % ───────────────────────────────────────────────
-    // AR: preparado para Fase 2 (precios BYMA), por ahora —
     let plCellAmt = '<td class="num" style="color:var(--muted)">—</td>';
     let plCellPct = '<td class="num" style="color:var(--muted)">—</td>';
-    if(!isAr && currentPrice !== null && bal > 0 && !isEstimated) {
-      const avgRef = snap.EEUU?.avgNoC ?? 0;
+    if(currentPrice !== null && bal > 0 && !isEstimated) {
+      const avgRef = isAr ? (snap.avgAR_usd ?? 0) : (snap.EEUU?.avgNoC ?? 0);
       if(avgRef > 0) {
         const pl    = (currentPrice - avgRef) * bal;
         const plPct = ((currentPrice / avgRef) - 1) * 100;
