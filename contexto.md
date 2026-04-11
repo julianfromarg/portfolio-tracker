@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 08/04/2026 v14
+## Versión: 10/04/2026 v15
 
 ---
 
@@ -88,9 +88,12 @@ Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localSto
 **El tab Portfolio ya NO lee de `AR[]`/`US[]` (output de `buildPortfolio`).** Lee directamente de `_ledger` a través de `getPortfolioStateAtDate(fecha)`. Esta es la fuente de verdad canónica — los mismos datos que usa el tab Especies.
 
 ### Date picker
-- `<input type="date" id="portfolio-date">` en la toolbar — default: hoy
+- `<input type="text" id="portfolio-date">` en la toolbar — placeholder `dd/mm/yyyy`, default: hoy
 - Botón "Hoy" para resetear la fecha a hoy
-- Variable de estado: `_portfolioDate` (string `YYYY-MM-DD`)
+- Botones `‹` y `›` para navegar de a 1 día calendario (`shiftPortfolioDate(delta)`)
+- Variable de estado: `_portfolioDate` (string `YYYY-MM-DD` internamente)
+- `parseDateDMY(s)` — convierte entrada `dd/mm/yyyy` → `YYYY-MM-DD`
+- `fmtDateDMY(iso)` — convierte `YYYY-MM-DD` → `dd/mm/yyyy` para mostrar en el input
 - Al cambiar la fecha: los tickers mostrados, balances, precios promedios, precio actual, Gan./Pérd., Valor Tenencia y caja se recalculan para esa fecha
 
 ### Toggle AR mode — SOLO 2 MODOS (v11)
@@ -604,6 +607,7 @@ const INSTRUMENT_GROUPS = {
   GD30:['GD30','GD30D'], AO20:['AO20','AO20D'],
   MELI:['MELI','MELID'], VIST:['VIST','VISTD'],
   SPY:['SPY','SPYD'], PARY:['PARY','PARYD'],
+  I15G8:['I15G8','I15G8-1505','I15G8-1906'],
 };
 ```
 
@@ -680,10 +684,13 @@ El gráfico es de tipo mixto (line + bar). Todos los datasets declaran `yAxisID`
 - ∑ `totalUSD = arUSD + usUSD` — eje Y izquierdo — color `#a78bfa`
 - 💰 **Flujos** — barras verdes (depósitos) y rojas (extracciones) — eje Y izquierdo — prendido por default
 - 📈 **Índice base 100** — línea punteada naranja — eje Y derecho (`y2`) — apagado por default
+- 💵 **Dep. Netos** — línea punteada blanca (`#ffffff`) — eje Y izquierdo — apagado por default — serie acumulada de depósitos netos en USD (ARS convertidos al FX del día, USD directo)
 
 ### Toggles
 `_evolSeries` es un `Set` que controla qué series se renderizan. Estado inicial: `['ar','us','total','flujos']`.
 Función: `evolToggleSeries(series)`.
+
+**`buildDepositSeries(dates)`** — calcula la serie acumulada de Dep. Netos on-the-fly desde `_historicalTxns` + `_fxHistory`. No se guarda en Supabase. Recibe array de fechas ISO del gráfico (ventana filtrada), devuelve array de valores acumulados en USD.
 
 ### Zoom
 `mode: 'xy'` en zoom y pan — permite zoom y pan en ambos ejes con scroll del mouse y click+drag.
@@ -795,6 +802,8 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Cash ARS incorrecto | `buildAuditRows` usaba `clean` post-dedup | Pasar `rawClean` pre-dedup |
 | Números con miles truncados | SheetJS trunca `"10.000,00"` → `10` | Usar `DOMParser` |
 | Cantidades con punto de miles | `numArg` no reconocía enteros con miles | Regex `/^-?\d{1,3}(\.\d{3})+$/` |
+| I15G8-1505 e I15G8-1906 aparecían como posiciones abiertas | El broker registró las Suscripciones Primarias con nombres distintos al Pago de Amortización (`I15G8`), generando tres buckets separados en `buildLedger` | Agregar `I15G8:['I15G8','I15G8-1505','I15G8-1906']` a `INSTRUMENT_GROUPS`; vaciar `IMPLICIT_CLOSED` |
+| Cantidades negativas (Pago de Amortización) no se mostraban en tab Transacciones ni en export CSV | Condición `cantidad > 0` excluía valores negativos | Cambiar a `cantidad !== 0` en `aRow()` y `exportAuditCSV()` |
 
 ### Posiciones y balances
 
@@ -843,6 +852,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Datos de Portfolio AR vacíos al abrir | `renderPortfolioTable` corría antes de `fetchFXHistory` | `renderPortfolioTable()` al final de `fetchFXHistory` |
 | Precios EEUU no cargaban (solo EWZ) | `fetchPricesHistory` combinaba `limit` en URL + `Range` header → error 416 | Paginación correcta sin `limit` en URL |
 | P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
+| Date picker Portfolio en formato mm/dd/yyyy | `<input type="date">` usa locale del browser | Reemplazado por `<input type="text">` con `parseDateDMY`/`fmtDateDMY` y botones `‹`/`›` para navegar ±1 día |
 
 ---
 
