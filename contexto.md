@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 11/04/2026 v16
+## Versión: 11/04/2026 v17
 
 ---
 
@@ -828,6 +828,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Cash incorrecto al abrir | Race condition con overrides | `fetchLatestPrices()` recalcula cash post-overrides |
 | Cauciones en pesos generaban "bache" en portfolio total | El monto inmovilizado salía de caja pero no figuraba como tenencia | `buildCauciones()` matchea pares por `nro_mov`; cauciones activas se muestran como filas en Portfolio y se suman a `ar_usd` en `recalcSnapshots()` |
 | Picos (spikes) en serie Argentina de Evolución | `buildCashDaily` y `buildCash` usaban `fecha_liq` para registrar el impacto en caja de "Pago de Renta", mientras el ledger usa `fecha` (concertación) — generando double counting en fechas intermedias | Eliminado el tratamiento especial de `fechaCash` / `fecha_liq` en ambas funciones. Ahora toda operación (incluyendo Pago de Renta) usa `t.fecha` para impactar caja. Cash refleja "Disponible Operable" (concertación), consistente con el ledger. |
+| Double counting en letras con gap Renta→Amortización (15 tickers: I15F7-1001, I15G8, I15M7-1402, I15N7-1909, I16Y8-2003, I17E8-1411, I17Y7-1804, I19L7-1402, I19L7-1906, I19S8, I20S7-1807, I21J7-1403, I21J8-1704, I21M8-1601, I21M8-2002) | El broker registra el "Pago de Renta" en fecha de concertación (impacta caja) y el "Pago de Amortización" en fecha de liquidación (da de baja los títulos), con un gap de 2-6 días. Durante ese gap la caja ya subió pero los títulos siguen en cartera → double counting. | En `buildLedger`, antes del sort, se detecta el patrón (Pago de Renta con `fecha != fecha_liq` + Pago de Amortización con `fecha == fecha_liq` del Pago de Renta). Si existe, se crea una copia de la txn Amortización con `fecha` reemplazada por la `fecha` del Pago de Renta. Los datos crudos (`_historicalTxns`) no se modifican — el tab Transacciones sigue mostrando las fechas originales del broker. El cash no se toca. |
 
 ### NRA overrides
 
@@ -881,7 +882,6 @@ Pegá este documento + el HTML al inicio del chat.
 - **`buildCash()` y `buildCashDaily()` solo se llaman en `processAndRefresh()` y `saveNRAOverride()`** — solo para construir `_cashDaily`, nunca para consultar una fecha puntual
 - **Todo cambio de fórmula de valuación va EXCLUSIVAMENTE en las funciones canónicas** — después de deployar, el usuario debe presionar ⟳ Recalcular para actualizar Evolución
 - **`getCashAtDate` itera `_cashDaily` desde el inicio (índice 0 = más reciente)** — el array está ordenado desc; iterar desde el final daría siempre el valor más antiguo
-- **`buildCash()` y `buildCashDaily()` usan `t.fecha` para TODAS las operaciones** — incluyendo "Pago de Renta". No existe tratamiento especial por `fecha_liq` ni variable `fechaCash`. El cash refleja "Disponible Operable" (fecha de concertación), consistente con el ledger.
 
 **► LEDGER Y PORTFOLIO:**
 - **`_ledger` es la fuente de verdad para balances y avgs** — Tab Portfolio y Tab Especies leen de `_ledger`, no de `AR[]`/`US[]`
@@ -889,6 +889,7 @@ Pegá este documento + el HTML al inicio del chat.
 - **`costoTotal` en la tabla Portfolio usa `avgNoC_val × bal`** — sin comisiones; no restaurar `avgWithC`; la columna "P. Prom. c/comis." fue eliminada en v14
 - **`buildLedger` se llama ANTES de `buildPortfolio` en `processAndRefresh`** — no cambiar este orden
 - **`buildLedger` opera sobre rawTxns (pre-dedup)** — nunca pasarle txns ya deduplicadas
+- **`buildLedger` adelanta la fecha de "Pago de Amortización" para letras con gap Renta→Amort** — si existe un "Pago de Renta" con `fecha != fecha_liq` y un "Pago de Amortización" con `fecha == fecha_liq` del Pago de Renta, la Amortización se procesa con la `fecha` del Pago de Renta. Solo afecta la copia local dentro de `buildLedger` — `_historicalTxns` y el tab Transacciones no se modifican.
 - **`recalcSnapshots()` usa `getARValueAtDate` y `getUSValueAtDate`** — no `buildPortfolio` → `avgByAcct`, no loops inline sobre `_ledger`
 - **`recalcSnapshots()` usa `getCashAtDate(date)` por fecha** — no `buildCash(txnsUpTo, ...)`
 
