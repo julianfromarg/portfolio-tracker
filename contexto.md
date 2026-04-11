@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 10/04/2026 v15
+## Versión: 11/04/2026 v16
 
 ---
 
@@ -827,6 +827,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Cash EEUU incorrecto (factor ~10x) | NRA no descontada | `calcNRA()` en `buildCash()` |
 | Cash incorrecto al abrir | Race condition con overrides | `fetchLatestPrices()` recalcula cash post-overrides |
 | Cauciones en pesos generaban "bache" en portfolio total | El monto inmovilizado salía de caja pero no figuraba como tenencia | `buildCauciones()` matchea pares por `nro_mov`; cauciones activas se muestran como filas en Portfolio y se suman a `ar_usd` en `recalcSnapshots()` |
+| Picos (spikes) en serie Argentina de Evolución | `buildCashDaily` y `buildCash` usaban `fecha_liq` para registrar el impacto en caja de "Pago de Renta", mientras el ledger usa `fecha` (concertación) — generando double counting en fechas intermedias | Eliminado el tratamiento especial de `fechaCash` / `fecha_liq` en ambas funciones. Ahora toda operación (incluyendo Pago de Renta) usa `t.fecha` para impactar caja. Cash refleja "Disponible Operable" (concertación), consistente con el ledger. |
 
 ### NRA overrides
 
@@ -880,6 +881,7 @@ Pegá este documento + el HTML al inicio del chat.
 - **`buildCash()` y `buildCashDaily()` solo se llaman en `processAndRefresh()` y `saveNRAOverride()`** — solo para construir `_cashDaily`, nunca para consultar una fecha puntual
 - **Todo cambio de fórmula de valuación va EXCLUSIVAMENTE en las funciones canónicas** — después de deployar, el usuario debe presionar ⟳ Recalcular para actualizar Evolución
 - **`getCashAtDate` itera `_cashDaily` desde el inicio (índice 0 = más reciente)** — el array está ordenado desc; iterar desde el final daría siempre el valor más antiguo
+- **`buildCash()` y `buildCashDaily()` usan `t.fecha` para TODAS las operaciones** — incluyendo "Pago de Renta". No existe tratamiento especial por `fecha_liq` ni variable `fechaCash`. El cash refleja "Disponible Operable" (fecha de concertación), consistente con el ledger.
 
 **► LEDGER Y PORTFOLIO:**
 - **`_ledger` es la fuente de verdad para balances y avgs** — Tab Portfolio y Tab Especies leen de `_ledger`, no de `AR[]`/`US[]`
