@@ -2238,14 +2238,11 @@ function buildCash(rawTxns, usdCaucionMovs) {
     if(!(acct in balances)) continue;
     const m = t.monto || 0;
     if(m === 0) continue;
-    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
-    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-      ? t.fecha_liq : t.fecha;
     balances[acct] += m;
     // Deduct estimated NRA withholding for US dividends
     const nra = calcNRA(t);
     if(nra !== 0) balances[acct] += nra; // nra is already negative
-    movements[acct].push({fecha:fechaCash, op:t.operacion, ticker:t.ticker||'', monto:m, nra});
+    movements[acct].push({fecha:t.fecha, op:t.operacion, ticker:t.ticker||'', monto:m, nra});
   }
 
   // Sort movements by date desc, keep last 6
@@ -2430,16 +2427,13 @@ function buildCashDaily(rawTxns, usdCaucionMovs) {
     if(!CASH_ACCOUNTS.has(t.cuenta)) continue;
     if(isCashSkip(t, usdCaucionMovs)) continue;
     if(!t.monto) continue;
-    // Para Pago de Renta, usar fecha_liq si difiere de fecha (el dinero liquida más tarde)
-    const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-      ? t.fecha_liq : t.fecha;
     runBal[t.cuenta] = (runBal[t.cuenta] || 0) + t.monto;
     const nra = calcNRA(t);
     if(nra !== 0) runBal[t.cuenta] += nra;
-    if(!dayMap[fechaCash]) dayMap[fechaCash] = {};
-    dayMap[fechaCash].ars    = runBal['Argentina (ARS)'];
-    dayMap[fechaCash].ar_usd = runBal['Argentina (USD)'];
-    dayMap[fechaCash].us_usd = runBal['EEUU (USD)'];
+    if(!dayMap[t.fecha]) dayMap[t.fecha] = {};
+    dayMap[t.fecha].ars    = runBal['Argentina (ARS)'];
+    dayMap[t.fecha].ar_usd = runBal['Argentina (USD)'];
+    dayMap[t.fecha].us_usd = runBal['EEUU (USD)'];
   }
 
   return Object.entries(dayMap)
