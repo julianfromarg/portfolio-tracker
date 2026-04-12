@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 11/04/2026 v19
+## Versión: 12/04/2026 v20
 
 ---
 
@@ -624,21 +624,30 @@ El broker puede registrar el Pago de Renta con `fecha` (concertación) anterior 
 ### 2. Merge → `mergeTransactions()`
 Clave primaria: `mov|fecha|cuenta|nro_mov` si `nro_mov != '0'`
 
-### 3. Deduplicación MEP → `deduplicateMEP()`
-Solo deduplicar si hay filas del mismo grupo en cuentas DISTINTAS (`accounts.size > 1`).
+### 3. Detección de grupos → `detectTickerGroups(rawTxns)` ★ NUEVO v20
+Sobreescribe los globals `INSTRUMENT_GROUPS` y `TICKER_TO_GROUP` dinámicamente antes de `buildLedger` y `canonicalizeTickers`. Se llama en `processAndRefresh` como primer paso.
 
-### 4. Canonicalización → `canonicalizeTickers()`
+**Regla:** si `b == a + 'D'` o `b == a + 'C'`, son el mismo instrumento operado en distintas cuentas (dólar linked o dólar cable). Se aplica union-find para agrupación transitiva. El canonical es el ticker más corto (o primero alfabéticamente si igual longitud).
+
+**Tickers con `.` (opciones) nunca se agrupan con nada.**
+
+**Seed:** `INSTRUMENT_GROUPS` se inicializa con el grupo `I15G8:['I15G8','I15G8-1505','I15G8-1906']` antes de correr la detección automática. Este es el único caso conocido donde el broker usa un patrón de sufijo distinto (`-MMYY`) en lugar de `D`/`C`.
+
 ```javascript
-const INSTRUMENT_GROUPS = {
-  AL30:['AL30','AL30D','AL30C'], AY24:['AY24','AY24D','AY24C'],
-  GD30:['GD30','GD30D'], AO20:['AO20','AO20D'],
-  MELI:['MELI','MELID'], VIST:['VIST','VISTD'],
-  SPY:['SPY','SPYD'], PARY:['PARY','PARYD'],
-  I15G8:['I15G8','I15G8-1505','I15G8-1906'],
-};
+// globals — se sobreescriben en cada processAndRefresh
+let INSTRUMENT_GROUPS = { I15G8:['I15G8','I15G8-1505','I15G8-1906'] };
+let TICKER_TO_GROUP   = {};  // se reconstruye a partir de INSTRUMENT_GROUPS
 ```
 
-### 5. Posiciones → `buildPortfolio(clean, fxHistory)`
+**Motivación:** los hardcodes anteriores estaban basados en los datos de una sola cuenta. Al cargar datos de otra cuenta con tickers distintos, los grupos no se detectaban. La función es agnóstica a la cuenta.
+
+### 4. Deduplicación MEP → `deduplicateMEP()`
+Solo deduplicar si hay filas del mismo grupo en cuentas DISTINTAS (`accounts.size > 1`).
+
+### 5. Canonicalización → `canonicalizeTickers()`
+Usa `TICKER_TO_GROUP` (ya reconstruido por `detectTickerGroups`) para mapear variantes al ticker canónico.
+
+### 6. Posiciones → `buildPortfolio(clean, fxHistory)`
 Función pura. `isEffectivelyClosed()`:
 1. Stale: `Math.max(...years) <= 2020` — pero si `_ledger[ticker].totals.balTotal > 0`, no es stale
 2. Fully amortized: buys + Pago de Amortización ≥ 80% del costo, sin sells
@@ -829,7 +838,7 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Cash ARS incorrecto | `buildAuditRows` usaba `clean` post-dedup | Pasar `rawClean` pre-dedup |
 | Números con miles truncados | SheetJS trunca `"10.000,00"` → `10` | Usar `DOMParser` |
 | Cantidades con punto de miles | `numArg` no reconocía enteros con miles | Regex `/^-?\d{1,3}(\.\d{3})+$/` |
-| I15G8-1505 e I15G8-1906 aparecían como posiciones abiertas | El broker registró las Suscripciones Primarias con nombres distintos al Pago de Amortización (`I15G8`), generando tres buckets separados en `buildLedger` | Agregar `I15G8:['I15G8','I15G8-1505','I15G8-1906']` a `INSTRUMENT_GROUPS`; vaciar `IMPLICIT_CLOSED` |
+| I15G8-1505 e I15G8-1906 aparecían como posiciones abiertas | El broker registró las Suscripciones Primarias con nombres distintos al Pago de Amortización (`I15G8`), generando tres buckets separados en `buildLedger` | Grupo `I15G8:['I15G8','I15G8-1505','I15G8-1906']` mantenido como seed en `INSTRUMENT_GROUPS` dentro de `detectTickerGroups`; vaciar `IMPLICIT_CLOSED` |
 | Cantidades negativas (Pago de Amortización) no se mostraban en tab Transacciones ni en export CSV | Condición `cantidad > 0` excluía valores negativos | Cambiar a `cantidad !== 0` en `aRow()` y `exportAuditCSV()` |
 
 ### Posiciones y balances
