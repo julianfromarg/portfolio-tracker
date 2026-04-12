@@ -1572,22 +1572,29 @@ function renderPortfolioTable() {
       // Si estimated=true (no hay precio AR), dejamos currentPrice=null → muestra —
     }
     const priceColor = currentPrice !== null ? (isEstimated ? 'color:var(--usd)' : 'color:var(--text)') : 'color:var(--muted)';
-    const priceFmt   = currentPrice !== null
-      ? (fmtP(currentPrice, currentPrice) + (isEstimated ? ' *' : ''))
-      : '—';
+    let priceFmt = '—';
+    if(currentPrice !== null) {
+      if(isAr && _arMode === 'ars') {
+        const priceARS = currentPrice * getFXForDate(fecha);
+        priceFmt = '$ ' + fmtP(priceARS, priceARS) + (isEstimated ? ' *' : '');
+      } else {
+        priceFmt = 'U$S ' + fmtP(currentPrice, currentPrice) + (isEstimated ? ' *' : '');
+      }
+    }
 
     // ── Valor Tenencia ─────────────────────────────────────────────────
     let valCell = '<td class="num" style="color:var(--muted)">—</td>';
     if(currentPrice !== null && bal > 0) {
-      const valor = isAr
-        ? (_arMode === 'ars' ? currentPrice * getFXForDate(fecha) * bal : currentPrice * bal)
-        : currentPrice * bal;
-      sumValorTenencia += isAr ? currentPrice * bal : valor; // siempre acumular en USD
+      const valorUSD = currentPrice * bal;
+      sumValorTenencia += valorUSD; // siempre acumular en USD
       anyPriceForTotal = true;
-      row.valorTenencia = isAr ? currentPrice * bal : valor;
-      const valFmt = isAr
-        ? (_arMode === 'ars' ? `$ ${N(currentPrice * getFXForDate(fecha) * bal, 2)}` : `U$S ${N(currentPrice * bal, 2)}`)
-        : `U$S ${N(valor, 2)}`;
+      row.valorTenencia = valorUSD;
+      let valFmt;
+      if(isAr && _arMode === 'ars') {
+        valFmt = `$ ${N(valorUSD * getFXForDate(fecha), 2)}`;
+      } else {
+        valFmt = `U$S ${N(valorUSD, 2)}`;
+      }
       valCell = `<td class="num mp">${valFmt}</td>`;
     }
 
@@ -1597,12 +1604,18 @@ function renderPortfolioTable() {
     if(currentPrice !== null && bal > 0 && !isEstimated) {
       const avgRef = isAr ? (snap.avgAR_usd ?? 0) : (snap.EEUU?.avgNoC ?? 0);
       if(avgRef > 0) {
-        const pl    = (currentPrice - avgRef) * bal;
+        const plUSD = (currentPrice - avgRef) * bal;
         const plPct = ((currentPrice / avgRef) - 1) * 100;
-        const cls   = pl >= 0 ? 'mp' : 'mn';
-        const sign  = pl >= 0 ? '+' : '';
-        sumPL += pl;
-        plCellAmt = `<td class="num ${cls}">${sign}U$S ${N(Math.abs(pl), 2)}</td>`;
+        const cls   = plUSD >= 0 ? 'mp' : 'mn';
+        const sign  = plUSD >= 0 ? '+' : '';
+        sumPL += plUSD;
+        let plAmtStr;
+        if(isAr && _arMode === 'ars') {
+          plAmtStr = `${sign}$ ${N(Math.abs(plUSD * getFXForDate(fecha)), 2)}`;
+        } else {
+          plAmtStr = `${sign}U$S ${N(Math.abs(plUSD), 2)}`;
+        }
+        plCellAmt = `<td class="num ${cls}">${plAmtStr}</td>`;
         plCellPct = `<td class="num ${cls}">${sign}${N(plPct, 2)}%</td>`;
       }
     }
