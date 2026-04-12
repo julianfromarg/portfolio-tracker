@@ -1013,7 +1013,7 @@ async function fetchSnapshots() {
     let from = 0;
     while(true) {
       const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,us_usd,fx_rate,idx&order=date.asc`,
+        `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,ar_usd_market,us_usd_cost,us_usd,fx_rate,idx&order=date.asc`,
         { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
                      'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
       );
@@ -1192,6 +1192,39 @@ function getARValueAtDate(fecha, precomputedData) {
   return tenencias + bUSD + (fx > 0 ? bARS / fx : 0) + caucionesUSD;
 }
 
+// Valor AR a precio de MERCADO + caja.
+// Usa getPriceForDateAR (precio en ARS convertido a USD, con fallback al costo).
+// Coincide con la tarjeta "Portfolio Total" del tab Argentina.
+function getARMarketValueAtDate(fecha, precomputedData) {
+  const fx = getFXForDate(fecha);
+
+  // — Tenencias: precio de mercado AR (con fallback al costo) × balance —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balAR ?? 0) <= 0) continue;
+    const avgRef = p.snap.avgAR_usd ?? 0;
+    const { price } = getPriceForDateAR(p.ticker, fecha, avgRef);
+    tenencias += (price ?? 0) * p.balAR;
+  }
+
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUSD = balances['Argentina (USD)'] ?? 0;
+  const bARS = balances['Argentina (ARS)'] ?? 0;
+
+  // — Cauciones en pesos activas a esta fecha —
+  const cauciones = precomputedData?.cauciones ?? buildCauciones(_historicalTxns || []);
+  let caucionesUSD = 0;
+  for(const c of cauciones) {
+    if(c.fechaApertura <= fecha && (c.fechaCierre === null || c.fechaCierre > fecha)) {
+      caucionesUSD += fx > 0 ? c.monto / fx : 0;
+    }
+  }
+
+  return tenencias + bUSD + (fx > 0 ? bARS / fx : 0) + caucionesUSD;
+}
+
 function getUSValueAtDate(fecha, precomputedData) {
   // — Tenencias: precio de mercado (o avg sin comisiones como fallback) × balance —
   const positions = getPortfolioStateAtDate(fecha);
@@ -1201,6 +1234,25 @@ function getUSValueAtDate(fecha, precomputedData) {
     const avgRef = p.snap.EEUU?.avgNoC ?? 0;
     const { price } = getPriceForDate(p.ticker, fecha, avgRef);
     tenencias += (price ?? 0) * p.balEEUU;
+  }
+
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUS = balances['EEUU (USD)'] ?? 0;
+
+  return tenencias + bUS;
+}
+
+// Valor EEUU al COSTO de adquisición + caja.
+// Usa avgNoC directamente sin buscar precios de mercado.
+// Coincide con la tarjeta "Costo + Caja" del tab EEUU.
+function getUSCostValueAtDate(fecha, precomputedData) {
+  // — Tenencias: avgNoC (sin comisiones) × balance — sin precios de mercado —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balEEUU ?? 0) <= 0) continue;
+    tenencias += (p.snap.EEUU?.avgNoC ?? 0) * p.balEEUU;
   }
 
   // — Cash: fuente canónica getCashAtDate —
@@ -2829,10 +2881,19 @@ async function recalcSnapshots() {
     const fx = getFXForDate(date);
 
     // Usar las funciones canónicas — misma lógica exacta que tab Portfolio
-    const ar_usd = getARValueAtDate(date, precomputed);
-    const us_usd = getUSValueAtDate(date, precomputed);
+    const ar_usd        = getARValueAtDate(date, precomputed);
+    const ar_usd_market = getARMarketValueAtDate(date, precomputed);
+    const us_usd_cost   = getUSCostValueAtDate(date, precomputed);
+    const us_usd        = getUSValueAtDate(date, precomputed);
 
-    snapshots.push({ date, ar_ars: 0, ar_usd: Math.round(ar_usd*100)/100, us_usd: Math.round(us_usd*100)/100, fx_rate: fx });
+    snapshots.push({
+      date, ar_ars: 0,
+      ar_usd:        Math.round(ar_usd*100)/100,
+      ar_usd_market: Math.round(ar_usd_market*100)/100,
+      us_usd_cost:   Math.round(us_usd_cost*100)/100,
+      us_usd:        Math.round(us_usd*100)/100,
+      fx_rate: fx
+    });
 
     // Debug: log every 50th snapshot
     if(i % 50 === 0) console.log(`Snapshot ${date}: ar_usd=${ar_usd.toFixed(2)}, us_usd=${us_usd.toFixed(2)}, fx=${fx}`);
@@ -2863,11 +2924,11 @@ async function recalcSnapshots() {
   let idx = 100;
   for(let i = 0; i < snapshots.length; i++) {
     const s = snapshots[i];
-    const total = s.ar_usd + s.us_usd;
+    const total = s.ar_usd_market + s.us_usd; // mercado para ambos
     if(i === 0) {
       s.idx = 100;
     } else {
-      const totalAyer = snapshots[i-1].ar_usd + snapshots[i-1].us_usd;
+      const totalAyer = snapshots[i-1].ar_usd_market + snapshots[i-1].us_usd;
       if(totalAyer > 0) {
         const flujo = flujosPorFecha[s.date] || 0;
         const retorno = (total - flujo) / totalAyer - 1;
@@ -2996,9 +3057,20 @@ function renderEvolChart() {
   const fmtLbl = d => `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
 
   // Series de valor (eje Y izquierdo)
-  const arUSD    = data.map(r => r.ar_usd);
-  const usUSD    = data.map(r => r.us_usd);
-  const totalUSD = data.map((r,i) => Math.round((arUSD[i] + usUSD[i])*100)/100);
+  const arCosto   = data.map(r => r.ar_usd);
+  const arMercado = data.map(r => r.ar_usd_market ?? r.ar_usd); // fallback al costo si null
+  const usCosto   = data.map(r => r.us_usd_cost ?? r.us_usd);  // fallback al mercado si null
+  const usMercado = data.map(r => r.us_usd);
+  const totalCosto   = data.map((r,i) => Math.round((arCosto[i]   + usCosto[i])  *100)/100);
+  const totalMercado = data.map((r,i) => Math.round((arMercado[i] + usMercado[i])*100)/100);
+  // Alias para compatibilidad con el resto del código (idx, summary, flujos)
+  const arUSD    = arCosto;
+  const usUSD    = usMercado;
+  const totalUSD = totalMercado;
+  // Ganancias no realizadas (mercado - costo)
+  const gnArData    = data.map((r,i) => Math.round((arMercado[i]    - arCosto[i])  *100)/100);
+  const gnUsData    = data.map((r,i) => Math.round((usMercado[i]    - usCosto[i])  *100)/100);
+  const gnTotalData = data.map((r,i) => Math.round((totalMercado[i] - totalCosto[i])*100)/100);
 
   // Flujos por fecha (en USD): depósitos positivos en verde, extracciones positivas en rojo
   // Se pre-calculan de _historicalTxns para la ventana filtrada
@@ -3027,23 +3099,66 @@ function renderEvolChart() {
   const hasSecondaryAxis = showIdx;
 
   const datasets = [];
+  // ── AR ──
+  if(_evolSeries.has('ar_costo')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇦🇷 AR Costo', data: arCosto,
+    borderColor: '#3d7fff', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderDash: [4, 3],
+  });
   if(_evolSeries.has('ar')) datasets.push({
     type: 'line', yAxisID: 'y',
-    label: '🇦🇷 Argentina (USD)', data: arUSD,
+    label: '🇦🇷 AR Mercado', data: arMercado,
     borderColor: '#3d7fff', backgroundColor: 'transparent',
     borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
+  // ── EEUU ──
+  if(_evolSeries.has('us_costo')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇺🇸 EEUU Costo', data: usCosto,
+    borderColor: '#ef4444', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderDash: [4, 3],
+  });
   if(_evolSeries.has('us')) datasets.push({
     type: 'line', yAxisID: 'y',
-    label: '🇺🇸 EEUU (USD)', data: usUSD,
+    label: '🇺🇸 EEUU Mercado', data: usMercado,
     borderColor: '#ef4444', backgroundColor: 'transparent',
     borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
+  // ── Total ──
+  if(_evolSeries.has('total_costo')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '∑ Total Costo', data: totalCosto,
+    borderColor: '#a78bfa', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderDash: [4, 3],
+  });
   if(_evolSeries.has('total')) datasets.push({
     type: 'line', yAxisID: 'y',
-    label: '∑ Total (USD)', data: totalUSD,
+    label: '∑ Total Mercado', data: totalMercado,
     borderColor: '#a78bfa', backgroundColor: 'transparent',
-    borderWidth: 3, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  // ── Ganancias no realizadas ──
+  if(_evolSeries.has('gn_ar')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇦🇷 Gan. no realiz. AR', data: gnArData,
+    borderColor: '#00d4aa', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(_evolSeries.has('gn_us')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇺🇸 Gan. no realiz. EEUU', data: gnUsData,
+    borderColor: '#f97316', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(_evolSeries.has('gn_total')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '∑ Gan. no realiz. Total', data: gnTotalData,
+    borderColor: '#e879f9', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
   });
   if(showFlujos) {
     datasets.push({
@@ -3137,20 +3252,23 @@ function renderEvolChart() {
   // Summary row
   if(summaryEl && data.length) {
     const last = data[data.length-1];
-    const lastAR    = arUSD[arUSD.length-1];
-    const lastUS    = usUSD[usUSD.length-1];
-    const lastTotal = totalUSD[totalUSD.length-1];
-    const lastIdx   = idxData[idxData.length-1];
     const fmtU = n => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(n);
+    const lastIdx = idxData[idxData.length-1];
     summaryEl.innerHTML = `
       <div style="font-family:var(--mono);font-size:11px;">
         <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Última fecha: ${fmtLbl(last.date)}</div>
         <div style="display:flex;gap:24px;flex-wrap:wrap;">
-          ${_evolSeries.has('ar')    ? `<span style="color:var(--ar)">🇦🇷 ${fmtU(lastAR)}</span>` : ''}
-          ${_evolSeries.has('us')    ? `<span style="color:var(--us)">🇺🇸 ${fmtU(lastUS)}</span>` : ''}
-          ${_evolSeries.has('total') ? `<span style="color:var(--purple)">∑ ${fmtU(lastTotal)}</span>` : ''}
-          ${showIdx && lastIdx !== null ? `<span style="color:var(--usd)">📈 Índice: ${N(lastIdx,2)}</span>` : ''}
-          ${_evolSeries.has('depNeto') ? `<span style="color:#ffffff">💵 Dep. Netos: ${fmtU(buildDepositSeries(isoLabels)[isoLabels.length-1])}</span>` : ''}
+          ${_evolSeries.has('ar_costo')    ? `<span style="color:#3d7fff;opacity:.7">🇦🇷 Costo: ${fmtU(arCosto[arCosto.length-1])}</span>` : ''}
+          ${_evolSeries.has('ar')          ? `<span style="color:#3d7fff">🇦🇷 Mercado: ${fmtU(arMercado[arMercado.length-1])}</span>` : ''}
+          ${_evolSeries.has('us_costo')    ? `<span style="color:#ef4444;opacity:.7">🇺🇸 Costo: ${fmtU(usCosto[usCosto.length-1])}</span>` : ''}
+          ${_evolSeries.has('us')          ? `<span style="color:#ef4444">🇺🇸 Mercado: ${fmtU(usMercado[usMercado.length-1])}</span>` : ''}
+          ${_evolSeries.has('total_costo') ? `<span style="color:#a78bfa;opacity:.7">∑ Costo: ${fmtU(totalCosto[totalCosto.length-1])}</span>` : ''}
+          ${_evolSeries.has('total')       ? `<span style="color:#a78bfa">∑ Mercado: ${fmtU(totalMercado[totalMercado.length-1])}</span>` : ''}
+          ${_evolSeries.has('gn_ar')       ? `<span style="color:#00d4aa">🇦🇷 G. no real.: ${fmtU(gnArData[gnArData.length-1])}</span>` : ''}
+          ${_evolSeries.has('gn_us')       ? `<span style="color:#f97316">🇺🇸 G. no real.: ${fmtU(gnUsData[gnUsData.length-1])}</span>` : ''}
+          ${_evolSeries.has('gn_total')    ? `<span style="color:#e879f9">∑ G. no real.: ${fmtU(gnTotalData[gnTotalData.length-1])}</span>` : ''}
+          ${showIdx && lastIdx !== null    ? `<span style="color:var(--usd)">📈 Índice: ${N(lastIdx,2)}</span>` : ''}
+          ${_evolSeries.has('depNeto')     ? `<span style="color:#ffffff">💵 Dep. Netos: ${fmtU(buildDepositSeries(isoLabels)[isoLabels.length-1])}</span>` : ''}
           <span style="color:var(--muted);font-size:10px;">FX: ${N(last.fx_rate,2)} ARS/USD</span>
         </div>
       </div>`;
@@ -4742,9 +4860,15 @@ function renderFXTab() {
         <button class="evol-rb act" data-range="MAX" onclick="evolSetRange('MAX')">MAX</button>
       </div>
       <!-- Series toggles -->
-      <button class="evol-series act" data-series="ar" onclick="evolToggleSeries('ar')" style="border-color:#3d7fff;color:#3d7fff;">🇦🇷 Argentina</button>
-      <button class="evol-series act" data-series="us" onclick="evolToggleSeries('us')" style="border-color:#ef4444;color:#ef4444;">🇺🇸 EEUU</button>
-      <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:#a78bfa;color:#a78bfa;">∑ Total</button>
+      <button class="evol-series" data-series="ar_costo" onclick="evolToggleSeries('ar_costo')" style="border-color:#3d7fff;color:#3d7fff;opacity:.7;">🇦🇷 AR Costo</button>
+      <button class="evol-series act" data-series="ar" onclick="evolToggleSeries('ar')" style="border-color:#3d7fff;color:#3d7fff;">🇦🇷 AR Mercado</button>
+      <button class="evol-series" data-series="us_costo" onclick="evolToggleSeries('us_costo')" style="border-color:#ef4444;color:#ef4444;opacity:.7;">🇺🇸 EEUU Costo</button>
+      <button class="evol-series act" data-series="us" onclick="evolToggleSeries('us')" style="border-color:#ef4444;color:#ef4444;">🇺🇸 EEUU Mercado</button>
+      <button class="evol-series" data-series="total_costo" onclick="evolToggleSeries('total_costo')" style="border-color:#a78bfa;color:#a78bfa;opacity:.7;">∑ Total Costo</button>
+      <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:#a78bfa;color:#a78bfa;">∑ Total Mercado</button>
+      <button class="evol-series" data-series="gn_ar" onclick="evolToggleSeries('gn_ar')" style="border-color:#00d4aa;color:#00d4aa;">🇦🇷 G. No Realiz.</button>
+      <button class="evol-series" data-series="gn_us" onclick="evolToggleSeries('gn_us')" style="border-color:#f97316;color:#f97316;">🇺🇸 G. No Realiz.</button>
+      <button class="evol-series" data-series="gn_total" onclick="evolToggleSeries('gn_total')" style="border-color:#e879f9;color:#e879f9;">∑ G. No Realiz.</button>
       <button class="evol-series act" data-series="flujos" onclick="evolToggleSeries('flujos')" style="border-color:#22c55e;color:#22c55e;">💰 Flujos</button>
       <button class="evol-series" data-series="idx" onclick="evolToggleSeries('idx')" style="border-color:#f59e0b;color:#f59e0b;">📈 Índice</button>
       <button class="evol-series" data-series="depNeto" onclick="evolToggleSeries('depNeto')" style="border-color:#ffffff;color:#ffffff;">💵 Dep. Netos</button>
