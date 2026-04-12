@@ -1427,11 +1427,33 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
       `<span style="color:var(--purple)">${costoSym}${fN2(costoMasCaja)}</span>`,
       `Costo: ${costoSym}${fN2(sumCostoTotal)}`);
 
-    // 5. Portfolio Total (placeholder AR hasta Fase 2)
-    html += placeholder('pc-total', '🏦 Portfolio Total');
+    // 5. Portfolio Total
+    if(anyPrice) {
+      const portfolioTotalUSD = sumValorTenencia + totalCaja;
+      const portfolioTotalFmt = _arMode === 'ars'
+        ? `$ ${fN2(portfolioTotalUSD * fx)}`
+        : `U$S ${fN2(portfolioTotalUSD)}`;
+      html += card('pc-total', '🏦 Portfolio Total',
+        `<span style="color:var(--text)">${portfolioTotalFmt}</span>`,
+        `Tenencias: ${_arMode === 'ars' ? '$ ' + fN2(sumValorTenencia * fx) : 'U$S ' + fN2(sumValorTenencia)}`);
+    } else {
+      html += placeholder('pc-total', '🏦 Portfolio Total');
+    }
 
-    // 6. P&L (placeholder AR hasta Fase 2)
-    html += placeholder('pc-pl', '📈 Ganancia');
+    // 6. Ganancia
+    if(anyPrice && sumPL !== 0) {
+      const plDisplay = _arMode === 'ars' ? sumPL * fx : sumPL;
+      const plPct   = sumCostoTotal > 0 ? (sumPL / sumCostoTotal) * 100 : null;
+      const plColor = sumPL >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+      const plSign  = sumPL >= 0 ? '+' : '-';
+      const plSym   = _arMode === 'ars' ? '$ ' : 'U$S ';
+      const plSub   = plPct !== null ? `${plSign}${N(Math.abs(plPct), 2)}%` : '';
+      html += card('pc-pl', '📈 Ganancia',
+        `<span style="${plColor}">${plSign}${plSym}${fN2(plDisplay)}</span>`,
+        plSub);
+    } else {
+      html += placeholder('pc-pl', '📈 Ganancia');
+    }
 
   } else {
     // ── EEUU ──
@@ -1666,18 +1688,19 @@ function renderPortfolioTable() {
 
   // ── Footer totals ─────────────────────────────────────────────────────
   const tfoot = document.getElementById('portfolio-tfoot');
-  const dateLabel = isToday ? '' : ` <span style="font-size:9px;color:var(--usd)">· al ${fecha}</span>`;
-  const note = `<span style="font-size:9px;color:var(--muted)">(posiciones al costo + caja)</span>`;
   // Símbolo según modo
-  const sym = (!isAr && _arMode === 'ars') ? '$ ' : 'U$S ';
+  const sym = (isAr && _arMode === 'ars') ? '$ ' : 'U$S ';
+  const fx = getFXForDate(fecha);
 
   // Fila 1: total de posiciones (Costo Total y Valor Tenencia)
   const costoTotalFmtTot = sumCostoTotal > 0 ? sym + N(sumCostoTotal, 2) : '—';
-  const valTenenciaFmtTot = anyPriceForTotal ? 'U$S ' + N(sumValorTenencia, 2) : '—';
-  const plTotFmt = !isAr && anyPriceForTotal && sumPL !== 0
-    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':''}U$S ${N(Math.abs(sumPL),2)}</span>`
+  const valTenenciaFmtTot = anyPriceForTotal
+    ? sym + N(isAr && _arMode === 'ars' ? sumValorTenencia * fx : sumValorTenencia, 2)
+    : '—';
+  const plTotFmt = anyPriceForTotal && sumPL !== 0
+    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':''}${sym}${N(Math.abs(isAr && _arMode === 'ars' ? sumPL * fx : sumPL),2)}</span>`
     : '<span style="color:var(--muted)">—</span>';
-  const plPctTotFmt = !isAr && anyPriceForTotal && sumCostoTotal > 0 && sumPL !== 0
+  const plPctTotFmt = anyPriceForTotal && sumCostoTotal > 0 && sumPL !== 0
     ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':''}${N((sumPL/sumCostoTotal)*100,2)}%</span>`
     : '<span style="color:var(--muted)">—</span>';
 
@@ -1689,46 +1712,6 @@ function renderPortfolioTable() {
     <td class="num" style="font-weight:700">${plTotFmt}</td>
     <td class="num" style="font-weight:700">${plPctTotFmt}</td>
   </tr>`;
-
-  if(isAr) {
-    const fx = getFXForDate(fecha);
-    // getARValueAtDate es la fuente canónica — misma función que usa recalcSnapshots.
-    // Se pasa el cash ya computado arriba (historicCash) para no reconstruirlo.
-    const precomputed = { balances: historicCash, cauciones: buildCauciones(_historicalTxns || []) };
-    const totalUSD_ar = getARValueAtDate(fecha, precomputed);
-
-    if(_arMode === 'ars') {
-      const totalARS = totalUSD_ar * fx;
-      tfootHtml += `<tr class="total-ars">
-        <td colspan="7">TOTAL ARGENTINA (ARS) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
-        <td class="num mp" style="font-size:13px">$ ${N(totalARS, 2)}</td>
-      </tr>`;
-    } else {
-      tfootHtml += `<tr class="total-usd">
-        <td colspan="7">TOTAL ARGENTINA (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· FX ${N(fx,2)}</span></td>
-        <td class="num mp" style="font-size:13px">U$S ${N(totalUSD_ar, 2)}</td>
-      </tr>`;
-    }
-  } else {
-    // EEUU — getUSValueAtDate es la fuente canónica, misma función que usa recalcSnapshots
-    const precomputedUS = { balances: historicCash };
-    const grandTotal = getUSValueAtDate(fecha, precomputedUS);
-    // anyPrice: si hay al menos una posición con precio de mercado real
-    const anyPrice = positions.some(p => {
-      if((p.balEEUU ?? 0) <= 0) return false;
-      const avgRef = p.snap.EEUU?.avgNoC ?? 0;
-      return !getPriceForDate(p.ticker, fecha, avgRef).estimated;
-    });
-    tfootHtml += anyPrice
-      ? `<tr>
-          <td colspan="7" style="color:var(--us)">TOTAL EEUU (USD) ${note}${dateLabel} <span style="font-size:9px;color:var(--muted)">· * = al costo</span></td>
-          <td class="num mp" style="font-size:14px">U$S ${N(grandTotal, 2)}</td>
-        </tr>`
-      : `<tr>
-          <td colspan="7" style="color:var(--us)">TOTAL EEUU (USD)${dateLabel}</td>
-          <td class="num" style="color:var(--muted)">— (presioná 🔄 para cargar precios)</td>
-        </tr>`;
-  }
   tfoot.innerHTML = tfootHtml;
 
   // Options disclaimer — solo relevante en fecha actual
