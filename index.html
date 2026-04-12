@@ -1586,14 +1586,12 @@ function renderPortfolioTable() {
       currentPrice = lookup.price > 0 ? lookup.price : null;
       isEstimated  = lookup.estimated;
     } else {
-      // AR: buscar precio en ARS via ticker_AR, convertir a USD por FX
+      // AR: buscar precio en ARS via ticker_AR, convertir a USD por FX.
+      // Si no hay precio de mercado, getPriceForDateAR devuelve avgCostUSD (estimated=true).
       const avgRef = snap.avgAR_usd ?? 0;
       const lookup = getPriceForDateAR(ticker, fecha, avgRef);
-      if(!lookup.estimated) {
-        currentPrice = lookup.price > 0 ? lookup.price : null;
-        isEstimated  = false;
-      }
-      // Si estimated=true (no hay precio AR), dejamos currentPrice=null → muestra —
+      currentPrice = lookup.price > 0 ? lookup.price : null;
+      isEstimated  = lookup.estimated;
     }
     const priceColor = currentPrice !== null ? (isEstimated ? 'color:var(--usd)' : 'color:var(--text)') : 'color:var(--muted)';
     let priceFmt = '—';
