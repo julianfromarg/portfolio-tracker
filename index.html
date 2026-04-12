@@ -1784,15 +1784,90 @@ function renderPortfolioTable() {
 //  IMPORT PROCESSING (runs in browser when user uploads)
 // ══════════════════════════════════════════════════════
 
-const INSTRUMENT_GROUPS = {
-  AL30:['AL30','AL30D','AL30C'], AY24:['AY24','AY24D','AY24C'],
-  GD30:['GD30','GD30D'], AO20:['AO20','AO20D'],
-  MELI:['MELI','MELID'], VIST:['VIST','VISTD'],
-  SPY:['SPY','SPYD'], PARY:['PARY','PARYD'],
+// INSTRUMENT_GROUPS y TICKER_TO_GROUP se construyen dinámicamente en detectTickerGroups().
+// Solo se mantiene como seed el grupo I15G8 (letras con tramos de amortización parcial:
+// el broker las registra con sufijos "-MMYY" en vez de "D"/"C", por lo que no se detectan
+// automáticamente con la regla D/C).
+let INSTRUMENT_GROUPS = {
   I15G8:['I15G8','I15G8-1505','I15G8-1906'],
 };
-const TICKER_TO_GROUP = {};
+let TICKER_TO_GROUP = {};
 for(const [g,ts] of Object.entries(INSTRUMENT_GROUPS)) ts.forEach(t=>TICKER_TO_GROUP[t]=g);
+
+// ══════ DETECCIÓN AUTOMÁTICA DE GRUPOS DE TICKERS ══════
+// Construye INSTRUMENT_GROUPS y TICKER_TO_GROUP dinámicamente a partir de las
+// transacciones reales, reemplazando los hardcodes anteriores.
+//
+// Regla: si un ticker B == ticker A + 'D' o A + 'C', son el mismo instrumento
+// operado en distintas cuentas (dólar linked o dólar cable). Ejemplos:
+//   AL30 → AL30D (AR USD), AL30C (EEUU USD)
+//   MELI → MELID (AR USD)
+//   SPY  → SPYD  (AR USD)
+//
+// Las opciones (tickers con '.') nunca se agrupan con nada.
+// Los grupos del seed (I15G8) se preservan y se fusionan si hay overlap.
+//
+function detectTickerGroups(rawTxns) {
+  if(!rawTxns || !rawTxns.length) return;
+
+  // Extraer tickers únicos de las transacciones (excluir opciones)
+  const tickers = [...new Set(rawTxns.map(t => t.ticker).filter(t => t && !t.includes('.')))];
+
+  // Union-Find
+  const parent = {};
+  for(const t of tickers) parent[t] = t;
+  // Incluir también los tickers del seed que pueden no estar en rawTxns
+  for(const ts of Object.values(INSTRUMENT_GROUPS))
+    for(const t of ts) if(!(t in parent)) parent[t] = t;
+
+  function find(x) {
+    while(parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function union(a, b) {
+    const ra = find(a), rb = find(b);
+    if(ra === rb) return;
+    // canonical = más corto; si igual longitud, primero alfabéticamente
+    if(rb.length < ra.length || (rb.length === ra.length && rb < ra)) parent[ra] = rb;
+    else parent[rb] = ra;
+  }
+
+  // Aplicar grupos del seed primero (preserva I15G8 y cualquier otro hardcode futuro)
+  for(const members of Object.values(INSTRUMENT_GROUPS)) {
+    for(let i = 1; i < members.length; i++) union(members[0], members[i]);
+  }
+
+  // Regla D/C: agrupar pares donde b == a + 'D' o b == a + 'C'
+  const allTickers = Object.keys(parent);
+  for(const a of allTickers) {
+    for(const suffix of ['D', 'C']) {
+      const b = a + suffix;
+      if(b in parent) union(a, b);
+    }
+  }
+
+  // Reconstruir INSTRUMENT_GROUPS y TICKER_TO_GROUP
+  const newGroups = {};
+  for(const t of Object.keys(parent)) {
+    const canonical = find(t);
+    if(!newGroups[canonical]) newGroups[canonical] = [];
+    if(!newGroups[canonical].includes(t)) newGroups[canonical].push(t);
+  }
+
+  // Solo mantener grupos con 2+ miembros (los de 1 no aportan nada)
+  INSTRUMENT_GROUPS = {};
+  for(const [canonical, members] of Object.entries(newGroups)) {
+    if(members.length > 1) INSTRUMENT_GROUPS[canonical] = members.sort();
+  }
+
+  // Reconstruir TICKER_TO_GROUP
+  TICKER_TO_GROUP = {};
+  for(const [g, ts] of Object.entries(INSTRUMENT_GROUPS))
+    ts.forEach(t => TICKER_TO_GROUP[t] = g);
+
+  console.log(`detectTickerGroups: ${Object.keys(INSTRUMENT_GROUPS).length} grupos detectados`,
+    Object.entries(INSTRUMENT_GROUPS).map(([k,v]) => `${k}:[${v.join(',')}]`).join(' | '));
+}
 
 const IMPLICIT_CLOSED = new Set([]);
 
@@ -3277,6 +3352,8 @@ function renderEvolChart() {
 
 function processAndRefresh(rawMerged) {
   _historicalTxns = rawMerged;
+  // Detectar grupos de tickers dinámicamente ANTES de buildLedger y canonicalizeTickers
+  detectTickerGroups(rawMerged);
   // Construir ledger PRIMERO — isEffectivelyClosed lo consulta dentro de buildPortfolio
   _ledger = buildLedger(rawMerged, _fxHistory);
   const deduped = deduplicateMEP(rawMerged);
