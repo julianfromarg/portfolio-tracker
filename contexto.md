@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 11/04/2026 v18
+## Versión: 11/04/2026 v19
 
 ---
 
@@ -22,7 +22,7 @@ Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (p
 - `instruments` — catálogo de instrumentos con `yahoo_ticker`. PK: `ticker`. **Convención crítica: tickers AR llevan sufijo `_AR` (ej: `GGAL_AR`, `MELI_AR`) para evitar conflicto con los mismos tickers en EEUU.**
 - `prices` — precios EOD históricos (`ticker, date, close, currency, volume, source`). Los precios AR se guardan en ARS con `ticker = TICKER_AR`.
 - `fx_rates` — tipo de cambio USD/ARS diario
-- `portfolio_snapshots` — valor diario del portfolio (`date, ar_ars, ar_usd, us_usd, fx_rate, idx`)
+- `portfolio_snapshots` — valor diario del portfolio (`date, ar_ars, ar_usd, ar_usd_market, us_usd_cost, us_usd, fx_rate, idx`). Columnas: `ar_usd` = AR costo, `ar_usd_market` = AR mercado, `us_usd_cost` = EEUU costo, `us_usd` = EEUU mercado.
 - `nra_overrides` — overrides de retención NRA. PK: `(nro_mov, session_id)`
 
 ### Tickers EEUU activos
@@ -883,6 +883,16 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
 | Date picker Portfolio en formato mm/dd/yyyy | `<input type="date">` usa locale del browser | Reemplazado por `<input type="text">` con `parseDateDMY`/`fmtDateDMY` y botones `‹`/`›` para navegar ±1 día |
 
+### Precios AR y mejoras de Portfolio (v18-v19)
+
+| Cambio | Descripción |
+|---|---|
+| Precios de mercado para tab Argentina | Nueva función `getPriceForDateAR(ticker, date, avgCostUSD)` — busca `ticker_AR` en `_pricesHistory`, convierte ARS→USD por FX. Fallback al costo si no hay precio (muestra `*` en amarillo). Afecta "Precio Actual", "Valor Tenencia" y "Gan./Pérd." en tab AR. |
+| Toggle ARS/USD sensible en todas las columnas | Precio Actual, Valor Tenencia, Gan./Pérd. $, Total Posiciones y tarjetas respetan el toggle. Internamente siempre USD, conversión solo al mostrar. |
+| Tarjetas Portfolio Total y Ganancia AR | Antes mostraban "disponible en Fase 2". Ahora muestran `sumValorTenencia + totalCajaUSD` y `sumPL` respetando toggle. `totalCajaUSD` siempre en USD para evitar mezcla de unidades. |
+| Eliminada fila "TOTAL ARGENTINA/EEUU" del footer | Info redundante con las tarjetas. |
+| 4 series nuevas en Evolución + Ganancias no realizadas | AR Costo, AR Mercado, EEUU Costo, EEUU Mercado, Total Costo, Total Mercado (las 3 "Mercado" activas por default). Más 3 series "Ganancias no realizadas" (mercado - costo) para AR, EEUU y Total. Índice base 100 ahora usa mercado (`ar_usd_market + us_usd`). |
+
 ---
 
 ## Cómo pedir cambios en un chat nuevo
@@ -902,13 +912,17 @@ Pegá este documento + el HTML al inicio del chat.
 
 **Reglas críticas de arquitectura — NUNCA violar:**
 
-**► FUENTES CANÓNICAS DE CASH Y VALOR (v14) — LAS MÁS IMPORTANTES:**
+**► FUENTES CANÓNICAS DE CASH Y VALOR — LAS MÁS IMPORTANTES:**
 - **`getCashAtDate(fecha)` es la ÚNICA fuente de cash histórico** — nunca reconstruir `buildCash(txnsUpTo, ...)` inline para consultar cash de una fecha puntual
-- **`getARValueAtDate(fecha)` es la ÚNICA definición del valor AR** — nunca calcular `snap.avgAR_usd × balAR + cash` inline fuera de esta función
-- **`getUSValueAtDate(fecha)` es la ÚNICA definición del valor EEUU** — nunca calcular `precio × balEEUU + cash` inline fuera de esta función
+- **Hay 4 funciones canónicas de valor de portfolio — nunca calcular inline fuera de ellas:**
+  - **`getARValueAtDate(fecha)`** — AR al **costo** (avgAR_usd × bal) + caja. Coincide con tarjeta "Costo + Caja" AR. Se guarda en `ar_usd` en Supabase.
+  - **`getARMarketValueAtDate(fecha)`** — AR a **precio de mercado** (getPriceForDateAR, con fallback al costo) + caja. Coincide con tarjeta "Portfolio Total" AR. Se guarda en `ar_usd_market` en Supabase.
+  - **`getUSCostValueAtDate(fecha)`** — EEUU al **costo** (avgNoC × bal) + caja. Coincide con tarjeta "Costo + Caja" EEUU. Se guarda en `us_usd_cost` en Supabase.
+  - **`getUSValueAtDate(fecha)`** — EEUU a **precio de mercado** (getPriceForDate, con fallback al costo) + caja. Coincide con tarjeta "Portfolio Total" EEUU. Se guarda en `us_usd` en Supabase.
 - **`buildCash()` y `buildCashDaily()` solo se llaman en `processAndRefresh()` y `saveNRAOverride()`** — solo para construir `_cashDaily`, nunca para consultar una fecha puntual
 - **Todo cambio de fórmula de valuación va EXCLUSIVAMENTE en las funciones canónicas** — después de deployar, el usuario debe presionar ⟳ Recalcular para actualizar Evolución
 - **`getCashAtDate` itera `_cashDaily` desde el inicio (índice 0 = más reciente)** — el array está ordenado desc; iterar desde el final daría siempre el valor más antiguo
+- **CRÍTICO: Tab Portfolio y Tab Evolución deben coincidir** — las tarjetas de Portfolio usan las mismas 4 funciones canónicas que `recalcSnapshots`. Nunca calcular valor de portfolio inline fuera de estas funciones.
 
 **► LEDGER Y PORTFOLIO:**
 - **`_ledger` es la fuente de verdad para balances y avgs** — Tab Portfolio y Tab Especies leen de `_ledger`, no de `AR[]`/`US[]`
@@ -917,7 +931,7 @@ Pegá este documento + el HTML al inicio del chat.
 - **`buildLedger` se llama ANTES de `buildPortfolio` en `processAndRefresh`** — no cambiar este orden
 - **`buildLedger` opera sobre rawTxns (pre-dedup)** — nunca pasarle txns ya deduplicadas
 - **`buildLedger` adelanta la fecha de "Pago de Amortización" para letras con gap Renta→Amort** — si existe un "Pago de Renta" con `fecha != fecha_liq` y un "Pago de Amortización" con `fecha == fecha_liq` del Pago de Renta, la Amortización se procesa con la `fecha` del Pago de Renta. Solo afecta la copia local dentro de `buildLedger` — `_historicalTxns` y el tab Transacciones no se modifican.
-- **`recalcSnapshots()` usa `getARValueAtDate` y `getUSValueAtDate`** — no `buildPortfolio` → `avgByAcct`, no loops inline sobre `_ledger`
+- **`recalcSnapshots()` usa las 4 funciones canónicas** — calcula y guarda `ar_usd`, `ar_usd_market`, `us_usd_cost`, `us_usd` por fecha. El índice base 100 usa `ar_usd_market + us_usd` (mercado). No usar `buildPortfolio` → `avgByAcct` ni loops inline sobre `_ledger`.
 - **`recalcSnapshots()` usa `getCashAtDate(date)` por fecha** — no `buildCash(txnsUpTo, ...)`
 
 **► ESPECIES:**
