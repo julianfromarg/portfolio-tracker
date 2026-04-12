@@ -1429,7 +1429,9 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
 
     // 5. Portfolio Total
     if(anyPrice) {
-      const portfolioTotalUSD = sumValorTenencia + totalCaja;
+      // totalCajaUSD: siempre en USD, independiente del toggle
+      const totalCajaUSD = bUSD + (fx > 0 ? bARS / fx : 0);
+      const portfolioTotalUSD = sumValorTenencia + totalCajaUSD;
       const portfolioTotalFmt = _arMode === 'ars'
         ? `$ ${fN2(portfolioTotalUSD * fx)}`
         : `U$S ${fN2(portfolioTotalUSD)}`;
