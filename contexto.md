@@ -1,1013 +1,5161 @@
-# Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 15/04/2026 v21
-
----
-
-## Qué es este proyecto
-
-Dashboard HTML single-file para visualizar el portfolio de inversiones en Balanz.
-Hosteado en GitHub Pages — URL pública: **https://julianfromarg.github.io/portfolio-tracker**
-
-Repositorio del dashboard: **github.com/julianfromarg/portfolio-tracker** (público)
-Repositorio de precios: **github.com/julianfromarg/portfolio-tracker-prices** (privado)
-
----
-
-## Supabase y precios externos
-
-**Proyecto Supabase:** `ghxisfkgwfqqxndfpmgp.supabase.co`
-**Anon key:** `sb_publishable_s5hodNiLD-8_OwX8NWHfRw_S1uylN2Y`
-
-### Tablas
-- `instruments` — catálogo de instrumentos con `yahoo_ticker`. PK: `ticker`. **Convención crítica: tickers AR llevan sufijo `_AR` (ej: `GGAL_AR`, `MELI_AR`) para evitar conflicto con los mismos tickers en EEUU.**
-- `prices` — precios EOD históricos (`ticker, date, close, currency, volume, source`). Los precios AR se guardan en ARS con `ticker = TICKER_AR`.
-- `fx_rates` — tipo de cambio USD/ARS diario
-- `portfolio_snapshots` — valor diario del portfolio (`date, ar_ars, ar_usd, ar_usd_market, us_usd_cost, us_usd, fx_rate, idx`). Columnas: `ar_usd` = AR costo, `ar_usd_market` = AR mercado, `us_usd_cost` = EEUU costo, `us_usd` = EEUU mercado.
-- `nra_overrides` — overrides de retención NRA. PK: `(nro_mov, session_id)`
-
-### Tickers EEUU activos
-`NU, STRC, VGSH, SHV, EWZ, IREN, MSTR, IVV, MELI, VIST, SPY`
-
-### Tickers AR activos (CEDEARs / acciones locales)
-`EWZ_AR, GGAL_AR, GLOB_AR, IBIT_AR, JNJ_AR, MELI_AR, PAMP_AR, QQQ_AR, SPY_AR, TGNO4_AR, TGSU2_AR, TRAN_AR, UBER_AR, VIST_AR, YPFD_AR`
-Sin precio (al costo): `ADRO, CO26, TO26`
-
-### GitHub Actions — repo portfolio-tracker-prices
-- **Script:** `update_prices.py` — fetchea Yahoo Finance, upsert en Supabase
-- **Cron:** lunes a viernes **22:00 UTC** (19:00 ART) — cambiado de 21:00 a 22:00 para dar margen a Yahoo Finance de publicar el EOD con fecha correcta
-- **Modos:** `daily` (default), `backfill --from YYYY-MM-DD`, `today`
-- **Nota:** el script lee dinámicamente de la tabla `instruments` — para agregar un ticker nuevo basta con insertar una fila ahí, sin tocar el script
-
----
-
-## Archivos
-
-| Archivo | Descripción |
-|---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~5140 líneas. |
-| `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
-| `contexto.md` | Este archivo |
-
----
-
-## Estructura del dashboard
-
-### 8 tabs:
-- **📊 Portfolio** — Tab unificado con toggle 🇦🇷 Argentina / 🇺🇸 EEUU (USD). Tarjetas de resumen arriba. Tabla de posiciones con date picker para ver el estado en cualquier fecha histórica. Prices live para EEUU. Argentina con toggle de modo **Todo ARS / Todo USD** (el modo "Moneda origen" fue eliminado). FX siempre desde `fx_rates` en Supabase.
-- **📋 Transacciones** — Tabla audit completa con filtros multi-valor (cuenta, operación, año, mes — cada uno es un dropdown con checkboxes), agrupación, columnas Fecha Concert. · **Fecha Liq.** · Saldo cash · Ret. NRA · Otros Imp. · Nro. Boleto · Nro. Mov. y botón `↓ CSV`. El filtro Operación incluye opciones explícitas para **Depósito de Fondos** y **Extracción de Fondos** (detectados por prefijo, no por nombre exacto del banco).
-- **💵 Saldo Cash** — Tabla de saldos diarios por cuenta.
-- **🏛 Ret. NRA** — Tabla de retenciones NRA estimadas para dividendos EEUU, con filtros, override por transacción y botón `↓ CSV`.
-- **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
-- **🔍 Especies** — Tab de auditoría por instrumento. Selector dividido en 5 dropdowns por categoría: Acciones · Bonos · Letras · FCI · Otros.
-- **💱 Tipo de Cambio** — Tabla con la serie histórica de FX USD/ARS desde Supabase. Columnas: Fecha · ARS/USD · Var. diaria · Var. 30d. Filtros por año y texto. Orden clickeable por fecha o tasa.
-- **Botones fijos:** `↑ Importar .xls` (en tabs bar)
-- **Header:** selector de sesiones con `＋ Nueva`, `✎ Renombrar`, `🗑 Borrar`
-
-### Tab activo persistente:
-`switchTab()` guarda el tab activo en `localStorage('active_tab')`. El `init()` lo restaura al cargar. `switchTab` es defensivo — hace guard si el panel no existe.
-
-### Flujo de datos:
-1. Abrir → lee sesión activa de `localStorage` → si vacío, muestra estado vacío
-2. Al cargar datos → `fetchLatestPrices()` automático desde Supabase + `fetchPricesHistory()` + `fetchFXHistory()` + `fetchSnapshots()`
-3. Importar .xls → `handleFileImport()` detecta HTML vs XLSX → parsea → `mergeTransactions()` → `processAndRefresh()` → guarda en localStorage (key de sesión) → `fetchLatestPrices()`
-4. Botón 🔄 Actualizar precios → re-fetchea Supabase manualmente
-5. Botón ⟳ Recalcular (tab Evolución) → reconstruye snapshots históricos → upsert en `portfolio_snapshots`
-6. Borrar sesión → borra localStorage de esa sesión + overrides NRA en Supabase para esa sesión
-
----
-
-## Sistema de sesiones
-
-### Concepto
-Cada "sesión" representa una cuenta de Balanz independiente. Las sesiones son locales al browser — no hay autenticación todavía (Fase 3 pendiente).
-
-### Estructura en localStorage
-```
-sessions_index        → [{id, name, createdAt}]
-active_session_id     → id de la sesión activa
-active_tab            → tab activo (portfolio/audit/cash/nra/evol/especies/fx)
-portfolio_txns_{id}   → transacciones de esa sesión
-```
-
-### session_id especial: `'default'`
-- La primera sesión (migrada desde datos existentes) usa `id = 'default'`
-- Los NRA overrides en Supabase que tenían `session_id = 'default'` siguen funcionando
-- Las sesiones nuevas generan IDs del tipo `sess_xxxxx_xxxxx`
-
-### Funciones clave
-- `getSessions()` / `saveSessions()` — CRUD del índice
-- `getActiveSessionId()` / `setActiveSessionId()` — sesión activa
-- `getSessionTxnsKey(id)` → `portfolio_txns_{id}`
-- `switchSession(id)` — carga transacciones y overrides de otra sesión
-- `newSessionPrompt()` — crea sesión nueva con nombre
-- `renameSessionPrompt()` — renombra sesión activa
-- `clearAllData()` — borra sesión activa (localStorage + Supabase NRA overrides)
-- `renderSessionDropdown()` — refresca el `<select>` del header
-
-### Migración automática
-Al cargar la nueva versión por primera vez, si hay `portfolio_txns` en localStorage sin sesión, se migra automáticamente a `portfolio_txns_default` con sesión "Mi cuenta".
-
----
-
-## Tab Portfolio — diseño ★ REFACTORIZADO v14
-
-### Fuente de datos — CRÍTICO
-**El tab Portfolio ya NO lee de `AR[]`/`US[]` (output de `buildPortfolio`).** Lee directamente de `_ledger` a través de `getPortfolioStateAtDate(fecha)`. Esta es la fuente de verdad canónica — los mismos datos que usa el tab Especies.
-
-### Date picker
-- `<input type="text" id="portfolio-date">` en la toolbar — placeholder `dd/mm/yyyy`, default: hoy
-- Botón "Hoy" para resetear la fecha a hoy
-- Botones `‹` y `›` para navegar de a 1 día calendario (`shiftPortfolioDate(delta)`)
-- Variable de estado: `_portfolioDate` (string `YYYY-MM-DD` internamente)
-- `parseDateDMY(s)` — convierte entrada `dd/mm/yyyy` → `YYYY-MM-DD`
-- `fmtDateDMY(iso)` — convierte `YYYY-MM-DD` → `dd/mm/yyyy` para mostrar en el input
-- Al cambiar la fecha: los tickers mostrados, balances, precios promedios, precio actual, Gan./Pérd., Valor Tenencia y caja se recalculan para esa fecha
-
-### Toggle AR mode — SOLO 2 MODOS (v11)
-El modo "Moneda origen" fue **eliminado**. Solo existen:
-- `'ars'` — Todo en ARS
-- `'usd'` — Todo en USD (default al abrir)
-
-`_arMode` default: `'usd'`. `setARMode()` solo itera `['ars','usd']`. El botón `armode-origin` ya no existe.
-
-### Tarjetas de resumen — `renderPortfolioCards()`
-Función separada llamada desde `renderPortfolioTable()`. Renderiza en `<div id="portfolio-cards">` ubicado entre la toolbar y la tabla.
-
-**Tab Argentina — 5 tarjetas:**
-| Tarjeta | Clase CSS | Contenido |
-|---|---|---|
-| 💵 Caja ARS | `pc-cash-ars` | `$ X` + sub `≈ U$S Y` |
-| 💵 Caja USD | `pc-cash-usd` | `U$S X` + sub `≈ $ Y` |
-| 🏦 Total Caja | `pc-cash-total` | en modo toggle + sub `FX X` |
-| 📦 Costo + Caja | `pc-costo` | `avgNoC × bal` + caja en toggle + sub `Costo: X` |
-| 🏦 Portfolio Total | `pc-total` | placeholder hasta Fase 2 |
-| 📈 Ganancia | `pc-pl` | placeholder hasta Fase 2 |
-
-**Tab EEUU — 4 tarjetas:**
-| Tarjeta | Clase CSS | Contenido |
-|---|---|---|
-| 💵 Caja USD | `pc-cash-usd` | `U$S X` |
-| 📦 Costo + Caja | `pc-costo` | Costo Total + caja + sub `Costo: X` |
-| 🏦 Portfolio Total | `pc-total` | Tenencias a mercado + caja + sub `Tenencias: X` |
-| 📈 Ganancia | `pc-pl` | `sumPL` en USD + sub `%` |
-
-**Firma:** `renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPrice)`
-
-**CRÍTICO:** Las filas de caja ya **NO aparecen en el tbody** de la tabla — la info de caja vive únicamente en las tarjetas.
-
-### `getPortfolioStateAtDate(fecha)`
-Itera `Object.keys(_ledger)`, para cada ticker busca el último `_snap` en `t.fecha <= fecha`. Solo incluye tickers con `balAR > 0` o `balEEUU > 0` en ese snapshot. Para fechas intermedias sin movimiento usa el último snap anterior.
-
-### Columnas de la tabla (v14) — SIN comisiones:
-| Columna | Sort key | Descripción |
-|---|---|---|
-| Instrumento | `ticker` | Ticker canonicalizado |
-| Cantidad | `net` | Balance del slot a la fecha |
-| P. Prom. | `avg` | `snap.avgAR_ars/usd` o `snap.EEUU.avgNoC` — **sin comisiones** |
-| Costo Total | `costoTotal` | `avgNoC × bal` en moneda del toggle — **sin comisiones** |
-| Precio Actual | — | `getPriceForDate()` — solo EEUU |
-| Valor Tenencia | `valorTenencia` | `precio × bal` — solo EEUU con precio real |
-| Gan./Pérd. $ | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
-| Gan./Pérd. % | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
-
-**CRÍTICO (v14):** La columna "P. Prom. c/comis." fue **eliminada**. `costoTotal` usa `avgNoC_val × bal`, no `avgWithC_val × bal`. Esto garantiza consistencia con `getARValueAtDate` y el tab Evolución. **No restaurar `avgWithC` en la tabla Portfolio.**
-
-AR: Precio Actual, Valor Tenencia, Gan./Pérd. $ y % quedan en `—` (preparado para Fase 2 con precios BYMA).
-
-### Acumuladores en `renderPortfolioTable()`
-```javascript
-let sumCostoTotal = 0;      // suma de avgNoC × bal por posición (sin comisiones)
-let sumValorTenencia = 0;   // suma de precio × bal (solo EEUU con precio real)
-let sumPL = 0;              // suma de P&L (solo !isEstimated)
-let anyPriceForTotal = false;
-```
-Estos alimentan tanto la fila "Total posiciones" del footer como `renderPortfolioCards()`.
-
-### Fila "Total posiciones" en el footer
-Muestra: Costo Total acumulado · Valor Tenencia acumulado · Gan./Pérd. $ total · Gan./Pérd. % total (vs costo).
-
-### Cauciones en pesos (v13)
-Las cauciones en pesos aparecen como filas especiales al final del tbody del tab Argentina. **No aparecen en EEUU.**
-
-**`buildCauciones(rawTxns)`** — matchea pares por `nro_mov`:
-- Apertura: `operacion === 'Caución'` AND `ticker === 'Caución en Pesos Arg.'`
-- Cierre: `operacion === 'Liquidación de Caución'` AND mismo `nro_mov`
-- Si no hay cierre → caución todavía activa
-
-```javascript
-{
-  nro_mov,
-  fechaApertura,  // fecha concert. de la Caución
-  fechaCierre,    // fecha concert. de la Liquidación (null si activa)
-  monto,          // Math.abs(monto de apertura) — siempre ARS
-  label,          // "Caución - DD/MM/YYYY"
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio Dashboard</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+:root{
+  --bg:#0d0f14;--surface:#151821;--s2:#1e2330;--border:#2a3040;
+  --text:#e8ecf5;--muted:#6b7a99;
+  --us:#3d7fff;--ar:#00d4aa;--ars:#00d4aa;--usd:#f59e0b;
+  --green:#22c55e;--red:#ef4444;--purple:#a78bfa;
+  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
 }
-```
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;font-size:13px;}
+header{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface);}
+header h1{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:.08em;}
+header span{font-family:var(--mono);font-size:11px;color:var(--muted);}
+.tabs{display:flex;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border);}
+.tab{padding:10px 18px;cursor:pointer;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.06em;color:var(--muted);border-bottom:2px solid transparent;transition:all .15s;text-transform:uppercase;}
+.tab:hover{color:var(--text);}
+.tab.act-audit{color:var(--purple);border-bottom-color:var(--purple);}
+.tab.act-cash{color:var(--usd);border-bottom-color:var(--usd);}
+.panel{display:none;padding:18px 24px;}
+.panel.active{display:block;}
+/* ── SESSION SELECTOR ── */
+#session-selector{display:flex;align-items:center;gap:8px;}
+#session-select{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-family:var(--mono);font-size:11px;outline:none;cursor:pointer;max-width:180px;}
+#session-select:focus{border-color:var(--muted);}
+.session-btn{padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;white-space:nowrap;}
+.session-btn:hover{color:var(--text);border-color:var(--muted);}
+.session-btn.snew{color:var(--ar);border-color:rgba(0,212,170,.3);}
+.session-btn.snew:hover{background:rgba(0,212,170,.08);}
+/* ── FILTER BAR ── */
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap;}
+.fi{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-family:var(--mono);font-size:11px;outline:none;}
+.fi:focus{border-color:var(--muted);}
+.fi::placeholder{color:var(--muted);}
+.fb{padding:5px 12px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;}
+.fb:hover,.fb.on{border-color:var(--text);color:var(--text);}
+/* ── CASH CARDS ── */
+.cash-strip{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.cash-card{flex:1;min-width:220px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:14px 18px;position:relative;overflow:hidden;}
+.cash-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+.cash-card.cc-us::before{background:var(--us);}
+.cash-card.cc-ars::before{background:var(--ar);}
+.cash-card.cc-ar-usd::before{background:var(--usd);}
+.cash-card-label{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;}
+.cash-card-amount{font-family:var(--mono);font-size:22px;font-weight:600;letter-spacing:-.02em;margin-bottom:10px;white-space:nowrap;}
+.cash-card-amount.cc-us{color:var(--us);}
+.cash-card-amount.cc-ars{color:var(--ar);}
+.cash-card-amount.cc-ar-usd{color:var(--usd);}
+.cash-card-amount.negative{color:var(--red);}
+.cash-log{border-top:1px solid var(--border);padding-top:8px;margin-top:2px;}
+.cash-log-title{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px;}
+.cash-log-row{display:flex;justify-content:space-between;align-items:baseline;padding:2px 0;font-family:var(--mono);font-size:10px;border-bottom:1px solid rgba(42,48,64,.3);}
+.cash-log-row:last-child{border-bottom:none;}
+.cash-log-left{display:flex;gap:6px;align-items:baseline;overflow:hidden;}
+.cash-log-date{color:var(--muted);font-size:9px;white-space:nowrap;flex-shrink:0;}
+.cash-log-desc{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;}
+.cash-log-amt{white-space:nowrap;flex-shrink:0;padding-left:8px;}
+.cash-log-amt.pos{color:var(--green);}
+.cash-log-amt.neg{color:var(--red);}
 
-**Visibilidad por fecha:** una caución es visible si `fechaApertura <= _portfolioDate && (fechaCierre === null || fechaCierre > _portfolioDate)`.
+/* ── PORTFOLIO SUMMARY CARDS ── */
+.pf-cards{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+.pf-card{flex:1;min-width:160px;max-width:240px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:12px 16px;position:relative;overflow:hidden;}
+.pf-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.pf-card.pc-cash-ars::before{background:var(--ar);}
+.pf-card.pc-cash-usd::before{background:var(--usd);}
+.pf-card.pc-cash-total::before{background:var(--green);}
+.pf-card.pc-tenencias::before{background:var(--us);}
+.pf-card.pc-costo::before{background:var(--purple);}
+.pf-card.pc-total::before{background:var(--text);}
+.pf-card.pc-pl::before{background:var(--green);}
+.pf-card-label{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:5px;}
+.pf-card-main{font-family:var(--mono);font-size:18px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;margin-bottom:3px;}
+.pf-card-sub{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;}
+.pf-card-placeholder{font-family:var(--mono);font-size:13px;color:var(--muted);}
 
-**Rendering:** cada caución activa aparece como fila con:
-- Costo Total = Valor Tenencia = `monto` en ARS (modo `ars`) o `monto / FX` (modo `usd`)
-- Cantidad, P. Prom., Precio Actual, Gan./Pérd. = `—`
-
-**Impacto en acumuladores:** `sumCostoTotal` y `sumValorTenencia` incluyen el monto de cada caución activa → las tarjetas (Costo+Caja, Portfolio Total) se actualizan automáticamente.
-
-**CRÍTICO — cauciones en dólares:** se manejan por separado vía `buildUsdCaucionMovs()` y `isCashSkip()`. `buildCauciones()` solo procesa ARS.
-
-### Avg sin comisiones — fuente: `_snap` del ledger
-- **AR modo ARS:** `snap.avgAR_ars`
-- **AR modo USD:** `snap.avgAR_usd`
-- **EEUU:** `snap.EEUU.avgNoC`
-
-### Precio actual y P&L (EEUU)
-- Usa `getPriceForDate(ticker, _portfolioDate, avgRef)`
-- `estimated: true` solo cuando no hay **ningún** precio histórico para ese ticker en `_pricesHistory`
-- Si hay precio anterior a la fecha (ej: último EOD disponible), se usa y `estimated: false`
-- Gan./Pérd. solo se calcula cuando `!isEstimated`
-
-### Cash histórico — CRÍTICO (v14)
-```javascript
-// Fuente canónica: getCashAtDate(fecha) — lee de _cashDaily
-const historicCash = getCashAtDate(fecha);
-```
-**NUNCA reconstruir `buildCash(txnsUpTo, ...)` inline en `renderPortfolioTable` para obtener el cash histórico.** Usar siempre `getCashAtDate()`. Ver sección "Fuentes canónicas" más abajo.
-
-### Total Argentina (footer):
-- Calculado por `getARValueAtDate(fecha, precomputed)` — **fuente canónica**
-- **Todo ARS:** `totalUSD_ar × FX`
-- **Todo USD:** `totalUSD_ar` directo
-- FX: `getFXForDate(fecha)` — **nunca `getCurrentFX()`**
-
-### Total EEUU (footer):
-- Calculado por `getUSValueAtDate(fecha, precomputed)` — **fuente canónica**
-
-### Re-render triggers
-`renderPortfolioTable()` se llama al final de:
-- `fetchLatestPrices()` — siempre
-- `fetchFXHistory()` — si `_historicalTxns` cargado
-- `fetchPricesHistory()` — si `_historicalTxns` cargado
-- `rebuildBlendedAvgs()` — siempre
-
----
-
-## ★★★ FUENTES CANÓNICAS — CASH Y VALOR DE PORTFOLIO ★★★
-
-Esta es la sección más importante del documento. Toda discrepancia entre tabs en el pasado se originó en calcular cash o valor de portfolio en múltiples lugares con lógica ligeramente diferente. Está **terminantemente prohibido** calcular cualquiera de estos valores fuera de las funciones canónicas.
-
-### Las tres funciones canónicas
-
-```javascript
-getCashAtDate(fecha)
-  → { 'Argentina (ARS)': n, 'Argentina (USD)': n, 'EEUU (USD)': n }
-
-getARValueAtDate(fecha, precomputedData?)
-  → number  // valor total Argentina en USD
-
-getUSValueAtDate(fecha, precomputedData?)
-  → number  // valor total EEUU en USD
-```
-
-### Qué calcula cada una
-
-**`getCashAtDate(fecha)`**
-- Lee de `_cashDaily` (construido UNA SOLA VEZ en `processAndRefresh`)
-- Busca el último registro con `fecha <= fecha pedida` (array ordenado desc → iterar desde el inicio)
-- Es exactamente el mismo dato que muestra el tab Saldo Cash
-- **Si no hay movimiento en esa fecha exacta, usa el registro anterior** — correcto porque el cash no cambia sin movimiento
-
-**`getARValueAtDate(fecha, precomputedData?)`**
-- Tenencias: `snap.avgAR_usd × balAR` para cada posición AR abierta a esa fecha (via `getPortfolioStateAtDate`)
-- Cash: `getCashAtDate(fecha)` — USD directo + ARS / FX
-- Cauciones ARS activas a esa fecha: `monto / FX`
-- FX: `getFXForDate(fecha)` — siempre histórico, nunca `getCurrentFX()`
-- `precomputedData`: objeto opcional `{ balances, cauciones }` para evitar reconstruir en loops
-
-**`getUSValueAtDate(fecha, precomputedData?)`**
-- Tenencias: `getPriceForDate(ticker, fecha, avgNoC) × balEEUU` para cada posición EEUU abierta
-- Cash: `getCashAtDate(fecha)` — solo `EEUU (USD)`
-- `precomputedData`: objeto opcional `{ balances }` para evitar reconstruir en loops
-
-### Quién consume estas funciones
-
-| Consumidor | Función usada |
-|---|---|
-| `renderPortfolioTable()` footer AR | `getARValueAtDate(fecha, precomputed)` |
-| `renderPortfolioTable()` footer EEUU | `getUSValueAtDate(fecha, precomputed)` |
-| `renderPortfolioTable()` tarjetas | `getCashAtDate(fecha)` → pasa como `historicCash` |
-| `recalcSnapshots()` loop por fecha | `getARValueAtDate(date, precomputed)` + `getUSValueAtDate(date, precomputed)` |
-| Tab Saldo Cash | `_cashDaily` directamente (es la misma fuente que `getCashAtDate`) |
-
-### Regla de performance en loops
-
-`recalcSnapshots()` itera ~300-400 fechas. Para evitar reconstruir cash N veces, pre-computa `getCashAtDate(date)` por fecha y lo pasa como `precomputed.balances`. Las cauciones también se pre-computan una sola vez antes del loop.
-
-```javascript
-// CORRECTO — en recalcSnapshots
-const cauciones = buildCauciones(_historicalTxns);  // una vez, fuera del loop
-for(const date of dates) {
-  const precomputed = { balances: getCashAtDate(date), cauciones };
-  const ar_usd = getARValueAtDate(date, precomputed);
-  const us_usd = getUSValueAtDate(date, precomputed);
+/* ── PORTFOLIO GRID ── */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;cursor:pointer;transition:border-color .15s;}
+.card:hover{border-color:var(--muted);}
+.card.open-us{border-left:3px solid var(--us);}
+.card.open-ar{border-left:3px solid var(--ar);}
+.card.expanded{border-color:var(--muted);}
+.ch{padding:10px 14px;display:flex;justify-content:space-between;align-items:flex-start;}
+.tn{font-family:var(--mono);font-size:13px;font-weight:600;}
+.ts{font-size:10px;color:var(--muted);margin-top:2px;font-family:var(--mono);}
+.badge{padding:2px 7px;border-radius:3px;font-family:var(--mono);font-size:10px;font-weight:600;white-space:nowrap;}
+.bopen{background:rgba(34,197,94,.15);color:var(--green);}
+.bclosed{background:rgba(107,122,153,.12);color:var(--muted);}
+.cs{padding:0 14px 10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+.si label{display:block;font-size:9px;color:var(--muted);margin-bottom:1px;text-transform:uppercase;letter-spacing:.04em;}
+.si value{font-family:var(--mono);font-size:11px;}
+/* expanded txn */
+.txn-wrap{display:none;border-top:1px solid var(--border);}
+.txn-wrap.show{display:block;}
+.txn-scroll{max-height:240px;overflow-y:auto;}
+table{width:100%;border-collapse:collapse;}
+thead th{position:sticky;top:0;background:var(--s2);padding:5px 8px;text-align:left;font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);white-space:nowrap;}
+tbody td{padding:4px 8px;font-family:var(--mono);font-size:10px;border-bottom:1px solid rgba(42,48,64,.4);}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover td{background:var(--s2);}
+.num{text-align:right;}
+.oc{color:var(--green)}.ov{color:var(--red)}.od{color:var(--usd)}.oo{color:var(--muted)}
+.mp{color:var(--green)}.mn{color:var(--red)}
+.acct-tag{font-size:9px;color:var(--muted);margin-left:4px;}
+/* ── AUDIT ── */
+#panel-audit{padding:0;}
+.atb{display:flex;gap:8px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:20;}
+.atb .fi{width:240px;}
+.a-count{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;}
+.audit-wrap{overflow:auto;height:calc(100vh - 128px);}
+#audit-tbl{min-width:1150px;}
+#audit-tbl thead th{cursor:pointer;user-select:none;background:var(--surface);padding:7px 10px;font-size:10px;}
+#audit-tbl thead th:hover{color:var(--text);}
+.sa::after{content:' ▲';font-size:8px;}.sd::after{content:' ▼';font-size:8px;}
+#audit-tbl tbody td{padding:5px 10px;font-size:11px;}
+.gh td{background:var(--s2)!important;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;padding:6px 14px;border-bottom:1px solid var(--border);cursor:pointer;}
+.gh td span.arrow{margin-right:6px;opacity:.5;}
+/* pills */
+.op-p{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:500;white-space:nowrap;}
+.op-c{background:rgba(34,197,94,.15);color:var(--green);}
+.op-v{background:rgba(239,68,68,.15);color:var(--red);}
+.op-d{background:rgba(245,158,11,.15);color:var(--usd);}
+.op-o{background:rgba(107,122,153,.12);color:var(--muted);}
+.ac-p{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:500;}
+.ac-us{background:rgba(61,127,255,.15);color:var(--us);}
+.ac-ar{background:rgba(0,212,170,.12);color:var(--ar);}
+.ac-ud{background:rgba(245,158,11,.12);color:var(--usd);}
+.no-r{padding:32px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px;}
+::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+/* ── MULTI-SELECT DROPDOWN ── */
+.ms-wrap{position:relative;display:inline-block;}
+.ms-btn{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:6px;transition:border-color .15s;}
+.ms-btn:hover{border-color:var(--muted);}
+.ms-btn.ms-active{border-color:var(--text);color:var(--text);}
+.ms-btn .ms-badge{background:var(--us);color:#fff;border-radius:3px;padding:0 5px;font-size:9px;font-weight:700;line-height:16px;}
+.ms-panel{position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,.5);min-width:190px;max-height:260px;overflow-y:auto;display:none;padding:4px 0;}
+.ms-panel.open{display:block;}
+.ms-item{display:flex;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--muted);transition:background .1s;}
+.ms-item:hover{background:var(--s2);color:var(--text);}
+.ms-item input[type=checkbox]{accent-color:var(--us);width:13px;height:13px;cursor:pointer;flex-shrink:0;}
+.ms-item.ms-checked{color:var(--text);}
+.ms-divider{height:1px;background:var(--border);margin:4px 0;}
+/* ── PORTFOLIO TAB ── */
+.tab.act-portfolio{color:var(--green);border-bottom-color:var(--green);}
+/* portfolio table */
+#portfolio-tbl thead th{
+  position:sticky;top:0;background:var(--surface);
+  padding:8px 12px;font-family:var(--mono);font-size:10px;font-weight:600;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+  border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap;
 }
-```
-
-### Lo que está PROHIBIDO
-
-```javascript
-// ❌ NUNCA HACER ESTO — calcular cash inline fuera de getCashAtDate
-const txnsUpTo = _historicalTxns.filter(t => t.fecha <= fecha);
-const { balances } = buildCash(txnsUpTo, usdCaucionMovs);
-
-// ❌ NUNCA HACER ESTO — calcular valor AR inline fuera de getARValueAtDate
-let ar_usd = 0;
-for(const [, inst] of Object.entries(_ledger)) { ... snap.avgAR_usd × snap.balAR ... }
-
-// ❌ NUNCA HACER ESTO — calcular valor EEUU inline fuera de getUSValueAtDate
-let us_usd = balances['EEUU (USD)'];
-for(const d of usCards) { us_usd += getPriceForDate(...) × d.net; }
-```
-
-### Cuándo llamar a `buildCash` directamente
-
-`buildCash()` y `buildCashDaily()` solo se llaman en dos lugares para **construir** `_cashDaily`:
-- `processAndRefresh()` — al importar o cargar datos
-- `saveNRAOverride()` — al cambiar un override (reconstruye `_cashDaily` con los nuevos valores)
-
-En cualquier otro lugar, **usar `getCashAtDate()`**.
-
-### Qué hacer después de cambiar la fórmula de valuación
-
-Si se modifica `getARValueAtDate`, `getUSValueAtDate` o `getCashAtDate`:
-1. Deployar el cambio
-2. El tab Portfolio refleja el cambio inmediatamente (tiempo real)
-3. El tab Evolución muestra datos **stale** hasta que el usuario presione **⟳ Recalcular**
-4. Recordar avisar al usuario que debe recalcular
-
----
-
-## Precios históricos — `fetchPricesHistory()` ★ CORREGIDO v11
-
-### Paginación correcta
-```javascript
-// CORRECTO — solo Range header, sin limit en URL
-const r = await fetch(
-  `${SUPABASE_URL}/rest/v1/prices?select=ticker,date,close&order=ticker.asc,date.asc`,
-  { headers: { ..., 'Range-Unit': 'items', 'Range': `${from}-${from+999}` } }
-);
-```
-**CRÍTICO:** No usar `limit` en la URL junto con `Range` header — da error 416 y corta el resultado (solo traía EWZ). Mismo patrón que `fetchFXHistory` y `fetchSnapshots`.
-
-### Estructura
-```javascript
-_pricesHistory = { 'NU': { '2026-04-02': 14.15, ... }, 'EWZ': {...}, ... }
-```
-11 tickers activos: `EWZ, IREN, IVV, MELI, MSTR, NU, SHV, SPY, STRC, VGSH, VIST`
-
----
-
-## Instrument Ledger — `buildLedger()` ★ FUENTE DE VERDAD
-
-### Concepto
-`buildLedger(rawTxns, fxHistory)` es la **fuente de verdad para balances y precios promedio**. Opera sobre `rawTxns` crudos (pre-`deduplicateMEP`, pre-`canonicalizeTickers`). Es la fuente que usan tanto el tab Especies como el tab Portfolio.
-
-### Global
-```javascript
-let _ledger = {};  // { ticker_canonicalizado: LedgerInstrument }
-```
-
-### Estructura de `_ledger[ticker]`
-```javascript
-{
-  ticker: 'AY24',
-  txns: [...],        // todas las txns ordenadas cronológicamente, con _snap por fila
-  slots: {
-    AR_ARS: { bal, costARS, costUSD, costWithC, costARS_withC, costUSD_withC },
-    AR_USD: { bal, costUSD, costWithC },
-    EEUU:   { bal, costUSD, costWithC },
-  },
-  totals: { balAR, balEEUU, balTotal, avgAR_usd, avgAR_ars, avgEEUU_usd },
-  meta: { isClosed, isStale, isBond, firstDate, lastDate, opCount },
+#portfolio-tbl thead th:hover{color:var(--text);}
+#portfolio-tbl tbody td{
+  padding:9px 12px;font-family:var(--mono);font-size:12px;
+  border-bottom:1px solid rgba(42,48,64,.4);vertical-align:middle;
 }
-```
-
-### Nuevos campos en slot AR_ARS (v7)
-```javascript
-costARS_withC   // costo acumulado en ARS con comisiones
-costUSD_withC   // costo acumulado en USD con comisiones (usando FX al momento de cada compra)
-```
-Ambos se acumulan en BUY, se reducen proporcionalmente en SELL (todos los pasos), XFER_IN y Pago de Amortización — igual que `costARS` y `costUSD`.
-
-### `snapTotals()` — campos del _snap (v7 actualizado)
-Cada txn del ledger guarda `_snap` con el estado completo después de esa operación:
-```javascript
-{
-  AR_ARS: { bal, avgNoC, avgWithC },      // avgWithC = costARS_withC / bal
-  AR_USD: { bal, avgNoC, avgWithC },      // avgWithC = costWithC / bal (en USD)
-  EEUU:   { bal, avgNoC, avgWithC },      // avgWithC = costWithC / bal (en USD)
-  balAR, balEEUU, balTotal,
-  avgAR_usd,     // blended AR sin comis, en USD (FX histórico por compra)
-  avgAR_ars,     // blended AR sin comis, en ARS
-  avgAR_usd_wc,  // blended AR con comis, en USD (FX histórico por compra)
-  avgAR_ars_wc,  // blended AR con comis, en ARS
-  avgEEUU_usd,   // EEUU sin comis, en USD
-  avgEEUU_usd_wc,// EEUU con comis, en USD
-  fx,            // FX a esa fecha
+#portfolio-tbl tbody tr:hover td{background:var(--s2);}
+#portfolio-tbl tbody tr.row-cash td{background:rgba(245,158,11,.04);border-top:1px solid rgba(245,158,11,.18);}
+#portfolio-tbl tbody tr.row-cash td:first-child{color:var(--usd);font-weight:600;}
+#portfolio-tbl tfoot td{
+  padding:10px 12px;font-family:var(--mono);font-size:11px;font-weight:600;
+  border-top:2px solid var(--border);background:var(--s2);
 }
-```
-
-### Regla `movesTitle(ticker_raw, cuenta)` — qué fila mueve títulos
-```javascript
-// Sufijo C (ej: AY24C) → solo mueve títulos en cuenta EEUU (USD)
-// Sufijo D (ej: AY24D) → solo mueve títulos en cuenta Argentina (USD)
-// Sin sufijo            → siempre mueve títulos
-```
-Las filas de comisión (misma operación, cuenta Argentina ARS) devuelven `_movesTitle: false` y no tocan balances.
-
-### Regla de slot
-```
-cuenta EEUU (USD)      → slot 'EEUU'
-cuenta Argentina (ARS) → slot 'AR_ARS'
-cuenta Argentina (USD) → slot 'AR_USD'
-```
-
-### Lógica de ventas — CRÍTICO
-**Venta desde AR (slots AR_ARS o AR_USD):**
-1. Consumir del slot propio primero
-2. Si no alcanza, consumir del otro slot AR
-3. Si todavía no alcanza, transferencia implícita EEUU → AR
-
-**Venta con sufijo C (ej: MELIC, AY24C) — cuenta EEUU:**
-- El broker registra la cuenta como EEUU solo para indicar dónde se acredita el cash.
-- Los títulos **salen del pool AR** (AR_ARS → AR_USD), igual que una venta desde AR.
-- `s.EEUU` **no se toca** — nunca hay transferencia implícita AR→EEUU en ventas.
-- `_xferAR` y `_xferEEUU` quedan en 0 para estas operaciones.
-- La única forma de que títulos crucen físicamente entre cuentas es vía `Transferencia de Titulos IN -`, que el broker registra explícitamente.
-
-**Venta directa desde EEUU (sin sufijo C, ej: GLOB vendido en NYSE):**
-- Venta normal desde slot EEUU.
-
-**Reducción proporcional en ventas — AR_ARS:** se reducen `costARS`, `costUSD`, `costWithC`, `costARS_withC`, `costUSD_withC` todos con el mismo ratio. Reset a 0 si balance llega a 0.
-
-### Consulta de balance a fecha dada
-```javascript
-let lastSnap = null;
-for(const t of inst.txns) {
-  if(t.fecha > fecha) break;
-  if(t._snap) lastSnap = t._snap;
+#portfolio-tbl tfoot tr.total-ars td:first-child{color:var(--ar);}
+#portfolio-tbl tfoot tr.total-usd td:first-child{color:var(--usd);}
+/* ── NRA TAB ── */
+.tab.act-nra{color:var(--usd);border-bottom-color:var(--usd);}
+/* ── EVOLUCIÓN TAB ── */
+.tab.act-evol{color:var(--purple);border-bottom-color:var(--purple);}
+/* ── ESPECIES TAB ── */
+.tab.act-especies{color:var(--us);border-bottom-color:var(--us);}
+.tab.act-fx{color:var(--ar);border-bottom-color:var(--ar);}
+#esp-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 8px;font-family:var(--mono);font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
+#esp-tbl tbody td{padding:5px 8px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
+#esp-tbl tbody tr:hover td{background:var(--s2);}
+#esp-tbl tfoot td{padding:7px 8px;font-family:var(--mono);font-size:11px;font-weight:600;border-top:2px solid var(--border);background:var(--s2);}
+#esp-tbl th.esp-group-ar{color:var(--ar);border-bottom:2px solid var(--ar)!important;}
+#esp-tbl th.esp-group-us{color:var(--us);border-bottom:2px solid var(--us)!important;}
+#esp-tbl th.esp-group-shared{border-bottom:1px solid var(--border)!important;}
+#esp-tbl td.esp-divider{border-left:1px solid var(--border);padding-left:12px!important;}
+#esp-tbl th.esp-divider{border-left:1px solid var(--border);padding-left:12px!important;}
+#esp-tbl td.esp-divider-strong{border-left:2px solid var(--muted);padding-left:12px!important;}
+#esp-tbl th.esp-divider-strong{border-left:2px solid var(--muted);padding-left:12px!important;}
+#esp-tbl td.esp-divider-soft{border-left:1px solid rgba(107,122,153,.35);padding-left:10px!important;}
+#esp-tbl th.esp-divider-soft{border-left:1px solid rgba(107,122,153,.35);padding-left:10px!important;}
+.esp-num{text-align:right;}
+.esp-pos{color:var(--green);}
+.esp-neg{color:var(--red);}
+.esp-muted{color:var(--muted);}
+.esp-ars{color:var(--ar);}
+.esp-usd{color:var(--usd);}
+.esp-us{color:var(--us);}
+.evol-rb{padding:4px 10px;font-family:var(--mono);font-size:10px;font-weight:600;border:none;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;letter-spacing:.04em;}
+.evol-rb:hover{color:var(--text);}
+.evol-rb.act{background:var(--border);color:var(--text);}
+.evol-series{padding:4px 12px;border-radius:4px;font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;border:1px solid;background:transparent;transition:all .15s;opacity:.4;}
+.evol-series.act{opacity:1;}
+#nra-tbl thead th{position:sticky;top:0;background:var(--surface);padding:7px 10px;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);}
+#nra-tbl tbody td{padding:6px 10px;font-family:var(--mono);font-size:11px;border-bottom:1px solid rgba(42,48,64,.4);}
+#nra-tbl tbody tr:hover td{background:var(--s2);}
+#nra-tbl tfoot td{padding:8px 10px;font-family:var(--mono);font-size:11px;font-weight:600;border-top:2px solid var(--border);background:var(--s2);}
+.nra-toggle{padding:3px 10px;border-radius:3px;font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;}
+.nra-toggle.aplica{background:rgba(245,158,11,.12);color:var(--usd);border-color:rgba(245,158,11,.4);}
+.nra-toggle.aplica:hover{background:rgba(245,158,11,.25);}
+.nra-toggle.excluida{background:rgba(107,122,153,.12);color:var(--muted);border-color:var(--border);}
+.nra-toggle.excluida:hover{background:rgba(107,122,153,.2);}
+/* NRA override pill */
+.nra-pill{padding:3px 10px;border-radius:3px;font-family:var(--mono);font-size:10px;font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;white-space:nowrap;}
+.nra-pill.auto{background:rgba(245,158,11,.12);color:var(--usd);border-color:rgba(245,158,11,.4);}
+.nra-pill.auto:hover{background:rgba(245,158,11,.25);}
+.nra-pill.zeroed{background:rgba(107,122,153,.12);color:var(--muted);border-color:var(--border);}
+.nra-pill.zeroed:hover{background:rgba(107,122,153,.2);}
+.nra-pill.custom{background:rgba(239,68,68,.12);color:var(--red);border-color:rgba(239,68,68,.4);}
+.nra-pill.custom:hover{background:rgba(239,68,68,.22);}
+/* NRA popover */
+#nra-popover{
+  position:fixed;z-index:500;
+  background:var(--surface);border:1px solid var(--border);border-radius:6px;
+  padding:14px 16px;min-width:260px;box-shadow:0 8px 24px rgba(0,0,0,.5);
+  display:none;
 }
-// lastSnap contiene estado completo a esa fecha
-```
+#nra-popover.show{display:block;}
+#nra-popover-title{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;}
+#nra-popover-auto{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:8px;}
+#nra-popover-input{
+  width:100%;background:var(--s2);border:1px solid var(--border);color:var(--text);
+  padding:6px 10px;border-radius:4px;font-family:var(--mono);font-size:12px;outline:none;
+}
+#nra-popover-input:focus{border-color:var(--usd);}
+#nra-popover-hint{font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:5px;line-height:1.5;}
+.nra-popover-btns{display:flex;gap:6px;margin-top:10px;}
+.nra-popover-btns button{
+  flex:1;padding:5px 0;border-radius:4px;font-family:var(--mono);font-size:11px;
+  font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;
+}
+#nra-pop-save{background:rgba(245,158,11,.15);color:var(--usd);border-color:rgba(245,158,11,.4);}
+#nra-pop-save:hover{background:rgba(245,158,11,.3);}
+#nra-pop-clear{background:var(--s2);color:var(--muted);border-color:var(--border);}
+#nra-pop-clear:hover{color:var(--text);border-color:var(--muted);}
+#nra-pop-cancel{background:var(--s2);color:var(--muted);border-color:var(--border);}
+#nra-pop-cancel:hover{color:var(--text);}
+</style>
+</head>
+<body>
+<header>
+  <h1>PORTFOLIO TRACKER — MOVIMIENTOS HISTÓRICOS</h1>
+  <span id="header-status" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+  <div id="session-selector">
+    <select id="session-select" onchange="switchSession(this.value)" title="Sesión activa"></select>
+    <button class="session-btn snew" onclick="newSessionPrompt()" title="Nueva sesión">＋ Nueva</button>
+    <button class="session-btn" onclick="renameSessionPrompt()" title="Renombrar sesión">✎</button>
+    <button class="session-btn" onclick="showClearConfirm()" title="Borrar sesión activa" style="color:var(--red);border-color:rgba(239,68,68,.3);">🗑</button>
+  </div>
+</header>
+<div class="tabs">
+  <div class="tab" onclick="switchTab(this,'portfolio')">📊 Portfolio</div>
+  <div class="tab" onclick="switchTab(this,'audit')">📋 Transacciones</div>
+  <div class="tab" onclick="switchTab(this,'cash')">💵 Saldo Cash</div>
+  <div class="tab" onclick="switchTab(this,'nra')">🏛 Ret. NRA</div>
+  <div class="tab" onclick="switchTab(this,'evol')">📈 Evolución</div>
+  <div class="tab" onclick="switchTab(this,'especies')">🔍 Especies</div>
+  <div class="tab" onclick="switchTab(this,'fx')">💱 Tipo de Cambio</div>
+  <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+    <button class="tab" onclick="showModal(true)" style="margin-left:0;border:1px solid var(--border);border-radius:4px;padding:6px 14px;cursor:pointer;font-size:11px;background:var(--s2);color:var(--ar);letter-spacing:.04em;">↑ Importar .xls</button>
+  </div>
+</div>
 
-### Orden de construcción en `processAndRefresh`
-**CRÍTICO:** `_ledger` se construye **antes** de `buildPortfolio`.
-```javascript
-_ledger = buildLedger(rawMerged, _fxHistory);  // PRIMERO
-const { usCards, arCards, ... } = buildPortfolio(clean, _fxHistory);  // DESPUÉS
-```
+<div id="panel-portfolio" class="panel">
+  <!-- Toggle AR / EEUU -->
+  <div style="display:flex;align-items:center;gap:10px;padding:14px 0 10px;flex-wrap:wrap;">
+    <div id="portfolio-toggle" style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:5px;overflow:hidden;">
+      <button id="ptog-ar"  onclick="switchPortfolio('ar')"   style="padding:6px 20px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;border:none;cursor:pointer;transition:all .15s;background:var(--ar);color:var(--bg);">🇦🇷 Argentina</button>
+      <button id="ptog-us"  onclick="switchPortfolio('us')"   style="padding:6px 20px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;border:none;cursor:pointer;transition:all .15s;background:transparent;color:var(--muted);">🇺🇸 EEUU (USD)</button>
+    </div>
+    <input class="fi" id="portfolio-search" style="width:180px" type="text" placeholder="Buscar ticker..." oninput="filterPortfolioTable(this.value)">
+    <button class="fb" onclick="shiftPortfolioDate(-1)" style="font-size:12px;padding:5px 9px;">‹</button>
+    <input class="fi" id="portfolio-date" type="text" style="width:100px;text-align:center;" placeholder="dd/mm/yyyy" oninput="onPortfolioDateChange()" title="Ver estado del portfolio en esta fecha">
+    <button class="fb" onclick="shiftPortfolioDate(1)" style="font-size:12px;padding:5px 9px;">›</button>
+    <button class="fb" id="portfolio-date-today" onclick="setPortfolioDateToday()" style="font-size:10px;">Hoy</button>
+    <button class="fb" onclick="fetchLatestPrices()" style="color:var(--green);border-color:var(--green);">🔄 Actualizar precios</button>
+    <span id="price-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+    <span id="options-disclaimer-inline" style="display:none;padding:4px 10px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.25);border-radius:4px;font-family:var(--mono);font-size:10px;color:rgba(251,191,36,.85);"></span>
+    <!-- AR total mode toggle (only shown for Argentina) -->
+    <div id="ar-mode-wrap" style="display:none;margin-left:auto;display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
+        <button class="evol-rb" id="armode-ars" onclick="setARMode('ars')">Todo ARS</button>
+        <button class="evol-rb act" id="armode-usd" onclick="setARMode('usd')">Todo USD</button>
+      </div>
+      <input class="fi" id="fx-input" type="number" step="0.01" placeholder="FX hoy (ARS/USD)" style="width:160px;" oninput="renderPortfolioTable()">
+      <button class="fb" onclick="saveFXRate()" style="color:var(--usd);border-color:var(--usd);">💾 Guardar FX</button>
+      <span id="fx-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+    </div>
+  </div>
 
-### Rebuild en `fetchFXHistory`
-Cuando llega el FX history, se reconstruye el ledger y el portfolio completo, y se llama `renderPortfolioTable()`.
+  <!-- Portfolio summary cards -->
+  <div id="portfolio-cards" class="pf-cards"></div>
 
----
+  <!-- Portfolio table -->
+  <div style="overflow-x:auto;">
+    <table id="portfolio-tbl" style="width:100%;border-collapse:collapse;min-width:700px;">
+      <thead>
+        <tr>
+          <th onclick="pSort('ticker')"      style="text-align:left;"  id="pth-ticker">Instrumento</th>
+          <th onclick="pSort('net')"         style="text-align:right;" id="pth-net">Cantidad</th>
+          <th onclick="pSort('avg')"         style="text-align:right;" id="pth-avg">P. Prom.</th>
+          <th onclick="pSort('costoTotal')"  style="text-align:right;" id="pth-costoTotal">Costo Total</th>
+          <th                                style="text-align:right;">Precio Actual</th>
+          <th onclick="pSort('valorTenencia')" style="text-align:right;" id="pth-valorTenencia">Valor Tenencia</th>
+          <th                                style="text-align:right;">Gan./Pérd. $</th>
+          <th                                style="text-align:right;">Gan./Pérd. %</th>
+        </tr>
+      </thead>
+      <tbody id="portfolio-tbody"></tbody>
+      <tfoot id="portfolio-tfoot"></tfoot>
+    </table>
+  </div>
+</div>
 
-## Tab 🔍 Especies — detalle de arquitectura
+<div id="panel-audit" class="panel">
+  <div class="atb">
+    <input class="fi" type="text" placeholder="🔍  Ticker, operación, cuenta..." oninput="aFilter()">
+    <!-- Cuenta multi-select -->
+    <div class="ms-wrap" id="ms-wrap-cuenta">
+      <button class="ms-btn" id="ms-btn-cuenta" onclick="msDrillToggle('cuenta')">
+        Cuenta <span class="ms-badge" id="ms-badge-cuenta" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-cuenta">
+        <label class="ms-item"><input type="checkbox" value="EEUU (USD)"       onchange="msChange('cuenta')"> EEUU (USD)</label>
+        <label class="ms-item"><input type="checkbox" value="Argentina (ARS)"  onchange="msChange('cuenta')"> Argentina (ARS)</label>
+        <label class="ms-item"><input type="checkbox" value="Argentina (USD)"  onchange="msChange('cuenta')"> Argentina (USD)</label>
+      </div>
+    </div>
+    <!-- Operación multi-select -->
+    <div class="ms-wrap" id="ms-wrap-op">
+      <button class="ms-btn" id="ms-btn-op" onclick="msDrillToggle('op')">
+        Operación <span class="ms-badge" id="ms-badge-op" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-op">
+        <label class="ms-item"><input type="checkbox" value="Compra"               onchange="msChange('op')"> Compra</label>
+        <label class="ms-item"><input type="checkbox" value="Venta"                onchange="msChange('op')"> Venta</label>
+        <label class="ms-item"><input type="checkbox" value="Pago de Dividendos"   onchange="msChange('op')"> Pago de Dividendos</label>
+        <label class="ms-item"><input type="checkbox" value="Pago de Renta"        onchange="msChange('op')"> Pago de Renta</label>
+        <label class="ms-item"><input type="checkbox" value="Pago de Amortización" onchange="msChange('op')"> Pago de Amortización</label>
+        <label class="ms-item"><input type="checkbox" value="Suscripción FCI"      onchange="msChange('op')"> Suscripción FCI</label>
+        <label class="ms-item"><input type="checkbox" value="Rescate FCI"          onchange="msChange('op')"> Rescate FCI</label>
+        <label class="ms-item"><input type="checkbox" value="Caución"              onchange="msChange('op')"> Caución</label>
+        <label class="ms-item"><input type="checkbox" value="Suscripción Primaria" onchange="msChange('op')"> Suscripción Primaria</label>
+        <div class="ms-divider"></div>
+        <label class="ms-item"><input type="checkbox" value="__depositos__"        onchange="msChange('op')"> Depósito de Fondos</label>
+        <label class="ms-item"><input type="checkbox" value="__extracciones__"     onchange="msChange('op')"> Extracción de Fondos</label>
+        <div class="ms-divider"></div>
+        <label class="ms-item"><input type="checkbox" value="__otras__"            onchange="msChange('op')"> Otras</label>
+      </div>
+    </div>
+    <!-- Año multi-select -->
+    <div class="ms-wrap" id="ms-wrap-year">
+      <button class="ms-btn" id="ms-btn-year" onclick="msDrillToggle('year')">
+        Año <span class="ms-badge" id="ms-badge-year" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-year">
+        <!-- poblado dinámicamente por rebuildYearDropdown() -->
+      </div>
+    </div>
+    <!-- Mes multi-select -->
+    <div class="ms-wrap" id="ms-wrap-month">
+      <button class="ms-btn" id="ms-btn-month" onclick="msDrillToggle('month')">
+        Mes <span class="ms-badge" id="ms-badge-month" style="display:none"></span>
+      </button>
+      <div class="ms-panel" id="ms-panel-month">
+        <label class="ms-item"><input type="checkbox" value="01" onchange="msChange('month')"> Enero</label>
+        <label class="ms-item"><input type="checkbox" value="02" onchange="msChange('month')"> Febrero</label>
+        <label class="ms-item"><input type="checkbox" value="03" onchange="msChange('month')"> Marzo</label>
+        <label class="ms-item"><input type="checkbox" value="04" onchange="msChange('month')"> Abril</label>
+        <label class="ms-item"><input type="checkbox" value="05" onchange="msChange('month')"> Mayo</label>
+        <label class="ms-item"><input type="checkbox" value="06" onchange="msChange('month')"> Junio</label>
+        <label class="ms-item"><input type="checkbox" value="07" onchange="msChange('month')"> Julio</label>
+        <label class="ms-item"><input type="checkbox" value="08" onchange="msChange('month')"> Agosto</label>
+        <label class="ms-item"><input type="checkbox" value="09" onchange="msChange('month')"> Septiembre</label>
+        <label class="ms-item"><input type="checkbox" value="10" onchange="msChange('month')"> Octubre</label>
+        <label class="ms-item"><input type="checkbox" value="11" onchange="msChange('month')"> Noviembre</label>
+        <label class="ms-item"><input type="checkbox" value="12" onchange="msChange('month')"> Diciembre</label>
+      </div>
+    </div>
+    <select class="fi" id="aGroup" onchange="aRender()">
+      <option value="">Sin agrupar</option>
+      <option value="ticker">Por instrumento</option>
+      <option value="cuenta">Por cuenta</option>
+      <option value="operacion">Por tipo de operación</option>
+      <option value="year">Por año</option>
+    </select>
+    <button class="fb" onclick="aClear()">✕ Limpiar</button>
+    <button class="fb" onclick="exportAuditCSV()" style="color:var(--green);border-color:rgba(34,197,94,.3);">↓ CSV</button>
+    <span style="font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap"><span data-daterange><span data-daterange>18/02/2015 → 13/03/2026</span></span></span>
+    <span class="a-count" id="aCount"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="audit-tbl">
+      <thead><tr>
+        <th id="th-fecha" onclick="aSort('fecha')">Fecha Concert.</th>
+        <th id="th-fecha_liq" onclick="aSort('fecha_liq')">Fecha Liq.</th>
+        <th id="th-cuenta" onclick="aSort('cuenta')">Cuenta</th>
+        <th id="th-ticker" onclick="aSort('ticker')">Instrumento</th>
+        <th id="th-operacion" onclick="aSort('operacion')">Operación</th>
+        <th id="th-cantidad" onclick="aSort('cantidad')" class="num">Cantidad</th>
+        <th id="th-precio" onclick="aSort('precio')" class="num">Precio</th>
+        <th id="th-monto" onclick="aSort('monto')" class="num">Monto</th>
+        <th id="th-comision" onclick="aSort('comision')" class="num">Comisión</th>
+        <th id="th-iva" onclick="aSort('iva')" class="num">IVA</th>
+        <th id="th-otros_imp" onclick="aSort('otros_imp')" class="num">Otros Imp.</th>
+        <th id="th-nra" onclick="aSort('nra')" class="num" style="color:var(--usd)">Ret. NRA</th>
+        <th id="th-saldo_cash" onclick="aSort('saldo_cash')" class="num">Saldo cash</th>
+        <th class="num">Nro. Boleto</th>
+        <th id="th-nro_mov" onclick="aSort('nro_mov')" class="num">Nro. Mov.</th>
+      </tr></thead>
+      <tbody id="aTbody"></tbody>
+    </table>
+  </div>
+</div>
 
-### Fuente de datos: `_ledger` (no `_instruments`)
-`renderEspecies()` lee de `_ledger[ticker]`. Los balances por fila se leen de `t._snap` del ledger.
+<div id="panel-cash" class="panel" style="padding:0;">
+  <div class="atb">
+    <select class="fi" id="cYear" onchange="cFilter()"><option value="">Todos los años</option></select>
+    <select class="fi" id="cMonth" onchange="cFilter()">
+      <option value="">Todos los meses</option>
+      <option value="01">Enero</option><option value="02">Febrero</option><option value="03">Marzo</option>
+      <option value="04">Abril</option><option value="05">Mayo</option><option value="06">Junio</option>
+      <option value="07">Julio</option><option value="08">Agosto</option><option value="09">Septiembre</option>
+      <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+    </select>
+    <input class="fi" id="cDay" type="text" placeholder="Día (1-31)" style="width:100px" oninput="cFilter()">
+    <span class="a-count" id="cCount"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="cash-tbl" style="min-width:600px;">
+      <thead><tr>
+        <th onclick="cSort('fecha')" style="cursor:pointer;user-select:none;">Fecha</th>
+        <th onclick="cSort('ars')" class="num" style="cursor:pointer;user-select:none;color:var(--ar);">Argentina ARS</th>
+        <th onclick="cSort('ar_usd')" class="num" style="cursor:pointer;user-select:none;color:var(--usd);">Argentina USD</th>
+        <th onclick="cSort('us_usd')" class="num" style="cursor:pointer;user-select:none;color:var(--us);">EEUU USD</th>
+      </tr></thead>
+      <tbody id="cTbody"></tbody>
+    </table>
+  </div>
+</div>
 
-### Selectores por categoría — 5 dropdowns
-`rebuildEspeciesDropdown()` puebla 5 selectores independientes: `esp-sel-acciones`, `esp-sel-bonos`, `esp-sel-letras`, `esp-sel-fci`, `esp-sel-otros`. Elegir en uno limpia los demás (`espCatChange(cat)`). El ticker activo se obtiene con `espGetSelectedTicker()`.
+<script>
+// ══════ DATA ══════
+const AUDIT=[];
+const US=[];
+const AR=[];
+let _cashBalances = null;   // {account: balance} — set in processAndRefresh
+let _optionsExcluded = 0;   // count of excluded option contracts
+let _instruments = {};      // { ticker: buildInstrument result } — canonical source of truth
+let _ledger = {};           // { ticker: LedgerInstrument } — fuente de verdad para balances
+let _especiesRows  = [];    // last rendered rows from renderEspecies (for XLS export)
+let _especiesState = {};    // {ticker, hasAR, hasEEUU, opsLen} — export metadata
 
-**Filtro "instrumento real":** solo aparecen tickers que tienen al menos una txn con `BUY_OPS` en `_ledger[tk].txns`.
+// ══════ UTILS ══════
+const N=(n,d=2)=>n!=null&&!isNaN(n)?new Intl.NumberFormat('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d}).format(n):'—';
+const opC=op=>op==='Compra'||op==='Compra de Dólares'?'oc':op==='Venta'||op==='Venta de Dólares'?'ov':op&&op.includes('Transferencia de Titulos')?'od':['Pago de Dividendos','Pago de Renta','Pago de Amortización','Liquidación de Caución','Remuneración de Saldos Líquidos'].includes(op)?'od':'oo';
+const opP=op=>op==='Compra'||op==='Compra de Dólares'?'op-c':op==='Venta'||op==='Venta de Dólares'?'op-v':['Pago de Dividendos','Pago de Renta','Pago de Amortización','Liquidación de Caución','Remuneración de Saldos Líquidos'].includes(op)?'op-d':'op-o';
+const acP=a=>a.includes('EEUU')?'ac-us':a.includes('ARS')?'ac-ar':'ac-ud';
+// ══════ AUDIT ══════
+function rebuildYearDropdown() {
+  const yrs=[...new Set(AUDIT.map(r=>r.fecha.slice(0,4)).filter(Boolean))].sort().reverse();
+  const panel = document.getElementById('ms-panel-year');
+  if(!panel) return;
+  // Preserve current selections
+  const cur = msGetSelected('year');
+  panel.innerHTML = '';
+  yrs.forEach(y => {
+    const lbl = document.createElement('label');
+    lbl.className = 'ms-item' + (cur.has(y) ? ' ms-checked' : '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = y; cb.checked = cur.has(y);
+    cb.addEventListener('change', () => msChange('year'));
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(' ' + y));
+    panel.appendChild(lbl);
+  });
+  msUpdateBadge('year');
+}
 
-**Clasificación `espCategorizeTicker(tk)` — en orden de prioridad:**
-1. **Letras** — ticker contiene `-`
-2. **Bonos** — ticker está en `BOND_TICKERS`
-3. **FCI** — tiene txn con `Suscripción FCI` o `Rescate FCI`
-4. **Acciones** — alphanumeric puro `/^[A-Z0-9]+$/`
-5. **Otros** — fallback
+// ══════ PORTFOLIO CARDS ══════
+function txnRows(txns){
+  return txns.map(t=>{
+    const op=t.op,c=t.c||0,p=t.p||0,m=t.m||0,b=t.b||0,a=t.a||0;
+    const rawTag=t.raw&&t.raw!==t.op?`<span class="acct-tag">(${t.raw})</span>`:'';
+    return`<tr>
+      <td>${t.f}</td>
+      <td class="${opC(op)}">${op}${rawTag}</td>
+      <td class="num">${c>0?N(c,0):'—'}</td>
+      <td class="num">${p>0?N(p,p<200?4:0):'—'}</td>
+      <td class="num ${m>=0?'mp':'mn'}">${N(m,2)}</td>
+      <td class="num">${N(b,0)}</td>
+      <td class="num">${a>0?N(a,2):'—'}</td>
+      <td style="color:var(--muted);font-size:9px">${t.acct||''}</td>
+    </tr>`;
+  }).join('');
+}
 
-### Layout de la tabla — columnas dinámicas:
-Flags: `hasAR`, `hasEEUU_real`, `hasAR_ARS`, `hasAR_USD`, `hasAR_EEUU`.
+function buildCard(d,acct){
+  const isOpen=d.net>0;
+  const cid=acct+'-'+d.ticker.replace(/[^a-z0-9]/gi,'_');
+  const borderCls=isOpen?(acct==='us'?'open-us':'open-ar'):'';
+  const splitInfo=d.split_note?` · <span style="color:var(--usd);font-size:9px">⇄ ${d.split_note}</span>`:'';
+  const subtitle=`${d.n} op · ${d.first} → ${d.last}`+splitInfo;
+  const stats=`
+    <div class="si"><label>Comprado</label><value>${N(d.bought,0)}</value></div>
+    <div class="si"><label>Vendido</label><value>${N(d.sold,0)}</value></div>
+    <div class="si"><label>Posición neta</label><value>${N(d.net,0)}</value></div>
+    <div class="si"><label>Avg. compra</label><value>${d.avg>0?N(d.avg,d.avg<200?4:0):'—'}</value></div>
+    ${d.xfer_in>0?`<div class="si"><label>Transferido in</label><value style="color:var(--purple)">${N(d.xfer_in,0)}</value></div>`:''}
+    <div class="si"><label>Cuentas</label><value style="font-size:9px">${d.accounts.map(a=>a.replace('Argentina (','AR ').replace('EEUU (','US ').replace(')','').replace(' (USD','·USD').replace(' (ARS','·ARS')).join(', ')}</value></div>
+    <div class="si"><label>Estado</label><value class="${isOpen?'mp':'oo'}">${isOpen?'● Abierta':'○ Cerrada'}</value></div>`;
+  return`<div class="card ${borderCls}" data-ticker="${d.ticker}" data-open="${isOpen}" onclick="toggleCard(this,'${cid}')">
+    <div class="ch">
+      <div><div class="tn">${d.ticker}</div><div class="ts">${subtitle}</div></div>
+      <span class="badge ${isOpen?'bopen':'bclosed'}">${isOpen?'● '+N(d.net,0):'○ Cerrada'}</span>
+    </div>
+    <div class="cs">${stats}</div>
+    <div class="txn-wrap" id="${cid}">
+      <div class="txn-scroll">
+        <table><thead><tr>
+          <th>Fecha</th><th>Operación</th>
+          <th class="num">Cant.</th><th class="num">Precio</th><th class="num">Monto</th>
+          <th class="num">Balance</th><th class="num">Avg.</th><th>Cuenta</th>
+        </tr></thead>
+        <tbody>${txnRows(d.txns)}</tbody></table>
+      </div>
+    </div>
+  </div>`;
+}
 
-**Grupo 🇦🇷 Argentina** (solo si `hasAR`):
-- Sub-sección **$** (solo si `hasAR_ARS`): C $ · V $ · Precio $ · Monto $
-- Sub-sección **U$S AR** (solo si `hasAR_USD`): C U$S AR · V U$S AR · Precio U$S · Monto U$S
-- Sub-sección **U$S EE** (solo si `hasAR_EEUU`): C U$S EE · V U$S EE · Precio U$S · Monto U$S — operaciones con sufijo C (MELIC, AY24C): títulos salen de AR, cash va a EEUU
-- Columnas compartidas: Xfer. · Amort. · Bal AR · **Avg $** · **Avg U$S** · Valoriz. ARS · Valoriz. USD
 
-**Grupo 🇺🇸 EEUU** (solo si `hasEEUU_real` — compras/ventas directas en NYSE, sin sufijo C):
-- Compras · **Xfer.** · Ventas · Amort. · Bal EEUU · Precio USD · Monto USD · Avg USD · Valoriz. USD
+// ══════ AUDIT ══════
+let aData=[...AUDIT];
+let aSort_col='fecha',aSort_dir=-1; // desc by default
+const gCollapsed={};
+const OTHER_OPS=new Set(['Caución','Compra de Dólares','Crédito','Suscripción FCI','Rescate FCI',
+  'Suscripción Primaria','Transferencia de Titulos IN -','Depósito por transferencia interna',
+  'Extracción por Transferencia interna','Débito - Producto','Venta de Dólares',
+  'Liquidación de Caución','Remuneración de Saldos Líquidos']);
 
-**Columna Xfer.**:
-- Transferencias implícitas reales del ledger (`_xferAR`/`_xferEEUU`): `(N)` rojo si sale, `+N` verde si entra
-- Las ventas con sufijo C **no generan** `_xferAR`/`_xferEEUU` — van a la sub-sección AR_EEUU
-- Sin transferencia implícita: XFER_IN real del broker o `—`
-
-**Grupo Valoriz.** (siempre): Valoriz. Total (= `valAR_USD + valEEUU`, en USD, violeta) · FX
-
-**Detección de flags:**
-- `hasAR_EEUU`: hay txns con sufijo C en cuenta EEUU (`ticker_raw` termina en C y `canonical` existe en `TICKER_TO_GROUP`)
-- `hasEEUU_real`: hay txns en cuenta EEUU sin sufijo C
-- `hasEEUU` (alias de `hasEEUU_real`): usado en `_especiesState` para el XLS export
-
-### Export XLS (`exportEspeciesXLS()`):
-- Lee de `_especiesRows` y `_especiesState` — NO scrapea el DOM
-- Columnas condicionales según `hasAR_ARS`, `hasAR_USD`, `hasAR_EEUU`, `hasEEUU`
-- Columna final: "Valoriz. Total USD" = `valAR_USD + valEEUU`
-
-### Globals de estado:
-```javascript
-let _especiesRows  = [];  // rows del último renderEspecies (para XLS export)
-let _especiesState = {};  // {ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, hasAR_EEUU, opsLen}
-```
-
-### Funciones clave:
-- `rebuildEspeciesDropdown()` — repuebla los 5 selectores, fuente: `_ledger`
-- `espCatChange(cat)` — limpia los otros 4 selectores y llama `renderEspecies()`
-- `espGetSelectedTicker()` — escanea los 5 selectores para encontrar el valor activo
-- `renderEspecies()` — lee de `_ledger[ticker].txns`, agrupa por fecha en `dateBuckets`
-- `exportEspeciesXLS()` — genera y descarga el XLSX desde `_especiesRows`
-
-**Nota:** `rebuildBlendedAvgs()` actualiza `AR_BLENDED_USD` en el global `_instruments` (sistema pre-v7). Desde v7 el tab Especies y el tab Portfolio leen del `_ledger` directamente — `rebuildBlendedAvgs()` ya no afecta el rendering de ninguno de los dos tabs. Se mantiene en el código pero no debe confundirse con la fuente de datos activa.
-
----
-
-## Tab 📋 Transacciones — detalle
-
-### Columnas de la tabla (v11):
-Fecha Concert. · **Fecha Liq.** · Cuenta · Instrumento · Operación · Cantidad · Precio · Monto · Comisión · IVA · Otros Imp. · Ret. NRA · Saldo Cash · Nro. Boleto · Nro. Mov.
-
-**Fecha Liq.** viene de `t.fecha_liq` tal como llega del broker. Se muestra siempre para todas las operaciones. `buildAuditRows()` la incluye en el objeto de cada fila como `fecha_liq`.
-
-### Filtros multi-valor (dropdown con checkboxes):
-- **Cuenta** — `ms-panel-cuenta`
-- **Operación** — `ms-panel-op`: lista fija + **Depósito de Fondos** + **Extracción de Fondos** + opción "Otras" (mapea a `OTHER_OPS`)
-- **Año** — `ms-panel-year`: poblado dinámicamente por `rebuildYearDropdown()`
-- **Mes** — `ms-panel-month`
-
-**Funciones:** `msGetSelected(key)`, `msUpdateBadge(key)`, `msDrillToggle(key)`, `msChange(key)`
-
-**Lógica OR** dentro de cada filtro, **AND** entre filtros distintos.
-
-**Depósitos y extracciones** se detectan por prefijo con `isDeposito(op)` y `isExtraccion(op)`:
-```javascript
+// Depósitos y extracciones: se detectan por prefijo en operacion
 function isDeposito(op)   { return op && op.startsWith('Depósito de Fondos'); }
 function isExtraccion(op) { return op && op.startsWith('Extracción de Fondos'); }
-```
-Esto cubre todas las variantes bancarias (COMAFI, SUPERVIELLE, BBVA, etc.) sin listarlas.
 
-**CRÍTICO:** `rebuildYearDropdown()` puebla `ms-panel-year` con checkboxes — no hay `<select id="aYear">`.
-
----
-
-## Cálculo de avg — resumen
-
-### Sin comisiones (`avgNoC`)
-```
-Acciones/CEDEARs: |monto| - comision - iva - otros_imp
-Bonos:            precio × cantidad / 100
-```
-
-### Con comisiones (`avgWithC`)
-```
-Acciones/CEDEARs: |monto| (incluye todo)
-Bonos:            precio × cantidad / 100 (igual — las comisiones van separadas)
-```
-
-### VWAP móvil (venta reduce costo proporcionalmente)
-```
-ratio = (balance_antes - qty_vendida) / balance_antes
-costXXX *= ratio  // para todos los campos de costo del slot
-```
-Si balance = 0 → reset completo de todos los campos del slot.
-
-### AR_ARS — tracking dual de costo
-El slot AR_ARS trackea costos en **dos monedas** simultáneamente:
-- `costARS` / `costARS_withC` — en pesos (para avg $)
-- `costUSD` / `costUSD_withC` — en USD usando FX al momento de cada compra (para avg U$S blended histórico)
-
----
-
-## Retención NRA — `calcNRA(t)`
-
-Solo aplica a: `operacion === 'Pago de Dividendos' AND cuenta === 'EEUU (USD)'`
-
-```javascript
-const gross = Math.abs(monto) + Math.abs(comision) + Math.abs(iva);
-const nra = -(gross * 0.30);
-```
-
-Overrides por `nro_mov` en tabla `nra_overrides` de Supabase (PK: `nro_mov, session_id`). PATCH para limpiar (no DELETE — RLS no permite DELETE con anon key).
-
----
-
-## Estructura del .xls de Balanz
-
-**CRÍTICO: el archivo .xls de Balanz es en realidad HTML disfrazado** — parsear con `DOMParser`, nunca con SheetJS.
-
-```
-[0]  Nro. de Mov.   → nro_mov
-[1]  Nro. de Boleto → nro_boleto
-[2]  Tipo Mov.      → "Compra(STRC)", "Venta(AL30D)", etc.
-[3]  Concert.       → fecha "dd/mm/yy"
-[4]  Liquidación    → fecha_liq "dd/mm/yy"
-[5]  Est            → "Terminada" | "Cancelada"
-[6]  Cant. titulos  → cantidad
-[7]  Precio         → en moneda de la cuenta, coma decimal AR
-[8]  Comis.
-[9]  Iva Com.
-[10] Otros Imp.
-[11] Monto          → neto con signo (negativo=egreso)
-[13] Tipo Cuenta    → "Inversion Estados Unidos Dolares" / "Inversion Argentina Pesos" / "Inversion Argentina Dolares"
-```
-
-**CRÍTICO — doble fila por operación:**
-Cuando un instrumento opera fuera de su cuenta nativa, el broker registra DOS filas con el mismo `nro_mov`:
-- **Fila 1** en la cuenta real: títulos + monto
-- **Fila 2** en Argentina (ARS): solo comisiones — NO mueve títulos
-
-**CRÍTICO — gap fecha concert. vs fecha liq. en Pago de Renta:**
-El broker puede registrar el Pago de Renta con `fecha` (concertación) anterior a `fecha_liq` (liquidación). El dinero no está disponible hasta `fecha_liq`. Ver sección buildCash para el tratamiento correcto.
-
----
-
-## Pipeline de procesamiento
-
-### 1. Parse → `parseBalanzRowsFromHTML()` o `parseBalanzRows()`
-### 2. Merge → `mergeTransactions()`
-Clave primaria: `mov|fecha|cuenta|nro_mov` si `nro_mov != '0'`
-
-### 3. Detección de grupos → `detectTickerGroups(rawTxns)` ★ NUEVO v20
-Sobreescribe los globals `INSTRUMENT_GROUPS` y `TICKER_TO_GROUP` dinámicamente antes de `buildLedger` y `canonicalizeTickers`. Se llama en `processAndRefresh` como primer paso.
-
-**Regla:** si `b == a + 'D'` o `b == a + 'C'`, son el mismo instrumento operado en distintas cuentas (dólar linked o dólar cable). Se aplica union-find para agrupación transitiva. El canonical es el ticker más corto (o primero alfabéticamente si igual longitud).
-
-**Tickers con `.` (opciones) nunca se agrupan con nada.**
-
-**Seed:** `INSTRUMENT_GROUPS` se inicializa con el grupo `I15G8:['I15G8','I15G8-1505','I15G8-1906']` antes de correr la detección automática. Este es el único caso conocido donde el broker usa un patrón de sufijo distinto (`-MMYY`) en lugar de `D`/`C`.
-
-```javascript
-// globals — se sobreescriben en cada processAndRefresh
-let INSTRUMENT_GROUPS = { I15G8:['I15G8','I15G8-1505','I15G8-1906'] };
-let TICKER_TO_GROUP   = {};  // se reconstruye a partir de INSTRUMENT_GROUPS
-```
-
-**Motivación:** los hardcodes anteriores estaban basados en los datos de una sola cuenta. Al cargar datos de otra cuenta con tickers distintos, los grupos no se detectaban. La función es agnóstica a la cuenta.
-
-### 4. Deduplicación MEP → `deduplicateMEP()`
-Solo deduplicar si hay filas del mismo grupo en cuentas DISTINTAS (`accounts.size > 1`).
-
-### 5. Canonicalización → `canonicalizeTickers()`
-Usa `TICKER_TO_GROUP` (ya reconstruido por `detectTickerGroups`) para mapear variantes al ticker canónico.
-
-### 6. Posiciones → `buildPortfolio(clean, fxHistory)`
-Función pura. `isEffectivelyClosed()`:
-1. Stale: `Math.max(...years) <= 2020` — pero si `_ledger[ticker].totals.balTotal > 0`, no es stale
-2. Fully amortized: buys + Pago de Amortización ≥ 80% del costo, sin sells
-
----
-
-## Cálculo de cash — `buildCash()` y `buildCashDaily()` ★ ACTUALIZADO v11
-
-**CASH_SKIP_OPS:** `Transferencia de Titulos IN -`, `Depósito por transferencia interna`, `Extracción por Transferencia interna`
-
-**Cauciones en Dólares:** `buildUsdCaucionMovs()` + `isCashSkip()`
-
-### Pago de Renta — uso de fecha_liq (v11)
-**CRÍTICO:** Para operaciones `Pago de Renta` donde `fecha_liq !== fecha`, tanto `buildCash` como `buildCashDaily` usan `fecha_liq` como fecha de impacto en la caja:
-```javascript
-const fechaCash = (t.operacion === 'Pago de Renta' && t.fecha_liq && t.fecha_liq !== t.fecha)
-  ? t.fecha_liq : t.fecha;
-```
-Esto evita picos artificiales en el valor del portfolio histórico cuando el Pago de Renta llega (concertación) 1-2 días antes que la Amortización (liquidación).
-
-El mismo criterio aplica al filtro `txnsUpTo` en `renderPortfolioTable()` para el cash histórico.
-
-**CRÍTICO — `buildAuditRows(clean, rawClean, usdCaucionMovs)`:**
-- `clean`: deduped + canonicalized → para mostrar en tabla
-- `rawClean`: pre-dedup + canonicalized → para calcular saldo cash correcto
-
----
-
-## Precios y datos externos — Supabase + GitHub Actions
-
-- **Proyecto:** `ghxisfkgwfqqxndfpmgp.supabase.co`
-- **Anon key:** `sb_publishable_s5hodNiLD-8_OwX8NWHfRw_S1uylN2Y`
-- **Tablas:** `instruments`, `prices`, `nra_overrides`, `fx_rates`, `portfolio_snapshots`
-
-### Políticas RLS por tabla
-| Tabla | SELECT | INSERT | UPDATE | DELETE |
-|---|---|---|---|---|
-| `prices` | ✅ public | — | — | — |
-| `fx_rates` | ✅ public | ✅ public | ✅ public | — |
-| `nra_overrides` | ✅ public | ✅ public | ✅ public | ❌ no permitido (usar PATCH con `monto_override=null`) |
-| `portfolio_snapshots` | ✅ public | ✅ public | ✅ public | ✅ public (agregado v12) |
-
-**CRÍTICO:** El DELETE en `nra_overrides` no está permitido con anon key — siempre usar PATCH con `monto_override = null` para "limpiar" un override.
-
-### Fetch en el dashboard:
-- `fetchLatestPrices()` — último EOD + NRA overrides + recálculo cash post-overrides + `renderPortfolioTable()`
-- `fetchPricesHistory()` — histórico completo paginado de a 1000 + `renderPortfolioTable()` si hay txns
-- `fetchFXHistory()` — histórico FX + `rebuildBlendedAvgs()` + rebuild ledger + rebuild portfolio + `renderPortfolioTable()`
-- `fetchSnapshots()` — snapshots guardados
-
-**`fetchFXHistory` usa `order=date.desc`** — intencional (cap Supabase 1000 filas, trae los más recientes).
-
-**CRÍTICO — orden de carga:** `fetchFXHistory()` debe completar antes de `recalcSnapshots()`.
-
-### GitHub Actions
-- **Cron:** lunes a viernes 21:00 UTC (18:00 ART)
-- **Tickers US activos:** `NU, STRC, VGSH, SHV, EWZ, IREN, MSTR, MELI, IVV, SPY, VIST`
-
----
-
-## Tab 📈 Evolución
-
-### Invariante de consistencia
-**Cada punto del gráfico debe coincidir exactamente con el total que mostraría Portfolio en modo "Todo USD" para esa fecha.** Portfolio, Especies y Evolución leen todos del mismo `_ledger`.
-
-### Series del gráfico
-El gráfico es de tipo mixto (line + bar). Todos los datasets declaran `yAxisID`:
-- 🇦🇷 `arUSD = r.ar_usd` — eje Y izquierdo — color `#3d7fff`
-- 🇺🇸 `usUSD = r.us_usd` — eje Y izquierdo — color `#ef4444`
-- ∑ `totalUSD = arUSD + usUSD` — eje Y izquierdo — color `#a78bfa`
-- 💰 **Flujos** — barras verdes (depósitos) y rojas (extracciones) — eje Y izquierdo — prendido por default
-- 📈 **Índice base 100** — línea punteada naranja — eje Y derecho (`y2`) — apagado por default
-- 💵 **Dep. Netos** — línea punteada blanca (`#ffffff`) — eje Y izquierdo — apagado por default — serie acumulada de depósitos netos en USD (ARS convertidos al FX del día, USD directo)
-
-### Toggles
-`_evolSeries` es un `Set` que controla qué series se renderizan. Estado inicial: `['ar','us','total','flujos']`.
-Función: `evolToggleSeries(series)`.
-
-**`buildDepositSeries(dates)`** — calcula la serie acumulada de Dep. Netos on-the-fly desde `_historicalTxns` + `_fxHistory`. No se guarda en Supabase. Recibe array de fechas ISO del gráfico (ventana filtrada), devuelve array de valores acumulados en USD.
-
-### Zoom
-`mode: 'xy'` en zoom y pan — permite zoom y pan en ambos ejes con scroll del mouse y click+drag.
-
-### `recalcSnapshots()` ★ REFACTORIZADO v10, ACTUALIZADO v13
-Por cada fecha en `_cashDaily`:
-1. Reconstruye posiciones EEUU con `buildPortfolio` → `getPriceForDate`
-2. Calcula AR en USD desde `_ledger`: `snap.avgAR_usd × snap.balAR` para cada ticker con `balAR > 0`
-3. Suma cash AR: `bUSD_AR + bARS / getFXForDate(date)`
-4. **Suma cauciones en pesos activas a esa fecha:** `c.monto / fx` para cada caución con `fechaApertura <= date && (fechaCierre === null || fechaCierre > date)`
-5. Guarda `{ date, ar_ars: 0, ar_usd, us_usd, fx_rate }`
-
-`buildCauciones(_historicalTxns)` se llama **una sola vez antes del loop** y se reutiliza en cada iteración.
-
-Después del loop, calcula flujos e índice:
-5. **Flujos por fecha**: itera `_historicalTxns`, filtra por `isDeposito()`/`isExtraccion()`, convierte a USD con `getFXForDate`. ARS → divide por FX. USD → directo.
-6. **Índice base 100** (Modified Dietz simplificado):
-   - `retorno = (total_hoy - flujo_hoy) / total_ayer - 1`
-   - `idx_hoy = idx_ayer × (1 + retorno)`
-   - Huecos en la serie: el retorno acumulado se aplica de una vez (correcto matemáticamente)
-7. Guarda `idx` en cada snapshot → **DELETE de todos los snapshots existentes** → upsert a Supabase (columna `idx float8` en `portfolio_snapshots`)
-
-**CRÍTICO — DELETE antes del upsert (v12):** `recalcSnapshots()` hace DELETE de todos los snapshots antes de insertar los nuevos. Esto evita que queden fechas huérfanas cuando `_cashDaily` cambia (ej: por el fix de `fecha_liq` en Pago de Renta que desplaza fechas). Sin el DELETE, los snapshots viejos persisten en Supabase y se cargan al abrir, mostrando datos incorrectos.
-
-```javascript
-// DELETE antes del upsert
-await fetch(`${SUPABASE_URL}/rest/v1/portfolio_snapshots?date=gte.2000-01-01`, {
-  method: 'DELETE',
-  headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` }
-});
-```
-
-**CRÍTICO — política RLS requerida:** la tabla `portfolio_snapshots` necesita política DELETE habilitada. Sin ella el DELETE falla silenciosamente. Las políticas actuales de la tabla son:
-```sql
--- SELECT, INSERT, UPDATE ya existían
--- DELETE agregado en v12:
-CREATE POLICY "public delete" ON portfolio_snapshots
-FOR DELETE TO public USING (true);
-```
-
-Requiere `_fxHistory` cargado. **Después de cualquier cambio en Portfolio o Especies, hay que hacer ⟳ Recalcular.**
-
-### `ar_ars` en snapshots siempre es 0 desde v9
-`ar_usd` ya contiene el total AR en USD.
-
-### `fetchFXHistory()` — paginación
-```javascript
-while(true) {
-  // Range: from-(from+999)
-  // Si rows.length < 1000 → última página, break
+// ══════ MULTI-SELECT DROPDOWN HELPERS ══════
+function msGetSelected(key) {
+  const panel = document.getElementById(`ms-panel-${key}`);
+  if(!panel) return new Set();
+  return new Set(
+    [...panel.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.value)
+  );
 }
-```
-**No usar `limit` en la URL junto con `Range` header — da error 416.**
 
-### `fetchSnapshots()` — ídem paginación
-Mismo patrón que `fetchFXHistory`.
+function msUpdateBadge(key) {
+  const sel = msGetSelected(key);
+  const badge = document.getElementById(`ms-badge-${key}`);
+  const btn   = document.getElementById(`ms-btn-${key}`);
+  if(!badge || !btn) return;
+  if(sel.size > 0) {
+    badge.textContent = sel.size;
+    badge.style.display = 'inline-block';
+    btn.classList.add('ms-active');
+  } else {
+    badge.style.display = 'none';
+    btn.classList.remove('ms-active');
+  }
+  // Update ms-item checked style
+  const panel = document.getElementById(`ms-panel-${key}`);
+  if(panel) panel.querySelectorAll('.ms-item').forEach(item => {
+    const cb = item.querySelector('input[type=checkbox]');
+    item.classList.toggle('ms-checked', cb && cb.checked);
+  });
+}
 
-### FX histórico en Supabase
-5571 filas cargadas en tabla `fx_rates`, desde 2011-01-03 hasta 2026-04-06.
+function msDrillToggle(key) {
+  const panel = document.getElementById(`ms-panel-${key}`);
+  if(!panel) return;
+  const isOpen = panel.classList.contains('open');
+  // Close all panels first
+  document.querySelectorAll('.ms-panel.open').forEach(p => p.classList.remove('open'));
+  if(!isOpen) panel.classList.add('open');
+}
 
----
+function msChange(key) {
+  msUpdateBadge(key);
+  aFilter();
+}
 
-## Tab 💱 Tipo de Cambio
+// Close panels on outside click
+document.addEventListener('click', e => {
+  if(!e.target.closest('.ms-wrap')) {
+    document.querySelectorAll('.ms-panel.open').forEach(p => p.classList.remove('open'));
+  }
+});
 
-Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculadas contra el histórico completo (no el subconjunto filtrado). `fetchFXHistory` usa `order=date.desc` para traer los más recientes dentro del cap.
+function aFilter(){
+  const q=(document.querySelector('.atb .fi').value||'').toLowerCase();
+  const cuentas = msGetSelected('cuenta');
+  const ops     = msGetSelected('op');
+  const years   = msGetSelected('year');
+  const months  = msGetSelected('month');
+  const hasOtras      = ops.has('__otras__');
+  const hasDepositos  = ops.has('__depositos__');
+  const hasExtracc    = ops.has('__extracciones__');
+  const realOps = new Set([...ops].filter(v => !v.startsWith('__')));
 
----
+  aData=AUDIT.filter(r=>{
+    if(cuentas.size && !cuentas.has(r.cuenta)) return false;
+    if(ops.size) {
+      const matchReal   = realOps.has(r.operacion);
+      const matchOtras  = hasOtras      && OTHER_OPS.has(r.operacion);
+      const matchDep    = hasDepositos  && isDeposito(r.operacion);
+      const matchExt    = hasExtracc    && isExtraccion(r.operacion);
+      if(!matchReal && !matchOtras && !matchDep && !matchExt) return false;
+    }
+    if(years.size  && !years.has(r.year)) return false;
+    if(months.size && !months.has((r.fecha||'').slice(5,7))) return false;
+    if(q){const hay=r.ticker+' '+r.ticker_raw+' '+r.operacion+' '+r.cuenta+' '+r.nro_boleto+' '+r.nro_mov;if(!hay.toLowerCase().includes(q)) return false;}
+    return true;
+  });
+  aSortApply();
+}
 
-## Checkpoints de validación
+function aClear(){
+  document.querySelector('.atb .fi').value='';
+  ['cuenta','op','year','month'].forEach(key => {
+    const panel = document.getElementById(`ms-panel-${key}`);
+    if(panel) panel.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+    msUpdateBadge(key);
+  });
+  document.getElementById('aGroup').value='';
+  Object.keys(gCollapsed).forEach(k=>delete gCollapsed[k]);
+  aFilter();
+}
+function aSort(col){
+  if(col===aSort_col) aSort_dir*=-1; else{aSort_col=col;aSort_dir=col==='fecha'?-1:1;}
+  aSortApply();
+}
+function aSortApply(){
+  document.querySelectorAll('#audit-tbl thead th').forEach(th=>{
+    th.classList.remove('sa','sd');
+    if(th.id==='th-'+aSort_col) th.classList.add(aSort_dir===1?'sa':'sd');
+  });
+  aData.sort((a,b)=>{
+    let va=a[aSort_col],vb=b[aSort_col];
+    let cmp = typeof va==='string' ? va.localeCompare(vb)*aSort_dir : ((+va||0)-(+vb||0))*aSort_dir;
+    // Tiebreaker: when sorting by fecha, secondary sort is nro_mov descending
+    if(cmp === 0 && aSort_col === 'fecha') {
+      cmp = (+b.nro_mov||0) - (+a.nro_mov||0);
+    }
+    return cmp;
+  });
+  aRender();
+}
 
-- 31/12/2011: ARS 42.412,60 ✅ | USD 0,00 ✅
-- 11/09/2019: ARS 72,58 ✅ | USD 1,35 ✅
-- NU precio promedio s/comis: ~11,77 USD ✅
-- Argentina USD cash final (25/03/2026): ~U$S 261,51 ✅
-- ADRDOLA posición abierta: ~297.952 cuotapartes ✅
-- BDC20: cerrada (stale) ✅
-- SPY dividendo 5/8/20: monto neto 20,32 → NRA estimada 6,15 ✅
-- MELI precio promedio s/comis (cuenta EEUU): ~2.006,50 USD ✅
-- GLOB avg AR (2 compras ARS, 88+229 unidades): ~$9.484 ✅
-- VIST avg blended USD (153 unidades ARS + 103 unidades AR_USD, 24/10/25): ~U$S 13,5x ✅
-- AY24 balance total: 0 ✅ (MEP 11/09/19 cierra correctamente en 0)
+function aRender(){
+  const group=document.getElementById('aGroup').value;
+  const tbody=document.getElementById('aTbody');
+  document.getElementById('aCount').textContent=`${aData.length} / ${AUDIT.length} filas`;
+  let html='';
+  if(!group){
+    html=aData.map(aRow).join('');
+  } else {
+    const grouped={};
+    aData.forEach(r=>{
+      const k=group==='year'?r.year:r[group]||'—';
+      (grouped[k]||(grouped[k]=[])).push(r);
+    });
+    Object.entries(grouped).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([key,rows])=>{
+      const coll=gCollapsed[key];
+      const totM=rows.reduce((s,r)=>s+r.monto,0);
+      const totC=rows.reduce((s,r)=>s+r.comision,0);
+      const kEsc=key.replace(/'/g,"\'");
+      html+=`<tr class="gh" onclick="toggleG('${kEsc}')"><td colspan="11">
+        <span class="arrow">${coll?'▶':'▼'}</span>
+        ${key} &nbsp;·&nbsp; ${rows.length} op.
+        &emsp; monto: <span style="color:${totM>=0?'var(--green)':'var(--red)'}">${N(totM,2)}</span>
+        &nbsp;· comis: ${N(totC,2)}
+      </td></tr>`;
+      if(!coll) html+=rows.map(aRow).join('');
+    });
+  }
+  tbody.innerHTML=html||'<tr><td colspan="11" class="no-r">Sin resultados.</td></tr>';
+}
 
----
+function aRow(r){
+  const raw=r.ticker_raw&&r.ticker_raw!==r.ticker?` <span style="color:var(--muted);font-size:9px">(${r.ticker_raw})</span>`:'';
+  // Saldo: show for cash-affecting rows, format based on account currency
+  let saldoCell = '<td class="num" style="color:var(--muted)">—</td>';
+  if(r.saldo_cash !== null && r.saldo_cash !== undefined) {
+    const isCashRow = r.saldo_cash !== null && r.saldo_cash !== undefined;
+    if(isCashRow) {
+      const isARS = r.cuenta === 'Argentina (ARS)';
+      const sym = isARS ? '$ ' : 'U$S ';
+      const abs = Math.abs(r.saldo_cash);
+      const fmt = isARS
+        ? new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(abs)
+        : new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(abs);
+      const str = (r.saldo_cash < 0 ? '-' : '') + sym + fmt;
+      const cls = r.saldo_cash >= 0 ? 'mp' : 'mn';
+      saldoCell = `<td class="num ${cls}" style="font-weight:500">${str}</td>`;
+    }
+  }
+  const fmtFecha = d => d && d.length >= 10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : (d||'—');
+  return`<tr>
+    <td>${fmtFecha(r.fecha)}</td>
+    <td style="color:var(--muted);font-size:10px">${fmtFecha(r.fecha_liq)}</td>
+    <td><span class="ac-p ${acP(r.cuenta)}">${r.cuenta}</span></td>
+    <td><b>${r.ticker}</b>${raw}</td>
+    <td><span class="op-p ${opP(r.operacion)}">${r.operacion}</span></td>
+    <td class="num">${r.cantidad>0?N(r.cantidad,0):'—'}</td>
+    <td class="num">${r.precio>0?N(r.precio,r.precio<200?4:2):'—'}</td>
+    <td class="num ${r.monto>=0?'mp':'mn'}">${N(r.monto,2)}</td>
+    <td class="num">${r.comision>0?N(r.comision,2):'—'}</td>
+    <td class="num">${r.iva>0?N(r.iva,2):'—'}</td>
+    <td class="num">${r.otros_imp>0?N(r.otros_imp,2):'—'}</td>
+    <td class="num${r.nra<0?' mn':''}" style="${r.nra<0?'':'color:var(--muted)'}">${r.nra<0?'−U$S '+N(Math.abs(r.nra),2):'—'}</td>
+    ${saldoCell}
+    <td class="num" style="color:var(--muted)">${r.nro_boleto&&r.nro_boleto!=='0'?r.nro_boleto:'—'}</td>
+    <td class="num" style="color:var(--muted)">${r.nro_mov&&r.nro_mov!=='0'?r.nro_mov:'—'}</td>
+  </tr>`;
+}
 
-## Fase 2 — pendiente
+function toggleG(key){gCollapsed[key]=!gCollapsed[key];aRender();}
 
-- **Precios BYMA (Argentina):** conectar IOL API para CEDEARs, acciones y bonos AR — cuando esté, las tarjetas y columnas de Gan./Pérd. y Portfolio Total para AR dejarán de ser placeholders
-- **Backfill BYMA:** histórico desde 2020
-- **FX automático:** automatizar ingreso diario del tipo de cambio en `fx_rates`
+function exportAuditCSV() {
+  if(!aData.length) { alert('No hay filas para exportar.'); return; }
+  const headers = ['Fecha Concert.','Fecha Liq.','Cuenta','Instrumento','Operación','Cantidad','Precio','Monto','Comisión','IVA','Otros Imp.','Ret. NRA','Saldo Cash','Nro. Boleto','Nro. Mov.'];
+  const rows = aData.map(r => [
+    r.fecha||'',
+    r.fecha_liq||'',
+    r.cuenta||'',
+    r.ticker||'',
+    r.operacion||'',
+    r.cantidad>0 ? r.cantidad : '',
+    r.precio>0   ? r.precio   : '',
+    r.monto      != null ? r.monto    : '',
+    r.comision>0 ? r.comision : '',
+    r.iva>0      ? r.iva      : '',
+    r.otros_imp>0 ? r.otros_imp : '',
+    r.nra<0      ? r.nra      : '',
+    r.saldo_cash != null ? r.saldo_cash : '',
+    r.nro_boleto && r.nro_boleto!=='0' ? r.nro_boleto : '',
+    r.nro_mov && r.nro_mov!=='0' ? r.nro_mov : '',
+  ]);
+  const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const sessions = getSessions();
+  const session = sessions.find(s => s.id === getActiveSessionId());
+  const sessionName = session ? session.name.replace(/[^a-z0-9]/gi,'_') : 'portfolio';
+  a.download = `Transacciones_${sessionName}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
-## Fase 3 — pendiente
+// ══════ SUPABASE PRICES ══════
+const SUPABASE_URL = 'https://ghxisfkgwfqqxndfpmgp.supabase.co';
+const SUPABASE_ANON = 'sb_publishable_s5hodNiLD-8_OwX8NWHfRw_S1uylN2Y';
 
-- **Autenticación de usuarios:** Supabase Auth
-- **Multi-usuario real:** `user_id` en Supabase, sesiones ligadas al usuario
-- La arquitectura actual (session_id local) está diseñada para migrar a esto sin reescribir
+let _prices = {};        // { ticker: close }  — latest EOD price per ticker
+let _pricesDate = null;  // date string of the prices loaded
+let _pricesLoading = false;
 
----
+// ── Extended data for valuation & evolution ──
+let _pricesHistory = {};   // { ticker: { 'YYYY-MM-DD': close } } — full history
+let _fxHistory = {};       // { 'YYYY-MM-DD': usd_ars }
+let _fxLatest = null;      // latest fx rate loaded from DB
+let _snapshots = [];       // [{date, ar_ars, ar_usd, us_usd, fx_rate}] sorted asc
+let _arMode = 'usd';       // 'ars' | 'usd'
+let _portfolioDate = new Date().toISOString().slice(0,10); // fecha seleccionada en el date picker
 
-## Bugs resueltos — no repetir
+async function fetchLatestPrices() {
+  if(_pricesLoading) return;
+  _pricesLoading = true;
+  setPriceStatus('Actualizando precios...', 'var(--muted)');
+  try {
+    // Get the latest date available in prices table
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/prices?select=ticker,date,close&order=date.desc&limit=1000`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+    );
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows = await r.json();
+    if(!rows.length) { setPriceStatus('Sin precios en base', 'var(--muted)'); return; }
 
-### Parseo y pipeline
+    // Find the most recent date
+    const latestDate = rows.reduce((max, r) => r.date > max ? r.date : max, '');
 
-| Bug | Causa | Fix |
-|---|---|---|
-| Fechas invertidas | SheetJS con `raw:false` | Usar `raw:true` + `XLSX.SSF.parse_date_code()` |
-| "Remuneración de Saldos Líquidos" no aparece | Filtro por `nro_mov` | Cambiar a `if(!row[COL.tipo_mov])` |
-| Transacciones canceladas contabilizan | Estado "Cancelada" no filtrado | `if(estado === 'Cancelada') continue` |
-| Dos ventas TVPP descartadas | `deduplicateMEP` sin chequeo de cuenta | Solo deduplicar si `accounts.size > 1` |
-| Cash ARS incorrecto | `buildAuditRows` usaba `clean` post-dedup | Pasar `rawClean` pre-dedup |
-| Números con miles truncados | SheetJS trunca `"10.000,00"` → `10` | Usar `DOMParser` |
-| Cantidades con punto de miles | `numArg` no reconocía enteros con miles | Regex `/^-?\d{1,3}(\.\d{3})+$/` |
-| I15G8-1505 e I15G8-1906 aparecían como posiciones abiertas | El broker registró las Suscripciones Primarias con nombres distintos al Pago de Amortización (`I15G8`), generando tres buckets separados en `buildLedger` | Grupo `I15G8:['I15G8','I15G8-1505','I15G8-1906']` mantenido como seed en `INSTRUMENT_GROUPS` dentro de `detectTickerGroups`; vaciar `IMPLICIT_CLOSED` |
-| Cantidades negativas (Pago de Amortización) no se mostraban en tab Transacciones ni en export CSV | Condición `cantidad > 0` excluía valores negativos | Cambiar a `cantidad !== 0` en `aRow()` y `exportAuditCSV()` |
+    // Keep only rows from the latest date
+    const latest = rows.filter(r => r.date === latestDate);
+    _prices = {};
+    latest.forEach(r => { _prices[r.ticker] = r.close; });
+    _pricesDate = latestDate;
 
-### Posiciones y balances
+    const fmt = d => d ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : '';
+    setPriceStatus(`Precios al ${fmt(latestDate)}`, 'var(--green)');
 
-| Bug | Causa | Fix |
-|---|---|---|
-| AY24 no aparecía en Especies | `isEffectivelyClosed` stale incorrecto | Consultar `_ledger` antes de declarar stale |
-| Precio promedio bonos incorrecto | Bonos cotizan por lámina de 100 | `precio × cantidad / 100` |
-| Tickers viejos con posición abierta | Historial incompleto | `isEffectivelyClosed()`: stale `<= 2020` + check ledger |
-| ADRDOLA no aparece | Cantidad `"677.225"` parseada mal | Fix `numArg()` |
-| Precio promedio incorrecto tras ventas parciales | VWAP ignoraba ventas | VWAP móvil proporcional |
-| Precio promedio incorrecto tickers split AR/EEUU | Mezclaba montos ARS y USD | 3 slots: `EEUU`, `AR_ARS`, `AR_USD` |
-| Avg blended incorrecto (race condition) | `buildInstrument` corría con `_fxHistory={}` | `rebuildBlendedAvgs()` al final de `fetchFXHistory` |
-| GLOB con transferencia implícita incorrecta | Xfer aplicaba a toda venta EEUU | Solo si sufijo C (`isMEP_C`) |
+    // Also fetch NRA overrides for this session
+    try {
+      const sessionId = getActiveSessionId() || 'default';
+      const nr = await fetch(
+        `${SUPABASE_URL}/rest/v1/nra_overrides?select=nro_mov,monto_override&session_id=eq.${encodeURIComponent(sessionId)}`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      );
+      if(nr.ok) {
+        const nrRows = await nr.json();
+        _nraOverrides = new Set(nrRows.filter(r => r.monto_override !== null).map(r => String(r.nro_mov)));
+        _nraOverrideAmounts = new Map(
+          nrRows.filter(r => r.monto_override !== null).map(r => [String(r.nro_mov), Number(r.monto_override)])
+        );
+      }
+    } catch(e) { console.warn('NRA overrides fetch failed:', e); }
 
-### Cash
+    // Recalculate cash with freshly loaded NRA overrides
+    if(_historicalTxns && _historicalTxns.length) {
+      const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns);
+      const {balances} = buildCash(_historicalTxns, usdCaucionMovs);
+      _cashBalances = balances;
+      _cashDaily = buildCashDaily(_historicalTxns, usdCaucionMovs);
+      cData = [..._cashDaily];
+      rebuildCashYearDropdown();
+      cFilter();
+    }
+    renderPortfolioTable();
+    renderNRATab();
+  } catch(e) {
+    setPriceStatus(`Error: ${e.message}`, 'var(--red)');
+    console.error('fetchLatestPrices:', e);
+  } finally {
+    _pricesLoading = false;
+  }
+}
 
-| Bug | Causa | Fix |
-|---|---|---|
-| Transferencias internas duplican cash | Aparecen en dos cuentas | `CASH_SKIP_OPS` |
-| Caución en Dólares distorsiona saldos | Broker registra -USD y +ARS | `buildUsdCaucionMovs()` + `isCashSkip()` |
-| Cash EEUU incorrecto (factor ~10x) | NRA no descontada | `calcNRA()` en `buildCash()` |
-| Cash incorrecto al abrir | Race condition con overrides | `fetchLatestPrices()` recalcula cash post-overrides |
-| Cauciones en pesos generaban "bache" en portfolio total | El monto inmovilizado salía de caja pero no figuraba como tenencia | `buildCauciones()` matchea pares por `nro_mov`; cauciones activas se muestran como filas en Portfolio y se suman a `ar_usd` en `recalcSnapshots()` |
-| Picos (spikes) en serie Argentina de Evolución | `buildCashDaily` y `buildCash` usaban `fecha_liq` para registrar el impacto en caja de "Pago de Renta", mientras el ledger usa `fecha` (concertación) — generando double counting en fechas intermedias | Eliminado el tratamiento especial de `fechaCash` / `fecha_liq` en ambas funciones. Ahora toda operación (incluyendo Pago de Renta) usa `t.fecha` para impactar caja. Cash refleja "Disponible Operable" (concertación), consistente con el ledger. |
-| Double counting en letras con gap Renta→Amortización (15 tickers: I15F7-1001, I15G8, I15M7-1402, I15N7-1909, I16Y8-2003, I17E8-1411, I17Y7-1804, I19L7-1402, I19L7-1906, I19S8, I20S7-1807, I21J7-1403, I21J8-1704, I21M8-1601, I21M8-2002) | El broker registra el "Pago de Renta" en fecha de concertación (impacta caja) y el "Pago de Amortización" en fecha de liquidación (da de baja los títulos), con un gap de 2-6 días. Durante ese gap la caja ya subió pero los títulos siguen en cartera → double counting. | En `buildLedger`, antes del sort, se detecta el patrón (Pago de Renta con `fecha != fecha_liq` + Pago de Amortización con `fecha == fecha_liq` del Pago de Renta). Si existe, se crea una copia de la txn Amortización con `fecha` reemplazada por la `fecha` del Pago de Renta. Los datos crudos (`_historicalTxns`) no se modifican — el tab Transacciones sigue mostrando las fechas originales del broker. El cash no se toca. |
+function setPriceStatus(msg, color) {
+  const el = document.getElementById('price-status');
+  if(el) { el.textContent = msg; el.style.color = color; }
+}
 
-### NRA overrides
+// ══════ FETCH FULL PRICE HISTORY ══════
+async function fetchPricesHistory() {
+  try {
+    const PAGE = 1000;
+    let allRows = [];
+    let from = 0;
+    while(true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/prices?select=ticker,date,close&order=ticker.asc,date.asc`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+                     'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
+      );
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const rows = await r.json();
+      allRows = allRows.concat(rows);
+      if(rows.length < PAGE) break;
+      from += PAGE;
+    }
+    _pricesHistory = {};
+    for(const row of allRows) {
+      if(!_pricesHistory[row.ticker]) _pricesHistory[row.ticker] = {};
+      _pricesHistory[row.ticker][row.date] = row.close;
+    }
+    console.log(`Loaded price history: ${allRows.length} rows, ${Object.keys(_pricesHistory).length} tickers`);
+    console.log('Price history tickers:', Object.keys(_pricesHistory).sort().join(', '));
+    if(_historicalTxns && _historicalTxns.length) renderPortfolioTable();
+  } catch(e) { console.warn('fetchPricesHistory failed:', e); }
+}
 
-| Bug | Causa | Fix |
-|---|---|---|
-| "Limpiar" no persistía | DELETE sin permisos RLS | PATCH `monto_override = NULL` |
-| Override no impactaba cash | `saveNRAOverride` llamaba función incorrecta | Cambiar a `cFilter()` |
+// ══════ REBUILD BLENDED AVGS ══════
+// Called after fetchFXHistory resolves, because processAndRefresh runs before
+// _fxHistory is populated. Iterates _instruments and recalculates AR_BLENDED_USD
+// for each instrument using historical FX rates now available.
+function rebuildBlendedAvgs() {
+  if(!Object.keys(_fxHistory).length || !Object.keys(_instruments).length) return;
 
-### UI / Tab
+  const getFX = fecha => {
+    if(!fecha) return null;
+    const dates = Object.keys(_fxHistory).filter(d => d <= fecha).sort();
+    if(dates.length) return _fxHistory[dates[dates.length-1]];
+    const all = Object.keys(_fxHistory).sort();
+    return all.length ? _fxHistory[all[0]] : null;
+  };
 
-| Bug | Causa | Fix |
-|---|---|---|
-| Tab activo no persiste | `act-portfolio` hardcodeado | `switchTab` guarda en `localStorage('active_tab')` |
-| Dropdown Especies vacío | Solo se llamaba en `processAndRefresh` | También en `switchTab` cuando key === `'especies'` |
-| Instrumentos cerrados no aparecen en dropdown | Leía de `AR`/`US` | Fuente: `Object.keys(_ledger)` |
-| Tab FX solo mostraba hasta 2023 | `order=date.asc` traía los más antiguos | `order=date.desc` con `Range: 0-9999` |
-| Fechas XLS exportadas como número | `parseFloat("28/03/2026")` → `28` | Leer de `_especiesRows` directamente |
-| Evolución AR no coincidía con Portfolio | `recalcSnapshots` usaba `buildPortfolio` → `avgByAcct` en vez del ledger | Leer `_ledger` → `snap.avgAR_usd × balAR` |
-| Portfolio modo "Todo USD" no coincidía con Evolución en fechas históricas | `renderPortfolioTable` usaba `getCurrentFX()` | Reemplazado por `getFXForDate(fecha)` |
-| Índice base 100 inflado | Fórmula incorrecta | Corregida: Modified Dietz `(total - flujo) / total_ayer - 1` |
-| FX history solo desde 2023 | `fetchFXHistory` traía solo 1000 filas con `limit` en URL | Paginación con `Range` header — **no combinar `limit` en URL con `Range` header (error 416)** |
-| Evolución se reseteaba al reabrir | `recalcSnapshots()` hacía upsert pero no DELETE — fechas huérfanas persistían en Supabase con valores viejos | DELETE de todos los snapshots antes del upsert. Requirió agregar política RLS DELETE en `portfolio_snapshots` |
-| Datos de Portfolio AR vacíos al abrir | `renderPortfolioTable` corría antes de `fetchFXHistory` | `renderPortfolioTable()` al final de `fetchFXHistory` |
-| Precios EEUU no cargaban (solo EWZ) | `fetchPricesHistory` combinaba `limit` en URL + `Range` header → error 416 | Paginación correcta sin `limit` en URL |
-| P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
-| Date picker Portfolio en formato mm/dd/yyyy | `<input type="date">` usa locale del browser | Reemplazado por `<input type="text">` con `parseDateDMY`/`fmtDateDMY` y botones `‹`/`›` para navegar ±1 día |
+  for(const inst of Object.values(_instruments)) {
+    const ab = inst.avgByAcct;
+    if(!ab) continue;
+    const arARS_ac = { balance: 0, costNoComis: 0, costNoComis_usd: 0 };
+    const arUSD_ac = { balance: 0, costNoComis: 0 };
 
-### Lógica de balances y CEDEARs (v21)
+    // Replay all txns to rebuild costNoComis_usd for AR_ARS using real FX history
+    for(const t of inst.txns) {
+      const { operacion: op, cantidad: qty, cuenta } = t;
+      const isARS = cuenta.includes('ARS');
+      const isARG = cuenta.includes('Argentina');
+      const isEEUU = cuenta.includes('EEUU');
+      if(isEEUU) continue;
 
-| Cambio | Descripción |
-|---|---|
-| Eliminada transferencia implícita AR→EEUU en ventas sufijo C | El modelo anterior asumía que una venta MELIC/AY24C transfería títulos de AR a EEUU y luego los vendía desde EEUU. Esto era incorrecto: el broker registra la cuenta EEUU solo para indicar dónde se acredita el cash. Los títulos siempre salen del pool AR. `buildLedger` ahora trata ventas sufijo C igual que ventas desde AR (consume AR_ARS → AR_USD). `s.EEUU` no se toca. |
-| Nueva sub-sección AR_EEUU en tab Especies | `hasAR_EEUU`: flag que se activa cuando hay operaciones sufijo C en cuenta EEUU. Agrega columnas "C U$S EE · V U$S EE · Precio U$S · Monto U$S" dentro del grupo Argentina. `hasEEUU_real`: operaciones directas en NYSE (sin sufijo C). Ambos flags coexisten sin conflicto. |
-| Columna "Valoriz. Total" reemplaza "Bal Total" en Especies | La columna final del tab Especies antes mostraba `balAR + balEEUU` en títulos (unidad heterogénea). Ahora muestra `valAR_USD + valEEUU` en USD (valorización al costo promedio). |
+      if(BUY_OPS.includes(op) && qty > 0) {
+        if(isARS) {
+          const cost = calcBuyCost(t, false);
+          arARS_ac.balance += qty;
+          arARS_ac.costNoComis += cost;
+          const fx = getFX(t.fecha);
+          if(fx && fx > 0) arARS_ac.costNoComis_usd += cost / fx;
+        } else if(isARG) {
+          arUSD_ac.balance += qty;
+          arUSD_ac.costNoComis += calcBuyCost(t, false);
+        }
+      } else if(SELL_OPS.includes(op) && qty > 0) {
+        if(isARS && arARS_ac.balance > 0) {
+          const sellQty = Math.min(qty, arARS_ac.balance);
+          const ratio = Math.max(0, (arARS_ac.balance - sellQty) / arARS_ac.balance);
+          arARS_ac.costNoComis     *= ratio;
+          arARS_ac.costNoComis_usd *= ratio;
+          arARS_ac.balance -= qty;
+          if(arARS_ac.balance <= 0) { arARS_ac.balance = 0; arARS_ac.costNoComis = 0; arARS_ac.costNoComis_usd = 0; }
+        } else if(isARG && !isARS && arUSD_ac.balance > 0) {
+          const sellQty = Math.min(qty, arUSD_ac.balance);
+          const ratio = Math.max(0, (arUSD_ac.balance - sellQty) / arUSD_ac.balance);
+          arUSD_ac.costNoComis *= ratio;
+          arUSD_ac.balance -= qty;
+          if(arUSD_ac.balance <= 0) { arUSD_ac.balance = 0; arUSD_ac.costNoComis = 0; }
+        }
+      }
+    }
 
-| Cambio | Descripción |
-|---|---|
-| Precios de mercado para tab Argentina | Nueva función `getPriceForDateAR(ticker, date, avgCostUSD)` — busca `ticker_AR` en `_pricesHistory`, convierte ARS→USD por FX. Fallback al costo si no hay precio (muestra `*` en amarillo). Afecta "Precio Actual", "Valor Tenencia" y "Gan./Pérd." en tab AR. |
-| Toggle ARS/USD sensible en todas las columnas | Precio Actual, Valor Tenencia, Gan./Pérd. $, Total Posiciones y tarjetas respetan el toggle. Internamente siempre USD, conversión solo al mostrar. |
-| Tarjetas Portfolio Total y Ganancia AR | Antes mostraban "disponible en Fase 2". Ahora muestran `sumValorTenencia + totalCajaUSD` y `sumPL` respetando toggle. `totalCajaUSD` siempre en USD para evitar mezcla de unidades. |
-| Eliminada fila "TOTAL ARGENTINA/EEUU" del footer | Info redundante con las tarjetas. |
-| 4 series nuevas en Evolución + Ganancias no realizadas | AR Costo, AR Mercado, EEUU Costo, EEUU Mercado, Total Costo, Total Mercado (las 3 "Mercado" activas por default). Más 3 series "Ganancias no realizadas" (mercado - costo) para AR, EEUU y Total. Índice base 100 ahora usa mercado (`ar_usd_market + us_usd`). |
+    // Rebuild AR_BLENDED_USD in avgByAcct
+    const totalBal = arARS_ac.balance + arUSD_ac.balance;
+    if(totalBal > 0) {
+      const totalCostUSD = arARS_ac.costNoComis_usd + arUSD_ac.costNoComis;
+      ab['AR_BLENDED_USD'] = {
+        avg:         totalBal > 0 ? totalCostUSD / totalBal : 0,
+        balance:     totalBal,
+        hasBothLegs: arARS_ac.balance > 0 && arUSD_ac.balance > 0,
+      };
+    }
+  }
 
----
+  // Re-render Portfolio (avg USD mode may have changed) and refresh Especies if open
+  renderPortfolioTable();
+  const espTicker = espGetSelectedTicker();
+  if(espTicker) renderEspecies();
+}
 
-## Cómo pedir cambios en un chat nuevo
+// ══════ FETCH FX HISTORY ══════
+async function fetchFXHistory() {
+  try {
+    // Supabase cappea en 1000 filas por request — paginamos con Range header
+    const PAGE = 1000;
+    let allRows = [];
+    let from = 0;
+    while(true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/fx_rates?select=date,usd_ars&order=date.desc`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+                     'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
+      );
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const rows = await r.json();
+      allRows = allRows.concat(rows);
+      if(rows.length < PAGE) break; // última página
+      from += PAGE;
+    }
+    _fxHistory = {};
+    for(const row of allRows) _fxHistory[row.date] = row.usd_ars;
+    // Set latest FX in input (primer row = más reciente, orden desc)
+    if(allRows.length) {
+      _fxLatest = allRows[0].usd_ars;
+      const inp = document.getElementById('fx-input');
+      if(inp && !inp.value) inp.value = _fxLatest;
+    }
+    console.log(`Loaded FX history: ${allRows.length} rows, latest: ${allRows[0]?.date}, earliest: ${allRows[allRows.length-1]?.date}`);
+    rebuildFXYearDropdown();
+    renderFXTab();
+    // Rebuild blended avgs now that FX history is available
+    // (processAndRefresh runs before fetchFXHistory resolves, so _fxHistory was empty)
+    rebuildBlendedAvgs();
+    // Rebuild ledger with FX history now available, then rebuild portfolio
+    // so isEffectivelyClosed re-evaluates with correct ledger balances
+    if(_historicalTxns && _historicalTxns.length) {
+      _ledger = buildLedger(_historicalTxns, _fxHistory);
+      const deduped2 = deduplicateMEP(_historicalTxns);
+      const clean2   = canonicalizeTickers(deduped2);
+      const {usCards:uc, arCards:ac, optionsExcluded:oe, instruments:ins} = buildPortfolio(clean2, _fxHistory);
+      US.length=0; US.push(...uc);
+      AR.length=0; AR.push(...ac);
+      _instruments = ins;
+      _optionsExcluded = oe;
+      rebuildEspeciesDropdown();
+      renderPortfolioTable();
+    }
+  } catch(e) { console.warn('fetchFXHistory failed:', e); }
+}
 
-Pegá este documento + el HTML al inicio del chat.
+// ══════ FETCH SNAPSHOTS ══════
+async function fetchSnapshots() {
+  try {
+    const PAGE = 1000;
+    let allRows = [];
+    let from = 0;
+    while(true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/portfolio_snapshots?select=date,ar_ars,ar_usd,ar_usd_market,us_usd_cost,us_usd,fx_rate,idx&order=date.asc`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+                     'Range-Unit': 'items', 'Range': `${from}-${from+PAGE-1}` } }
+      );
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const rows = await r.json();
+      allRows = allRows.concat(rows);
+      if(rows.length < PAGE) break;
+      from += PAGE;
+    }
+    _snapshots = allRows;
+    console.log(`Loaded snapshots: ${_snapshots.length} rows`);
+    renderEvolChart();
+  } catch(e) { console.warn('fetchSnapshots failed:', e); }
+}
 
-**Reglas para cambios:**
-- Siempre editar el archivo existente con `str_replace` — no reescribir desde cero
-- Leer `contexto.md` y las secciones relevantes del HTML antes de cualquier cambio
-- Identificar todos los call sites de cualquier función a modificar
-- El dashboard NO funciona en el sandbox de Claude (CSP bloquea Supabase) — siempre testear desde GitHub Pages
-- Antes de cualquier fix de cash, validar con Python usando el .xls directamente
-- El archivo del broker es HTML disfrazado — **nunca procesar con SheetJS directamente**
-- Ofrecer actualizar `contexto.md` después de cada sesión de cambios
-- **Plan primero, código después** — presentar plan completo para confirmación antes de escribir código
-- **Preguntar dudas antes de implementar** — no a mitad del cambio
+// ══════ SAVE FX RATE ══════
+async function saveFXRate() {
+  const inp = document.getElementById('fx-input');
+  const val = parseFloat(inp?.value);
+  if(!val || val <= 0) { setFXStatus('Valor inválido', 'var(--red)'); return; }
+  const today = new Date().toISOString().slice(0,10);
+  setFXStatus('Guardando...', 'var(--muted)');
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/fx_rates`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+        'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify({ date: today, usd_ars: val })
+    });
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    _fxHistory[today] = val;
+    _fxLatest = val;
+    setFXStatus(`FX ${today} guardado ✓`, 'var(--green)');
+    renderPortfolioTable();
+  } catch(e) { setFXStatus(`Error: ${e.message}`, 'var(--red)'); }
+}
+function setFXStatus(msg, color) {
+  const el = document.getElementById('fx-status');
+  if(el) { el.textContent = msg; el.style.color = color; }
+}
 
-**Reglas críticas de arquitectura — NUNCA violar:**
+// ══════ AR MODE TOGGLE ══════
+function setARMode(mode) {
+  _arMode = mode;
+  ['ars','usd'].forEach(m => {
+    const btn = document.getElementById(`armode-${m}`);
+    if(btn) btn.classList.toggle('act', m === mode);
+  });
+  renderPortfolioTable();
+}
 
-**► FUENTES CANÓNICAS DE CASH Y VALOR — LAS MÁS IMPORTANTES:**
-- **`getCashAtDate(fecha)` es la ÚNICA fuente de cash histórico** — nunca reconstruir `buildCash(txnsUpTo, ...)` inline para consultar cash de una fecha puntual
-- **Hay 4 funciones canónicas de valor de portfolio — nunca calcular inline fuera de ellas:**
-  - **`getARValueAtDate(fecha)`** — AR al **costo** (avgAR_usd × bal) + caja. Coincide con tarjeta "Costo + Caja" AR. Se guarda en `ar_usd` en Supabase.
-  - **`getARMarketValueAtDate(fecha)`** — AR a **precio de mercado** (getPriceForDateAR, con fallback al costo) + caja. Coincide con tarjeta "Portfolio Total" AR. Se guarda en `ar_usd_market` en Supabase.
-  - **`getUSCostValueAtDate(fecha)`** — EEUU al **costo** (avgNoC × bal) + caja. Coincide con tarjeta "Costo + Caja" EEUU. Se guarda en `us_usd_cost` en Supabase.
-  - **`getUSValueAtDate(fecha)`** — EEUU a **precio de mercado** (getPriceForDate, con fallback al costo) + caja. Coincide con tarjeta "Portfolio Total" EEUU. Se guarda en `us_usd` en Supabase.
-- **`buildCash()` y `buildCashDaily()` solo se llaman en `processAndRefresh()` y `saveNRAOverride()`** — solo para construir `_cashDaily`, nunca para consultar una fecha puntual
-- **Todo cambio de fórmula de valuación va EXCLUSIVAMENTE en las funciones canónicas** — después de deployar, el usuario debe presionar ⟳ Recalcular para actualizar Evolución
-- **`getCashAtDate` itera `_cashDaily` desde el inicio (índice 0 = más reciente)** — el array está ordenado desc; iterar desde el final daría siempre el valor más antiguo
-- **CRÍTICO: Tab Portfolio y Tab Evolución deben coincidir** — las tarjetas de Portfolio usan las mismas 4 funciones canónicas que `recalcSnapshots`. Nunca calcular valor de portfolio inline fuera de estas funciones.
+// ══════ PRICE WITH FALLBACK ══════
+// Returns {price, estimated} for a ticker on a given date.
+// estimated=true means we fell back to avg cost (no market price available).
+function getPriceForDate(ticker, date, avgCost) {
+  const byTicker = _pricesHistory[ticker];
+  if(byTicker) {
+    // Exact date
+    if(byTicker[date] !== undefined) return { price: byTicker[date], estimated: false };
+    // Most recent date <= target date
+    const dates = Object.keys(byTicker).filter(d => d <= date).sort();
+    if(dates.length) return { price: byTicker[dates[dates.length-1]], estimated: false };
+  }
+  // Fallback: use avg cost (valued at cost)
+  return { price: avgCost || 0, estimated: true };
+}
 
-**► LEDGER Y PORTFOLIO:**
-- **`_ledger` es la fuente de verdad para balances y avgs** — Tab Portfolio y Tab Especies leen de `_ledger`, no de `AR[]`/`US[]`
-- **`renderPortfolioTable()` usa `getPortfolioStateAtDate(_portfolioDate)`** — no leer de `AR[]`/`US[]` directamente
-- **`costoTotal` en la tabla Portfolio usa `avgNoC_val × bal`** — sin comisiones; no restaurar `avgWithC`; la columna "P. Prom. c/comis." fue eliminada en v14
-- **`buildLedger` se llama ANTES de `buildPortfolio` en `processAndRefresh`** — no cambiar este orden
-- **`buildLedger` opera sobre rawTxns (pre-dedup)** — nunca pasarle txns ya deduplicadas
-- **`buildLedger` adelanta la fecha de "Pago de Amortización" para letras con gap Renta→Amort** — si existe un "Pago de Renta" con `fecha != fecha_liq` y un "Pago de Amortización" con `fecha == fecha_liq` del Pago de Renta, la Amortización se procesa con la `fecha` del Pago de Renta. Solo afecta la copia local dentro de `buildLedger` — `_historicalTxns` y el tab Transacciones no se modifican.
-- **`recalcSnapshots()` usa las 4 funciones canónicas** — calcula y guarda `ar_usd`, `ar_usd_market`, `us_usd_cost`, `us_usd` por fecha. El índice base 100 usa `ar_usd_market + us_usd` (mercado). No usar `buildPortfolio` → `avgByAcct` ni loops inline sobre `_ledger`.
-- **`recalcSnapshots()` usa `getCashAtDate(date)` por fecha** — no `buildCash(txnsUpTo, ...)`
+// ══════ PRICE FOR AR TICKER (CEDEAR / acción local) ══════
+// Busca el precio en ARS usando el ticker + '_AR' en _pricesHistory,
+// y lo convierte a USD dividiendo por el FX de la fecha.
+// Devuelve {price, estimated} igual que getPriceForDate.
+// Si no hay precio disponible, hace fallback al avgCost (estimated=true).
+function getPriceForDateAR(ticker, date, avgCostUSD) {
+  const fx = getFXForDate(date);
+  if(fx > 0) {
+    const arKey = ticker + '_AR';
+    const byTicker = _pricesHistory[arKey];
+    if(byTicker) {
+      let priceARS = null;
+      if(byTicker[date] !== undefined) {
+        priceARS = byTicker[date];
+      } else {
+        const dates = Object.keys(byTicker).filter(d => d <= date).sort();
+        if(dates.length) priceARS = byTicker[dates[dates.length-1]];
+      }
+      if(priceARS !== null && priceARS > 0) {
+        return { price: priceARS / fx, estimated: false };
+      }
+    }
+  }
+  // Fallback: al costo
+  return { price: avgCostUSD || 0, estimated: true };
+}
 
-**► ESPECIES:**
-- **`renderEspecies()` lee de `_ledger[ticker]`** — no de `_instruments[ticker]`
-- **`rebuildEspeciesDropdown()` usa `Object.keys(_ledger)` como fuente** — no `AR`/`US`
-- **`rebuildEspeciesDropdown()` puebla 5 selectores** — no hay `esp-ticker-select` único
-- **`renderEspecies()` obtiene ticker con `espGetSelectedTicker()`** — no leer de un selector fijo
+// Get latest FX rate on or before a given date
+function getFXForDate(date) {
+  if(!date) return _fxLatest || 1;
+  const dates = Object.keys(_fxHistory).filter(d => d <= date).sort();
+  if(dates.length) return _fxHistory[dates[dates.length-1]];
+  // If date is before our history, use earliest available
+  const all = Object.keys(_fxHistory).sort();
+  return all.length ? _fxHistory[all[0]] : (_fxLatest || 1);
+}
 
-**► TRANSACCIONES:**
-- **`rebuildYearDropdown()` puebla `ms-panel-year` con checkboxes** — no hay `<select id="aYear">`
-- **Los filtros de Transacciones son multi-valor** — `aFilter()` usa `msGetSelected()`, no `.value`
-- **`isDeposito()`/`isExtraccion()` detectan por prefijo** — no por nombre exacto del banco
-- **Depósitos/Extracciones fuera de `OTHER_OPS`** — tienen pseudo-valores `__depositos__`/`__extracciones__` en el dropdown
+// Get current FX from input or latest known
+function getCurrentFX() {
+  const inp = document.getElementById('fx-input');
+  const val = parseFloat(inp?.value);
+  if(val && val > 0) return val;
+  return _fxLatest || 1;
+}
 
-**► LEDGER INTERNO:**
-- **`isEffectivelyClosed` consulta `_ledger` antes de declarar stale** — no eliminar ese check
-- **`movesTitle()` determina qué fila mueve títulos** — la fila de comisión (cuenta ARS) NO mueve
-- **Ventas desde AR:** consumir slot propio → otro slot AR → EEUU→AR
-- **Ventas con sufijo C (MELIC, AY24C):** los títulos salen del pool AR (AR_ARS → AR_USD), igual que una venta desde AR. `s.EEUU` no se toca. No hay transferencia implícita AR→EEUU en ventas. El cash va a EEUU pero eso lo maneja `buildCash`, no `buildLedger`.
-- **Transferencias reales de títulos:** solo ocurren cuando el broker registra `Transferencia de Titulos IN -` explícitamente. Nunca asumir transferencia implícita para operaciones de Venta.
-- **`_xferAR` y `_xferEEUU` en cada txn de venta** — los usa `renderEspecies`; son 0 para ventas con sufijo C
+// ══════════════════════════════════════════════════════════════════════
+//  FUENTES CANÓNICAS DE CASH Y VALOR DE PORTFOLIO
+//
+//  getCashAtDate    — ÚNICA fuente de saldos de cash para cualquier fecha.
+//                     Lee de _cashDaily (construido una sola vez en
+//                     processAndRefresh). Mismo dato que tab Saldo Cash.
+//
+//  getARValueAtDate — ÚNICA definición del valor AR en USD.
+//  getUSValueAtDate — ÚNICA definición del valor EEUU en USD.
+//
+//  Para cambiar cómo se calcula cash o valor de portfolio, SOLO modificar aquí.
+//  Todos los tabs (Portfolio, Evolución, Saldo Cash) consumen estas funciones.
+// ══════════════════════════════════════════════════════════════════════
 
-**► FX Y PRECIOS:**
-- **FX siempre desde `_fxHistory`/`_fxLatest`** — no agregar inputs manuales de FX
-- **`renderPortfolioTable()` usa `getFXForDate(fecha)`** — nunca `getCurrentFX()` para cálculos de conversión
-- **`recalcSnapshots()` usa `getFXForDate(date)`** — no `getCurrentFX()`
-- **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown + `renderPortfolioTable` al resolverse** — no eliminar
-- **`fetchFXHistory()` llama `rebuildBlendedAvgs()` al final** — no eliminar
-- **Precios AR (CEDEARs/acciones locales): se guardan en Supabase con ticker `TICKER_AR`** — convención universal, sin excepciones. La función `getPriceForDateAR(ticker, date, avgCostUSD)` busca `ticker + '_AR'` en `_pricesHistory`, convierte ARS→USD dividiendo por `getFXForDate(date)`, y hace fallback al costo si no hay precio. El tab Portfolio AR llama a esta función para "Precio Actual", "Valor Tenencia" y "Gan./Pérd."
-- **Tickers AR en tabla `instruments` de Supabase llevan siempre sufijo `_AR`** — ej: `GGAL_AR`, `MELI_AR`, `SPY_AR`. Esto permite que el mismo ticker exista en EEUU (sin sufijo) y en Argentina (con sufijo) sin conflicto de PK. Los `yahoo_ticker` correspondientes tienen sufijo `.BA` (ej: `GGAL.BA`).
+// Devuelve {Argentina (ARS), Argentina (USD), EEUU (USD)} para una fecha dada,
+// leyendo de _cashDaily — la misma fuente que el tab Saldo Cash.
+// Si no hay movimiento en esa fecha exacta, usa el último registro anterior.
+function getCashAtDate(fecha) {
+  if(!_cashDaily || !_cashDaily.length) {
+    return { 'Argentina (ARS)': 0, 'Argentina (USD)': 0, 'EEUU (USD)': 0 };
+  }
+  // _cashDaily está ordenado desc (más reciente primero).
+  // Iteramos desde el inicio hasta encontrar el primer registro con fecha <= fecha pedida.
+  // Ese es el más reciente en o antes de la fecha solicitada.
+  let best = null;
+  for(let i = 0; i < _cashDaily.length; i++) {
+    if(_cashDaily[i].fecha <= fecha) { best = _cashDaily[i]; break; }
+  }
+  if(!best) return { 'Argentina (ARS)': 0, 'Argentina (USD)': 0, 'EEUU (USD)': 0 };
+  return {
+    'Argentina (ARS)': best.ars    ?? 0,
+    'Argentina (USD)': best.ar_usd ?? 0,
+    'EEUU (USD)':      best.us_usd ?? 0,
+  };
+}
 
-**► SUPABASE Y PAGINACIÓN:**
-- **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
-- **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
-- **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
+function getARValueAtDate(fecha, precomputedData) {
+  const fx = getFXForDate(fecha);
 
-**► MISC:**
-- **`fetchLatestPrices()` recalcula cash post-overrides** — no eliminar
-- **`exportEspeciesXLS()` lee de `_especiesRows`/`_especiesState`** — no del DOM
-- **`calcBuyCost(t, false)` descuenta comis + IVA + otros_imp. `calcBuyCost(t, true)` = `|monto|`**
-- **`buildPortfolio(clean, fxHistory)` es pura** — no muta globals
-- **`recalcSnapshots()` requiere `_fxHistory` cargado** — el guard lo verifica
-- **`ar_ars` en snapshots siempre es 0 desde v9** — `ar_usd` ya contiene el total AR en USD
-- **`buildCauciones()` solo procesa cauciones en ARS** — las cauciones en dólares se manejan por `buildUsdCaucionMovs()`
-- **`buildCauciones()` matchea por `nro_mov`** — no por `nro_boleto`
-- **`buildCauciones()` se llama una vez antes del loop en `recalcSnapshots()`** — no dentro del loop por fecha
-- **`_arMode` solo tiene valores `'ars'` y `'usd'`** — el modo `'origin'` fue eliminado en v11
-- **Las filas de caja NO están en el tbody de la tabla Portfolio** — están en las tarjetas `renderPortfolioCards()`
-- **`renderPortfolioCards()` recibe `sumPL` como parámetro** — no recalcular `sumValorTenencia - sumCostoTotal` internamente
-- **`renderPortfolioTable()` se llama al final de `fetchPricesHistory` y `fetchFXHistory`** — necesario para resolver race conditions de carga
+  // — Tenencias: avgAR_usd (sin comisiones) × balance —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balAR ?? 0) <= 0) continue;
+    tenencias += (p.snap.avgAR_usd ?? 0) * p.balAR;
+  }
+
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUSD = balances['Argentina (USD)'] ?? 0;
+  const bARS = balances['Argentina (ARS)'] ?? 0;
+
+  // — Cauciones en pesos activas a esta fecha —
+  const cauciones = precomputedData?.cauciones ?? buildCauciones(_historicalTxns || []);
+  let caucionesUSD = 0;
+  for(const c of cauciones) {
+    if(c.fechaApertura <= fecha && (c.fechaCierre === null || c.fechaCierre > fecha)) {
+      caucionesUSD += fx > 0 ? c.monto / fx : 0;
+    }
+  }
+
+  return tenencias + bUSD + (fx > 0 ? bARS / fx : 0) + caucionesUSD;
+}
+
+// Valor AR a precio de MERCADO + caja.
+// Usa getPriceForDateAR (precio en ARS convertido a USD, con fallback al costo).
+// Coincide con la tarjeta "Portfolio Total" del tab Argentina.
+function getARMarketValueAtDate(fecha, precomputedData) {
+  const fx = getFXForDate(fecha);
+
+  // — Tenencias: precio de mercado AR (con fallback al costo) × balance —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balAR ?? 0) <= 0) continue;
+    const avgRef = p.snap.avgAR_usd ?? 0;
+    const { price } = getPriceForDateAR(p.ticker, fecha, avgRef);
+    tenencias += (price ?? 0) * p.balAR;
+  }
+
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUSD = balances['Argentina (USD)'] ?? 0;
+  const bARS = balances['Argentina (ARS)'] ?? 0;
+
+  // — Cauciones en pesos activas a esta fecha —
+  const cauciones = precomputedData?.cauciones ?? buildCauciones(_historicalTxns || []);
+  let caucionesUSD = 0;
+  for(const c of cauciones) {
+    if(c.fechaApertura <= fecha && (c.fechaCierre === null || c.fechaCierre > fecha)) {
+      caucionesUSD += fx > 0 ? c.monto / fx : 0;
+    }
+  }
+
+  return tenencias + bUSD + (fx > 0 ? bARS / fx : 0) + caucionesUSD;
+}
+
+function getUSValueAtDate(fecha, precomputedData) {
+  // — Tenencias: precio de mercado (o avg sin comisiones como fallback) × balance —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balEEUU ?? 0) <= 0) continue;
+    const avgRef = p.snap.EEUU?.avgNoC ?? 0;
+    const { price } = getPriceForDate(p.ticker, fecha, avgRef);
+    tenencias += (price ?? 0) * p.balEEUU;
+  }
+
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUS = balances['EEUU (USD)'] ?? 0;
+
+  return tenencias + bUS;
+}
+
+// Valor EEUU al COSTO de adquisición + caja.
+// Usa avgNoC directamente sin buscar precios de mercado.
+// Coincide con la tarjeta "Costo + Caja" del tab EEUU.
+function getUSCostValueAtDate(fecha, precomputedData) {
+  // — Tenencias: avgNoC (sin comisiones) × balance — sin precios de mercado —
+  const positions = getPortfolioStateAtDate(fecha);
+  let tenencias = 0;
+  for(const p of positions) {
+    if((p.balEEUU ?? 0) <= 0) continue;
+    tenencias += (p.snap.EEUU?.avgNoC ?? 0) * p.balEEUU;
+  }
+
+  // — Cash: fuente canónica getCashAtDate —
+  const balances = precomputedData?.balances ?? getCashAtDate(fecha);
+  const bUS = balances['EEUU (USD)'] ?? 0;
+
+  return tenencias + bUS;
+}
+
+// ══════ TAB SWITCH ══════
+function switchTab(el,key){
+  const panel = document.getElementById('panel-'+key);
+  if(!panel) return;
+  document.querySelectorAll('.tab').forEach(t=>t.className='tab');
+  el.classList.add('act-'+key);
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  panel.classList.add('active');
+  localStorage.setItem('active_tab', key);
+  if(key === 'especies') rebuildEspeciesDropdown();
+  if(key === 'fx') renderFXTab();
+}
+
+// ══════ PORTFOLIO TABLE ══════
+let _portfolioView = 'ar'; // 'ar' | 'us'
+let _pSort_col = 'net', _pSort_dir = -1;
+
+function switchPortfolio(view) {
+  _portfolioView = view;
+  document.getElementById('ptog-ar').style.background  = view==='ar' ? 'var(--ar)'  : 'transparent';
+  document.getElementById('ptog-ar').style.color       = view==='ar' ? 'var(--bg)'  : 'var(--muted)';
+  document.getElementById('ptog-us').style.background  = view==='us' ? 'var(--us)'  : 'transparent';
+  document.getElementById('ptog-us').style.color       = view==='us' ? 'var(--bg)'  : 'var(--muted)';
+  document.getElementById('portfolio-search').value = '';
+  renderPortfolioTable();
+}
+
+function pSort(col) {
+  if(col === _pSort_col) _pSort_dir *= -1;
+  else { _pSort_col = col; _pSort_dir = -1; }
+  renderPortfolioTable();
+}
+
+function filterPortfolioTable(q) {
+  const rows = document.querySelectorAll('#portfolio-tbody tr:not(.row-cash)');
+  q = q.toLowerCase();
+  rows.forEach(r => {
+    const ticker = (r.dataset.ticker||'').toLowerCase();
+    r.style.display = ticker.includes(q) ? '' : 'none';
+  });
+}
+
+// ══════ PORTFOLIO DATE SELECTOR ══════
+
+// Convierte dd/mm/yyyy → YYYY-MM-DD. Devuelve '' si el formato no es válido.
+function parseDateDMY(s) {
+  if(!s) return '';
+  const m = s.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(!m) return '';
+  const [, dd, mm, yyyy] = m;
+  const y = parseInt(yyyy), mo = parseInt(mm), d = parseInt(dd);
+  if(y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  return `${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+}
+
+// Convierte YYYY-MM-DD → dd/mm/yyyy para mostrar en el input
+function fmtDateDMY(iso) {
+  if(!iso || iso.length < 10) return '';
+  return `${iso.slice(8,10)}/${iso.slice(5,7)}/${iso.slice(0,4)}`;
+}
+
+function onPortfolioDateChange() {
+  const inp = document.getElementById('portfolio-date');
+  if(!inp) return;
+  const iso = parseDateDMY(inp.value);
+  if(iso) { _portfolioDate = iso; renderPortfolioTable(); }
+}
+
+function setPortfolioDateToday() {
+  const today = new Date().toISOString().slice(0,10);
+  _portfolioDate = today;
+  const inp = document.getElementById('portfolio-date');
+  if(inp) inp.value = fmtDateDMY(today);
+  renderPortfolioTable();
+}
+
+function initPortfolioDateInput() {
+  const inp = document.getElementById('portfolio-date');
+  if(inp && !inp.value) inp.value = fmtDateDMY(_portfolioDate);
+}
+
+// Navega la fecha del portfolio en +/- días
+function shiftPortfolioDate(delta) {
+  const parts = _portfolioDate.split('-');
+  if(parts.length !== 3) return;
+  const d = new Date(_portfolioDate + 'T12:00:00');
+  d.setDate(d.getDate() + delta);
+  const iso = d.toISOString().slice(0,10);
+  _portfolioDate = iso;
+  const inp = document.getElementById('portfolio-date');
+  if(inp) inp.value = fmtDateDMY(iso);
+  renderPortfolioTable();
+}
+
+// ══════ PORTFOLIO STATE FROM LEDGER ══════
+// Construye el estado del portfolio a una fecha dada leyendo _ledger.
+// Para cada ticker, busca el último _snap en o antes de fecha.
+// Devuelve array de { ticker, snap, isAR, isEEUU } para posiciones con bal > 0.
+function getPortfolioStateAtDate(fecha) {
+  const result = [];
+  for(const [ticker, inst] of Object.entries(_ledger)) {
+    if(!inst || !inst.txns || !inst.txns.length) continue;
+    // Encontrar el último snap en o antes de fecha
+    let lastSnap = null;
+    for(const t of inst.txns) {
+      if(t.fecha > fecha) break;      // txns están ordenadas asc por fecha
+      if(t._snap) lastSnap = t._snap;
+    }
+    if(!lastSnap) continue;
+    const balAR   = lastSnap.balAR   ?? 0;
+    const balEEUU = lastSnap.balEEUU ?? 0;
+    if(balAR <= 0 && balEEUU <= 0) continue;
+    const isAR   = inst.txns.some(t => t.fecha <= fecha && t.cuenta && t.cuenta.includes('Argentina'));
+    const isEEUU = balEEUU > 0;
+    result.push({ ticker, snap: lastSnap, isAR, isEEUU,
+                  balAR, balEEUU, balTotal: lastSnap.balTotal ?? (balAR + balEEUU) });
+  }
+  return result;
+}
+
+// ══════ CAUCIONES EN PESOS ══════
+// Matchea pares Caución / Liquidación de Caución por nro_mov.
+// Solo cauciones en ARS (Caución en Pesos Arg.). Las de dólares se manejan por buildUsdCaucionMovs.
+function buildCauciones(rawTxns) {
+  const TICKER_CAUCION = 'Cauci\u00F3n en Pesos Arg.';
+  const OP_CIERRE      = 'Liquidaci\u00F3n de Cauci\u00F3n';
+
+  const aperturas = {};
+  const cierres   = {};
+
+  for(const t of rawTxns) {
+    if(!t.nro_mov || t.nro_mov === '0') continue;
+    // Apertura: ticker debe ser "Caución en Pesos Arg."
+    if(t.operacion === 'Cauci\u00F3n' && t.ticker === TICKER_CAUCION) {
+      aperturas[t.nro_mov] = t;
+    }
+    // Cierre: solo por nro_mov — no filtramos por ticker porque Liquidación no lo tiene
+    if(t.operacion === OP_CIERRE) {
+      cierres[t.nro_mov] = t;
+    }
+  }
+
+  const result = [];
+  for(const [nro_mov, ap] of Object.entries(aperturas)) {
+    const cierre        = cierres[nro_mov] || null;
+    const fechaApertura = ap.fecha;
+    const fechaCierre   = cierre ? cierre.fecha : null;
+    const monto = Math.abs(ap.monto || 0);
+    if(monto === 0) continue;
+
+    const fmtFechaLabel = f => f && f.length >= 10
+      ? `${f.slice(8,10)}/${f.slice(5,7)}/${f.slice(0,4)}` : f;
+    const label = 'Cauci\u00F3n - ' + fmtFechaLabel(fechaApertura);
+
+    result.push({ nro_mov, fechaApertura, fechaCierre, monto, label });
+  }
+  return result;
+}
+
+// ══════ PORTFOLIO SUMMARY CARDS ══════
+function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPrice) {
+  const el = document.getElementById('portfolio-cards');
+  if(!el) return;
+
+  const fx  = getFXForDate(fecha);
+  const fN2 = n => N(Math.abs(n), 2);
+  const neg = n => n < 0;
+
+  // helper: genera una tarjeta
+  const card = (cls, label, mainHtml, subHtml = '') => `
+    <div class="pf-card ${cls}">
+      <div class="pf-card-label">${label}</div>
+      <div class="pf-card-main">${mainHtml}</div>
+      ${subHtml ? `<div class="pf-card-sub">${subHtml}</div>` : ''}
+    </div>`;
+  const placeholder = (cls, label) => card(cls, label,
+    '<span class="pf-card-placeholder">—</span>', 'disponible en Fase 2');
+
+  let html = '';
+
+  if(isAr) {
+    const bARS = historicCash?.['Argentina (ARS)'] ?? 0;
+    const bUSD = historicCash?.['Argentina (USD)'] ?? 0;
+
+    // 1. Caja ARS
+    const arsColor = neg(bARS) ? 'color:var(--red)' : 'color:var(--ar)';
+    const arsEquiv = fx > 0 ? `≈ U$S ${fN2(bARS / fx)}` : '';
+    html += card('pc-cash-ars', '💵 Caja ARS',
+      `<span style="${arsColor}">${neg(bARS)?'-':''}$ ${fN2(bARS)}</span>`,
+      arsEquiv);
+
+    // 2. Caja USD (AR)
+    const usdColor = neg(bUSD) ? 'color:var(--red)' : 'color:var(--usd)';
+    const usdEquiv = fx > 0 ? `≈ $ ${fN2(bUSD * fx)}` : '';
+    html += card('pc-cash-usd', '💵 Caja USD',
+      `<span style="${usdColor}">${neg(bUSD)?'-':''}U$S ${fN2(bUSD)}</span>`,
+      usdEquiv);
+
+    // 3. Total Caja (en modo toggle)
+    let totalCaja, totalCajaFmt;
+    if(_arMode === 'ars') {
+      totalCaja = bARS + (fx > 0 ? bUSD * fx : 0);
+      totalCajaFmt = `<span style="${neg(totalCaja)?'color:var(--red)':'color:var(--green)'}">${neg(totalCaja)?'-':''}$ ${fN2(totalCaja)}</span>`;
+    } else {
+      totalCaja = bUSD + (fx > 0 ? bARS / fx : 0);
+      totalCajaFmt = `<span style="${neg(totalCaja)?'color:var(--red)':'color:var(--green)'}">${neg(totalCaja)?'-':''}U$S ${fN2(totalCaja)}</span>`;
+    }
+    html += card('pc-cash-total', '🏦 Total Caja', totalCajaFmt,
+      _arMode === 'ars' ? `FX ${N(fx,2)}` : `FX ${N(fx,2)}`);
+
+    // 4. Costo + Caja
+    const costoMasCaja = sumCostoTotal + totalCaja;
+    const costoSym = _arMode === 'ars' ? '$ ' : 'U$S ';
+    html += card('pc-costo', '📦 Costo + Caja',
+      `<span style="color:var(--purple)">${costoSym}${fN2(costoMasCaja)}</span>`,
+      `Costo: ${costoSym}${fN2(sumCostoTotal)}`);
+
+    // 5. Portfolio Total
+    if(anyPrice) {
+      // totalCajaUSD: siempre en USD, independiente del toggle
+      const totalCajaUSD = bUSD + (fx > 0 ? bARS / fx : 0);
+      const portfolioTotalUSD = sumValorTenencia + totalCajaUSD;
+      const portfolioTotalFmt = _arMode === 'ars'
+        ? `$ ${fN2(portfolioTotalUSD * fx)}`
+        : `U$S ${fN2(portfolioTotalUSD)}`;
+      html += card('pc-total', '🏦 Portfolio Total',
+        `<span style="color:var(--text)">${portfolioTotalFmt}</span>`,
+        `Tenencias: ${_arMode === 'ars' ? '$ ' + fN2(sumValorTenencia * fx) : 'U$S ' + fN2(sumValorTenencia)}`);
+    } else {
+      html += placeholder('pc-total', '🏦 Portfolio Total');
+    }
+
+    // 6. Ganancia
+    if(anyPrice && sumPL !== 0) {
+      const plDisplay = _arMode === 'ars' ? sumPL * fx : sumPL;
+      const plPct   = sumCostoTotal > 0 ? (sumPL / sumCostoTotal) * 100 : null;
+      const plColor = sumPL >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+      const plSign  = sumPL >= 0 ? '+' : '-';
+      const plSym   = _arMode === 'ars' ? '$ ' : 'U$S ';
+      const plSub   = plPct !== null ? `${plSign}${N(Math.abs(plPct), 2)}%` : '';
+      html += card('pc-pl', '📈 Ganancia',
+        `<span style="${plColor}">${plSign}${plSym}${fN2(plDisplay)}</span>`,
+        plSub);
+    } else {
+      html += placeholder('pc-pl', '📈 Ganancia');
+    }
+
+  } else {
+    // ── EEUU ──
+    const bUS = historicCash?.['EEUU (USD)'] ?? 0;
+
+    // 1. Caja USD
+    const usColor = neg(bUS) ? 'color:var(--red)' : 'color:var(--us)';
+    html += card('pc-cash-usd', '💵 Caja USD',
+      `<span style="${usColor}">${neg(bUS)?'-':''}U$S ${fN2(bUS)}</span>`);
+
+    // 2. Costo + Caja
+    const costoMasCajaUS = sumCostoTotal + bUS;
+    html += card('pc-costo', '📦 Costo + Caja',
+      `<span style="color:var(--purple)">U$S ${fN2(costoMasCajaUS)}</span>`,
+      `Costo: U$S ${fN2(sumCostoTotal)}`);
+
+    // 3. Portfolio Total
+    if(anyPrice) {
+      const portfolioTotal = sumValorTenencia + bUS;
+      html += card('pc-total', '🏦 Portfolio Total',
+        `<span style="color:var(--text)">U$S ${fN2(portfolioTotal)}</span>`,
+        `Tenencias: U$S ${fN2(sumValorTenencia)}`);
+    } else {
+      html += placeholder('pc-total', '🏦 Portfolio Total');
+    }
+
+    // 4. Ganancia
+    if(anyPrice) {
+      const plPct   = sumCostoTotal > 0 ? (sumPL / sumCostoTotal) * 100 : null;
+      const plColor = sumPL >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+      const plSign  = sumPL >= 0 ? '+' : '-';
+      const plSub   = plPct !== null ? `${plSign}${N(Math.abs(plPct), 2)}%` : '';
+      html += card('pc-pl', '📈 Ganancia',
+        `<span style="${plColor}">${plSign}U$S ${fN2(sumPL)}</span>`,
+        plSub);
+    } else {
+      html += placeholder('pc-pl', '📈 Ganancia');
+    }
+  }
+
+  el.innerHTML = html;
+}
+
+function renderPortfolioTable() {
+  const isAr = _portfolioView === 'ar';
+  const fecha = _portfolioDate;
+  const isToday = fecha >= new Date().toISOString().slice(0,10);
+
+  initPortfolioDateInput();
+
+  // Obtener estado del portfolio a la fecha desde _ledger
+  const allPositions = getPortfolioStateAtDate(fecha);
+  const positions = allPositions.filter(p => isAr ? p.isAR && p.balAR > 0 : p.isEEUU && p.balEEUU > 0);
+
+  const fmtP = (n, ref) => ref < 200 ? N(n, 4) : N(n, 2);
+
+  // Sort headers
+  document.querySelectorAll('#portfolio-tbl thead th').forEach(th => {
+    th.classList.remove('sa','sd');
+    const col = th.id ? th.id.replace('pth-','') : null;
+    if(col && col === _pSort_col) th.classList.add(_pSort_dir===1?'sa':'sd');
+  });
+
+  // Construir objetos ordenables
+  const rows = positions.map(p => {
+    const snap = p.snap;
+    const bal  = isAr ? p.balAR : p.balEEUU;
+    const avgNoC_val = isAr
+      ? (_arMode === 'ars' ? (snap.avgAR_ars ?? 0) : (snap.avgAR_usd ?? 0))
+      : (snap.EEUU?.avgNoC ?? 0);
+    const costoTotal = avgNoC_val * bal;
+    return { ticker: p.ticker, bal, snap, p,
+             net: bal,
+             avg: avgNoC_val,
+             costoTotal,
+             valorTenencia: 0 }; // valorTenencia se calcula abajo para EEUU
+  });
+
+  rows.sort((a, b) => {
+    const va = a[_pSort_col], vb = b[_pSort_col];
+    if(typeof va === 'string') return va.localeCompare(vb) * _pSort_dir;
+    return ((+va||0) - (+vb||0)) * _pSort_dir;
+  });
+
+  // Show/hide AR mode controls
+  const arModeWrap = document.getElementById('ar-mode-wrap');
+  if(arModeWrap) arModeWrap.style.display = isAr ? 'flex' : 'none';
+
+  const tbody = document.getElementById('portfolio-tbody');
+
+  // Acumuladores para totales de posiciones
+  let sumCostoTotal = 0, sumValorTenencia = 0, sumPL = 0, anyPriceForTotal = false;
+
+  tbody.innerHTML = rows.map(row => {
+    const { ticker, bal, snap } = row;
+    const netFmt = isAr ? N(bal, 0) : N(bal, 2);
+    const fx = getFXForDate(fecha);
+
+    // ── Avg sin comisiones ──────────────────────────────────────────────
+    let avgFmt = '—';
+    if(isAr) {
+      if(_arMode === 'ars') {
+        const v = snap.avgAR_ars ?? 0;
+        avgFmt = v > 0 ? '$ ' + fmtP(v, v) : '—';
+      } else {
+        const v = snap.avgAR_usd ?? 0;
+        avgFmt = v > 0 ? 'U$S ' + fmtP(v, v) : '—';
+      }
+    } else {
+      const v = snap.EEUU?.avgNoC ?? 0;
+      avgFmt = v > 0 ? fmtP(v, v) : '—';
+    }
+
+    // ── Costo Total ────────────────────────────────────────────────────
+    const costoTotalVal = row.costoTotal;
+    sumCostoTotal += costoTotalVal;
+    const costoTotalFmt = costoTotalVal > 0
+      ? (isAr
+          ? (_arMode === 'ars' ? '$ ' + N(costoTotalVal, 2) : 'U$S ' + N(costoTotalVal, 2))
+          : 'U$S ' + N(costoTotalVal, 2))
+      : '—';
+
+    // ── Precio actual ──────────────────────────────────────────────────
+    let currentPrice = null, isEstimated = false;
+    if(!isAr) {
+      const avgRef = snap.EEUU?.avgNoC ?? 0;
+      const lookup = getPriceForDate(ticker, fecha, avgRef);
+      currentPrice = lookup.price > 0 ? lookup.price : null;
+      isEstimated  = lookup.estimated;
+    } else {
+      // AR: buscar precio en ARS via ticker_AR, convertir a USD por FX.
+      // Si no hay precio de mercado, getPriceForDateAR devuelve avgCostUSD (estimated=true).
+      const avgRef = snap.avgAR_usd ?? 0;
+      const lookup = getPriceForDateAR(ticker, fecha, avgRef);
+      currentPrice = lookup.price > 0 ? lookup.price : null;
+      isEstimated  = lookup.estimated;
+    }
+    const priceColor = currentPrice !== null ? (isEstimated ? 'color:var(--usd)' : 'color:var(--text)') : 'color:var(--muted)';
+    let priceFmt = '—';
+    if(currentPrice !== null) {
+      if(isAr && _arMode === 'ars') {
+        const priceARS = currentPrice * getFXForDate(fecha);
+        priceFmt = '$ ' + fmtP(priceARS, priceARS) + (isEstimated ? ' *' : '');
+      } else {
+        priceFmt = 'U$S ' + fmtP(currentPrice, currentPrice) + (isEstimated ? ' *' : '');
+      }
+    }
+
+    // ── Valor Tenencia ─────────────────────────────────────────────────
+    let valCell = '<td class="num" style="color:var(--muted)">—</td>';
+    if(currentPrice !== null && bal > 0) {
+      const valorUSD = currentPrice * bal;
+      sumValorTenencia += valorUSD; // siempre acumular en USD
+      anyPriceForTotal = true;
+      row.valorTenencia = valorUSD;
+      let valFmt;
+      if(isAr && _arMode === 'ars') {
+        valFmt = `$ ${N(valorUSD * getFXForDate(fecha), 2)}`;
+      } else {
+        valFmt = `U$S ${N(valorUSD, 2)}`;
+      }
+      valCell = `<td class="num mp">${valFmt}</td>`;
+    }
+
+    // ── Gan./Pérd. $ y % ───────────────────────────────────────────────
+    let plCellAmt = '<td class="num" style="color:var(--muted)">—</td>';
+    let plCellPct = '<td class="num" style="color:var(--muted)">—</td>';
+    if(currentPrice !== null && bal > 0 && !isEstimated) {
+      const avgRef = isAr ? (snap.avgAR_usd ?? 0) : (snap.EEUU?.avgNoC ?? 0);
+      if(avgRef > 0) {
+        const plUSD = (currentPrice - avgRef) * bal;
+        const plPct = ((currentPrice / avgRef) - 1) * 100;
+        const cls   = plUSD >= 0 ? 'mp' : 'mn';
+        const sign  = plUSD >= 0 ? '+' : '';
+        sumPL += plUSD;
+        let plAmtStr;
+        if(isAr && _arMode === 'ars') {
+          plAmtStr = `${sign}$ ${N(Math.abs(plUSD * getFXForDate(fecha)), 2)}`;
+        } else {
+          plAmtStr = `${sign}U$S ${N(Math.abs(plUSD), 2)}`;
+        }
+        plCellAmt = `<td class="num ${cls}">${plAmtStr}</td>`;
+        plCellPct = `<td class="num ${cls}">${sign}${N(plPct, 2)}%</td>`;
+      }
+    }
+
+    return `<tr data-ticker="${ticker}">
+      <td><b style="font-size:13px">${ticker}</b></td>
+      <td class="num">${netFmt}</td>
+      <td class="num">${avgFmt}</td>
+      <td class="num" style="color:var(--muted);font-size:11px">${costoTotalFmt}</td>
+      <td class="num" style="${priceColor}">${priceFmt}</td>
+      ${valCell}
+      ${plCellAmt}
+      ${plCellPct}
+    </tr>`;
+  }).join('');
+
+  // ── Cauciones en pesos activas a la fecha (solo AR) ───────────────────
+  if(isAr && _historicalTxns && _historicalTxns.length) {
+    const cauciones = buildCauciones(_historicalTxns);
+    const fx = getFXForDate(fecha);
+    const caucionesActivas = cauciones.filter(c =>
+      c.fechaApertura <= fecha && (c.fechaCierre === null || c.fechaCierre > fecha)
+    );
+    for(const c of caucionesActivas) {
+      const montoEnModo = _arMode === 'ars' ? c.monto : (fx > 0 ? c.monto / fx : 0);
+      const sym = _arMode === 'ars' ? '$ ' : 'U$S ';
+      sumCostoTotal    += montoEnModo;
+      sumValorTenencia += montoEnModo;
+      tbody.innerHTML += `<tr data-ticker="${c.label}">
+        <td><b style="font-size:12px">${c.label}</b></td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+        <td class="num" style="font-size:11px">${sym}${N(montoEnModo, 2)}</td>
+        <td class="num">—</td>
+        <td class="num" style="font-size:11px">${sym}${N(montoEnModo, 2)}</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+      </tr>`;
+    }
+  }
+
+  // ── Cash histórico a la fecha seleccionada ────────────────────────────
+  // getCashAtDate es la fuente canónica — lee de _cashDaily, misma fuente que tab Saldo Cash.
+  const historicCash = getCashAtDate(fecha);
+
+  // ── Render summary cards ──────────────────────────────────────────────
+  renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPriceForTotal);
+
+  // ── Footer totals ─────────────────────────────────────────────────────
+  const tfoot = document.getElementById('portfolio-tfoot');
+  // Símbolo según modo
+  const sym = (isAr && _arMode === 'ars') ? '$ ' : 'U$S ';
+  const fx = getFXForDate(fecha);
+
+  // Fila 1: total de posiciones (Costo Total y Valor Tenencia)
+  const costoTotalFmtTot = sumCostoTotal > 0 ? sym + N(sumCostoTotal, 2) : '—';
+  const valTenenciaFmtTot = anyPriceForTotal
+    ? sym + N(isAr && _arMode === 'ars' ? sumValorTenencia * fx : sumValorTenencia, 2)
+    : '—';
+  const plTotFmt = anyPriceForTotal && sumPL !== 0
+    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':''}${sym}${N(Math.abs(isAr && _arMode === 'ars' ? sumPL * fx : sumPL),2)}</span>`
+    : '<span style="color:var(--muted)">—</span>';
+  const plPctTotFmt = anyPriceForTotal && sumCostoTotal > 0 && sumPL !== 0
+    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':''}${N((sumPL/sumCostoTotal)*100,2)}%</span>`
+    : '<span style="color:var(--muted)">—</span>';
+
+  let tfootHtml = `<tr>
+    <td colspan="3" style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">Total posiciones</td>
+    <td class="num" style="font-weight:700">${costoTotalFmtTot}</td>
+    <td class="num"></td>
+    <td class="num" style="font-weight:700">${valTenenciaFmtTot}</td>
+    <td class="num" style="font-weight:700">${plTotFmt}</td>
+    <td class="num" style="font-weight:700">${plPctTotFmt}</td>
+  </tr>`;
+  tfoot.innerHTML = tfootHtml;
+
+  // Options disclaimer — solo relevante en fecha actual
+  const disc = document.getElementById('options-disclaimer-inline');
+  if(disc) {
+    const cnt = _optionsExcluded || 0;
+    if(isAr && cnt > 0 && isToday) {
+      disc.textContent = `⚠️ ${cnt} contrato${cnt>1?'s':''} de opciones excluido${cnt>1?'s':''}`;
+      disc.style.display = 'inline-block';
+    } else {
+      disc.style.display = 'none';
+    }
+  }
+}
+
+
+// ══════════════════════════════════════════════════════
+//  IMPORT PROCESSING (runs in browser when user uploads)
+// ══════════════════════════════════════════════════════
+
+// INSTRUMENT_GROUPS y TICKER_TO_GROUP se construyen dinámicamente en detectTickerGroups().
+// Solo se mantiene como seed el grupo I15G8 (letras con tramos de amortización parcial:
+// el broker las registra con sufijos "-MMYY" en vez de "D"/"C", por lo que no se detectan
+// automáticamente con la regla D/C).
+let INSTRUMENT_GROUPS = {
+  I15G8:['I15G8','I15G8-1505','I15G8-1906'],
+};
+let TICKER_TO_GROUP = {};
+for(const [g,ts] of Object.entries(INSTRUMENT_GROUPS)) ts.forEach(t=>TICKER_TO_GROUP[t]=g);
+
+// ══════ DETECCIÓN AUTOMÁTICA DE GRUPOS DE TICKERS ══════
+// Construye INSTRUMENT_GROUPS y TICKER_TO_GROUP dinámicamente a partir de las
+// transacciones reales, reemplazando los hardcodes anteriores.
+//
+// Regla: si un ticker B == ticker A + 'D' o A + 'C', son el mismo instrumento
+// operado en distintas cuentas (dólar linked o dólar cable). Ejemplos:
+//   AL30 → AL30D (AR USD), AL30C (EEUU USD)
+//   MELI → MELID (AR USD)
+//   SPY  → SPYD  (AR USD)
+//
+// Las opciones (tickers con '.') nunca se agrupan con nada.
+// Los grupos del seed (I15G8) se preservan y se fusionan si hay overlap.
+//
+function detectTickerGroups(rawTxns) {
+  if(!rawTxns || !rawTxns.length) return;
+
+  // Extraer tickers únicos de las transacciones (excluir opciones)
+  const tickers = [...new Set(rawTxns.map(t => t.ticker).filter(t => t && !t.includes('.')))];
+
+  // Union-Find
+  const parent = {};
+  for(const t of tickers) parent[t] = t;
+  // Incluir también los tickers del seed que pueden no estar en rawTxns
+  for(const ts of Object.values(INSTRUMENT_GROUPS))
+    for(const t of ts) if(!(t in parent)) parent[t] = t;
+
+  function find(x) {
+    while(parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function union(a, b) {
+    const ra = find(a), rb = find(b);
+    if(ra === rb) return;
+    // canonical = más corto; si igual longitud, primero alfabéticamente
+    if(rb.length < ra.length || (rb.length === ra.length && rb < ra)) parent[ra] = rb;
+    else parent[rb] = ra;
+  }
+
+  // Aplicar grupos del seed primero (preserva I15G8 y cualquier otro hardcode futuro)
+  for(const members of Object.values(INSTRUMENT_GROUPS)) {
+    for(let i = 1; i < members.length; i++) union(members[0], members[i]);
+  }
+
+  // Regla D/C: agrupar pares donde b == a + 'D' o b == a + 'C'
+  const allTickers = Object.keys(parent);
+  for(const a of allTickers) {
+    for(const suffix of ['D', 'C']) {
+      const b = a + suffix;
+      if(b in parent) union(a, b);
+    }
+  }
+
+  // Reconstruir INSTRUMENT_GROUPS y TICKER_TO_GROUP
+  const newGroups = {};
+  for(const t of Object.keys(parent)) {
+    const canonical = find(t);
+    if(!newGroups[canonical]) newGroups[canonical] = [];
+    if(!newGroups[canonical].includes(t)) newGroups[canonical].push(t);
+  }
+
+  // Solo mantener grupos con 2+ miembros (los de 1 no aportan nada)
+  INSTRUMENT_GROUPS = {};
+  for(const [canonical, members] of Object.entries(newGroups)) {
+    if(members.length > 1) INSTRUMENT_GROUPS[canonical] = members.sort();
+  }
+
+  // Reconstruir TICKER_TO_GROUP
+  TICKER_TO_GROUP = {};
+  for(const [g, ts] of Object.entries(INSTRUMENT_GROUPS))
+    ts.forEach(t => TICKER_TO_GROUP[t] = g);
+
+  console.log(`detectTickerGroups: ${Object.keys(INSTRUMENT_GROUPS).length} grupos detectados`,
+    Object.entries(INSTRUMENT_GROUPS).map(([k,v]) => `${k}:[${v.join(',')}]`).join(' | '));
+}
+
+const IMPLICIT_CLOSED = new Set([]);
+
+// Bonos: precio cotiza por cada 100 de valor nominal → costo = precio * cantidad / 100
+// Determinado por análisis de la data cruda de Balanz (precio * cant / 100 ≈ monto_sin_comis)
+const BOND_TICKERS = new Set([
+  // Argentina ARS
+  'AL30','AY24','GD30','CO26','AO20','BDC20','AS13','TO26',
+  // Argentina USD
+  'AL30D','AY24D','GD30D','AO20D','PARYD',
+  // EEUU USD (dólar cable)
+  'AL30C','AY24C',
+]);
+
+function isBond(ticker) {
+  // También detectar por patrón: letras+números terminando en D o C (versiones dólar de bonos)
+  return BOND_TICKERS.has(ticker);
+}
+
+// ══════ NRA WITHHOLDING ══════
+// US dividends paid to non-residents are subject to 30% NRA withholding.
+// Balanz does not report this retention in the transaction file — it silently
+// reduces the cash credited. We estimate it and subtract it from EEUU cash.
+// Formula: nra = (|monto| + comision + iva) * 0.30
+//   i.e. we reconstruct the gross dividend and apply 30%.
+// Only applies to: operacion === 'Pago de Dividendos' AND cuenta === 'EEUU (USD)'
+const NRA_RATE = 0.30;
+let _nraOverrides = new Set();       // set of nro_mov strings that have any override
+let _nraOverrideAmounts = new Map(); // nro_mov → numeric amount (user-specified, with sign)
+
+function isNRAApplicable(t) {
+  return t.operacion === 'Pago de Dividendos' && t.cuenta === 'EEUU (USD)';
+}
+
+function calcNRA(t) {
+  if(!isNRAApplicable(t)) return 0;
+  const key = String(t.nro_mov);
+  if(_nraOverrides.has(key)) {
+    // User-specified amount: use as-is (already signed). Zero = no retention.
+    return _nraOverrideAmounts.get(key) || 0;
+  }
+  const gross = Math.abs(t.monto || 0) + Math.abs(t.comision || 0) + Math.abs(t.iva || 0);
+  return -(gross * NRA_RATE); // negative = cash outflow
+}
+
+// Calcula el costo de una compra en la moneda de la cuenta:
+//   - Bonos: precio * cantidad / 100  (precio cotiza sobre 100 de VN)
+//   - Acciones/CEDEARs: |monto| - comision - iva  (precio sin comisiones = precio del broker)
+// El avg CON comisiones se obtiene usando |monto| directamente.
+function calcBuyCost(t, withComissions) {
+  if(isBond(t.ticker_raw || t.ticker)) {
+    // Para bonos el precio raw es confiable y está en la moneda correcta
+    return (t.precio || 0) * (t.cantidad || 0) / 100;
+  }
+  if(withComissions) {
+    return Math.abs(t.monto || 0);
+  } else {
+    // Sin comisiones: descontar comision + iva + otros_imp del monto
+    return Math.abs(t.monto || 0) - Math.abs(t.comision || 0) - Math.abs(t.iva || 0) - Math.abs(t.otros_imp || 0);
+  }
+}
+
+// Options detection: Balanz option tickers follow the pattern
+// [UNDERLYING][C/P][STRIKE_DECIMAL][MONTH_CODE]
+// e.g. TPPC15.0AB, GFGV17.0OC, ALUC2.05OC, TECC20.6AB
+// Two patterns identify them:
+// 1. Contains a decimal number in the middle: letters + digits.digits + letters
+// 2. Known option underlying prefixes: TPPC, TPPV, ALUC, ALUP, GFGV, TECC, PBRC, EDNC
+const OPTION_DECIMAL_RE = /^[A-Za-z]{2,6}\d+\.\d+[A-Za-z]{1,2}$/;
+const OPTION_PREFIX_RE  = /^(TPPC|TPPV|ALUC|ALUP|GFGV|TECC|PBRC|EDNC|EDNA|EDND)/;
+function isOption(ticker) {
+  return OPTION_DECIMAL_RE.test(ticker) || OPTION_PREFIX_RE.test(ticker);
+}
+const ACCOUNT_PRIORITY = {'EEUU (USD)':0,'Argentina (USD)':1,'Argentina (ARS)':2};
+const ACCOUNT_MAP = {
+  'Inversion Estados Unidos Dolares':'EEUU (USD)',
+  'Inversion Argentina Pesos':'Argentina (ARS)',
+  'Inversion Argentina Dolares':'Argentina (USD)',
+};
+const BUY_OPS  = ['Compra','Suscripción Primaria','Suscripción FCI'];
+const SELL_OPS = ['Venta','Rescate FCI'];
+const XFER_IN  = 'Transferencia de Titulos IN -';
+
+// Column indices in Balanz export
+const COL = {nro_mov:0, nro_boleto:1, tipo_mov:2, fecha:3, fecha_liq:4,
+             estado:5, cantidad:6, precio:7, comision:8, iva:9,
+             otros_imp:10, monto:11, tipo_cuenta:13};
+
+function numArg(s) {
+  if(s===null||s===undefined) return 0;
+  if(typeof s === 'number') return s; // already a JS number from SheetJS
+  const str = String(s).trim();
+  if(!str || str === '-') return 0;
+  // Argentine decimal format: 1.234,56 → 1234.56  (dots=thousands, comma=decimal)
+  if(/^-?[\d.]+,\d+$/.test(str)) return parseFloat(str.replace(/\./g,'').replace(',','.')) || 0;
+  // Integer with dot-thousands separator (no comma): 677.225 → 677225
+  // Only apply when there are exactly 3 digits after each dot (thousands grouping pattern)
+  if(/^-?\d{1,3}(\.\d{3})+$/.test(str)) return parseFloat(str.replace(/\./g,'')) || 0;
+  return parseFloat(str) || 0;
+}
+function parseDate(s) {
+  if(s===null||s===undefined||s==='') return '';
+
+  // Excel serial number — most reliable, no timezone issues
+  // Excel epoch: days since 1899-12-30 (accounting for Lotus 1-2-3 leap year bug)
+  if(typeof s === 'number') {
+    if(s < 36526 || s > 54789) return ''; // outside 2000-2050 range
+    // Use XLSX.SSF.parse_date_code if available, otherwise manual calculation
+    try {
+      const d = XLSX.SSF.parse_date_code(s);
+      if(d && d.y >= 2000 && d.y <= 2100) {
+        return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+      }
+    } catch(e) {}
+    // Manual fallback: Excel serial to date
+    const epoch = new Date(1899, 11, 30); // Dec 30, 1899
+    const ms = epoch.getTime() + s * 86400000;
+    const dt = new Date(ms);
+    const y = dt.getFullYear(), mo = dt.getMonth()+1, d = dt.getDate();
+    if(y >= 2000 && y <= 2100) return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    return '';
+  }
+
+  // JS Date object (shouldn't arrive here with raw:true but handle anyway)
+  if(s instanceof Date) {
+    if(isNaN(s.getTime())) return '';
+    const y = s.getFullYear(), mo = s.getMonth()+1, d = s.getDate();
+    if(y < 2000 || y > 2100) return '';
+    return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+
+  s = String(s).trim();
+  if(!s) return '';
+
+  // Already YYYY-MM-DD
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const y = parseInt(s.slice(0,4));
+    return (y >= 2000 && y <= 2100) ? s : '';
+  }
+
+  // dd/mm/yyyy or dd/mm/yy — Balanz format, always dd first
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if(m) {
+    let [,dd,mo,y] = m;
+    if(y.length===2) y = parseInt(y) < 50 ? '20'+y : '19'+y;
+    const yr = parseInt(y);
+    if(yr < 2000 || yr > 2100) return '';
+    return `${y}-${mo.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+  }
+
+  return '';
+}
+function extractTicker(tipoMov) {
+  if(!tipoMov) return '';
+  const m = String(tipoMov).match(/\(([^)]+)\)/);
+  return m ? m[1].trim() : String(tipoMov).trim();
+}
+function extractOp(tipoMov) {
+  if(!tipoMov) return '';
+  return String(tipoMov).split('(')[0].trim();
+}
+
+// Parse rows from SheetJS workbook
+function parseBalanzRows(workbook) {
+  const XLSX = window.XLSX;
+  const rows = [];
+  // Detect if this is a broker HTML-disguised XLS file.
+  // The broker file is HTML, so SheetJS may coerce number-looking cells to JS numbers
+  // via parseFloat, truncating AR-format decimals like "99,7494" -> 99 or "1.234,56" -> 1.234.
+  // To avoid this, we read each cell's 'w' (formatted text) property which always contains
+  // the original string as it appeared in the HTML cell.
+  const isHtmlXls = workbook.Workbook?.WBProps?.date1904 === undefined &&
+    Object.values(workbook.Sheets).some(ws => ws['!type'] === 'https' || ws['!fullref']);
+  // Safer detection: check if any cell has 'w' property that looks like AR number format
+  function getCellText(ws, addr) {
+    const cell = ws[addr];
+    if(!cell) return null;
+    // Prefer 'w' (formatted text from HTML cell) over 'v' (parsed value)
+    // This preserves "99,7494", "1.234,56" etc. as strings
+    if(cell.w !== undefined && cell.w !== null && cell.w !== '') return String(cell.w);
+    if(cell.v !== undefined && cell.v !== null) return String(cell.v);
+    return null;
+  }
+  for(const sheetName of workbook.SheetNames) {
+    const ws = workbook.Sheets[sheetName];
+    // Build data array using cell text (preserves original AR number strings)
+    const ref = ws['!ref'];
+    let data;
+    if(ref) {
+      const range = XLSX.utils.decode_range(ref);
+      data = [];
+      for(let R = range.s.r; R <= range.e.r; R++) {
+        const rowArr = [];
+        for(let C = range.s.c; C <= range.e.c; C++) {
+          const addr = XLSX.utils.encode_cell({r:R, c:C});
+          rowArr.push(getCellText(ws, addr));
+        }
+        data.push(rowArr);
+      }
+    } else {
+      data = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    }
+    
+    // Find header row (has 'Nro' in first cell)
+    let headerIdx = -1;
+    for(let i=0; i<data.length; i++) {
+      if(data[i][0] && String(data[i][0]).includes('Mov')) { headerIdx=i; break; }
+    }
+    if(headerIdx<0) continue;
+    
+    for(let i=headerIdx+1; i<data.length; i++) {
+      const row = data[i];
+      if(!row[COL.tipo_mov]) continue; // skip empty rows; nro_mov can legitimately be 0
+      if(String(row[COL.estado]||'').trim() === 'Cancelada') continue; // skip cancelled transactions
+      const tipoCuenta = String(row[COL.tipo_cuenta]||'').trim();
+      const cuenta = ACCOUNT_MAP[tipoCuenta] || tipoCuenta;
+      const fecha = parseDate(row[COL.fecha]);
+      if(!fecha) continue;
+      const tipoMov = String(row[COL.tipo_mov]||'');
+      rows.push({
+        fecha, cuenta,
+        fecha_liq: parseDate(row[COL.fecha_liq]),
+        ticker:    extractTicker(tipoMov),
+        operacion: extractOp(tipoMov),
+        cantidad:  numArg(row[COL.cantidad]),
+        precio:    numArg(row[COL.precio]),
+        monto:     numArg(row[COL.monto]),
+        comision:  numArg(row[COL.comision]),
+        iva:       numArg(row[COL.iva]),
+        otros_imp: numArg(row[COL.otros_imp]),
+        nro_boleto: String(row[COL.nro_boleto]||'0'),
+        nro_mov:    String(row[COL.nro_mov]||'0'),
+        estado:     String(row[COL.estado]||''),
+      });
+    }
+  }
+  return rows;
+}
+
+function primaryKey(t) {
+  if(t.nro_mov && t.nro_mov !== '0')
+    return `mov|${t.fecha}|${t.cuenta}|${t.nro_mov}`;
+  return `fb|${t.fecha}|${t.cuenta}|${t.ticker}|${t.operacion}|${Math.round(t.cantidad*100)}`;
+}
+
+function mergeTransactions(historical, incoming) {
+  const existingKeys = new Set(historical.map(primaryKey));
+  let added = 0;
+  for(const t of incoming) {
+    const k = primaryKey(t);
+    if(!existingKeys.has(k)) { historical.push(t); existingKeys.add(k); added++; }
+  }
+  historical.sort((a,b) => b.fecha.localeCompare(a.fecha));
+  return {merged: historical, added};
+}
+
+function deduplicateMEP(txns) {
+  // Only deduplicate when the SAME operation appears across DIFFERENT accounts
+  // (classic MEP pattern: AL30 sold in ARS account + AL30D bought in USD account).
+  // Two identical ops in the SAME account are genuine independent transactions.
+  const groups = {};
+  txns.forEach((t,i) => {
+    if(['Compra','Venta'].includes(t.operacion) && t.cantidad > 0) {
+      const k = `${t.fecha}|${t.ticker}|${t.operacion}|${Math.round(t.cantidad)}`;
+      if(!groups[k]) groups[k] = [];
+      groups[k].push({i, t});
+    }
+  });
+  const drop = new Set();
+  for(const rows of Object.values(groups)) {
+    if(rows.length <= 1) continue;
+    // Check if there are entries from more than one distinct account
+    const accounts = new Set(rows.map(r => r.t.cuenta));
+    if(accounts.size <= 1) continue; // all same account → genuine distinct ops, keep all
+    // Cross-account duplicates: keep the one with highest account priority, drop the rest
+    rows.sort((a,b) => (ACCOUNT_PRIORITY[a.t.cuenta]??9) - (ACCOUNT_PRIORITY[b.t.cuenta]??9));
+    rows.slice(1).forEach(r => drop.add(r.i));
+  }
+  return txns.filter((_,i) => !drop.has(i));
+}
+
+function canonicalizeTickers(txns) {
+  return txns.map(t => ({
+    ...t, ticker_raw: t.ticker,
+    ticker: TICKER_TO_GROUP[t.ticker] || t.ticker
+  }));
+}
+
+// Detect instruments that should be treated as closed:
+// 1. Stale position: last operation is before STALE_CUTOFF_YEAR — the export history
+//    doesn't go back far enough to capture the closing trades.
+// 2. Fully amortized: has buys, no sells, has Pago de Amortización with cash >= 80% of cost.
+const STALE_CUTOFF_YEAR = 2020;
+
+function isEffectivelyClosed(ticker, ops) {
+  if(IMPLICIT_CLOSED.has(ticker)) return true;
+  if(!ops.length) return false;
+
+  // Case 1: stale position — last op is on or before STALE_CUTOFF_YEAR
+  // Using <= so instruments whose last activity was IN 2020 are also treated as stale
+  // (e.g. BDC20 fully amortized in Jan 2020 — the export history doesn't go back
+  // far enough to confirm the position was opened and closed within that year)
+  const years = ops.map(t => { const y=(t.fecha||'').slice(0,4); return y?parseInt(y):0; }).filter(y=>y>0);
+  if(years.length && Math.max(...years) <= STALE_CUTOFF_YEAR) {
+    // Consult ledger if available — if balance > 0 the instrument is genuinely open
+    if(_ledger && _ledger[ticker] && _ledger[ticker].totals.balTotal > 0) return false;
+    return true;
+  }
+
+  // Case 2: fully amortized (Pago de Amortización with cantidad=0)
+  const hasBuy   = ops.some(t => BUY_OPS.includes(t.operacion) && t.cantidad > 0);
+  const hasSell  = ops.some(t => SELL_OPS.includes(t.operacion) && t.cantidad > 0);
+  const hasAmort = ops.some(t => t.operacion === 'Pago de Amortización');
+  if(hasBuy && !hasSell && hasAmort) {
+    const buyCost   = ops.filter(t => BUY_OPS.includes(t.operacion) && t.cantidad > 0)
+                        .reduce((s,t) => s + Math.abs(t.monto || 0), 0);
+    const amortCash = ops.filter(t => t.operacion === 'Pago de Amortización' && (t.monto||0) > 0)
+                        .reduce((s,t) => s + t.monto, 0);
+    if(buyCost > 0 && amortCash >= buyCost * 0.8) return true;
+  }
+
+  return false;
+}
+
+function netForAcct(ticker, acctFilter, clean) {
+  if(IMPLICIT_CLOSED.has(ticker)) return 0;
+  const allOps = clean.filter(t => t.ticker === ticker);
+  if(isEffectivelyClosed(ticker, allOps)) return 0;
+  let bal = 0;
+  for(const t of allOps) {
+    if(!t.cuenta.includes(acctFilter)) continue;
+    const {operacion:op, cantidad:qty} = t;
+    if(BUY_OPS.includes(op) && qty>0)              bal += qty;
+    else if(SELL_OPS.includes(op) && qty>0)        bal -= qty;
+    else if(op==='Pago de Amortización' && qty<0)  bal += qty;
+    else if(op===XFER_IN && qty>0)                 bal += qty;
+  }
+  return bal;
+}
+
+function buildInstrument(ticker, clean, fxHistory = {}) {
+  const ops = clean.filter(t=>t.ticker===ticker).sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  if(IMPLICIT_CLOSED.has(ticker) || isEffectivelyClosed(ticker, ops)) {
+    return {ticker, net:0, bought:0, sold:0, amort:0, xfer_in:0, avg:0,
+            first:ops[0]?.fecha||'', last:ops.at(-1)?.fecha||'', n:ops.length,
+            accounts:[...new Set(ops.map(t=>t.cuenta))], txns:ops.map(t=>({...t,balance:0,avg_compra:0}))};
+  }
+  // Track balance and cost separately per account slot:
+  // 'EEUU'   -> cuenta EEUU (USD)       -- avg in USD
+  // 'AR_ARS' -> cuenta Argentina (ARS)  -- avg in ARS
+  // 'AR_USD' -> cuenta Argentina (USD)  -- avg in USD
+  const acctState = {};
+  const getAcct = cuenta => {
+    const key = cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
+    if(!acctState[key]) acctState[key] = {balance:0, costNoComis:0, costWithComis:0, costNoComis_usd:0};
+    return acctState[key];
+  };
+
+  // Helper: get FX for a date from fxHistory (same logic as getFXForDate but local)
+  const getFX = fecha => {
+    if(!fecha || !Object.keys(fxHistory).length) return null;
+    const dates = Object.keys(fxHistory).filter(d => d <= fecha).sort();
+    if(dates.length) return fxHistory[dates[dates.length-1]];
+    const all = Object.keys(fxHistory).sort();
+    return all.length ? fxHistory[all[0]] : null;
+  };
+
+  let balance=0, bought=0, sold=0, amort=0, xfer_in=0;
+  const txns = ops.map(t => {
+    const {operacion:op, cantidad:qty, cuenta} = t;
+    const ac = getAcct(cuenta);
+    if(BUY_OPS.includes(op) && qty>0) {
+      ac.balance       += qty;
+      ac.costWithComis += calcBuyCost(t, true);
+      ac.costNoComis   += calcBuyCost(t, false);
+      // For AR_ARS slot: also track cost in USD using FX at purchase date
+      const acctKey = cuenta.includes('EEUU') ? 'EEUU' : cuenta.includes('ARS') ? 'AR_ARS' : 'AR_USD';
+      if(acctKey === 'AR_ARS') {
+        const fx = getFX(t.fecha);
+        if(fx && fx > 0) ac.costNoComis_usd += calcBuyCost(t, false) / fx;
+      }
+      balance += qty; bought += qty;
+    }
+    else if(SELL_OPS.includes(op) && qty>0) {
+      const sellQty = Math.min(qty, ac.balance);
+      if(ac.balance > 0) {
+        const ratio = Math.max(0, (ac.balance - sellQty) / ac.balance);
+        ac.costNoComis     *= ratio;
+        ac.costWithComis   *= ratio;
+        ac.costNoComis_usd *= ratio;
+      }
+      ac.balance -= qty;
+      if(ac.balance <= 0) { ac.balance = 0; ac.costNoComis = 0; ac.costWithComis = 0; ac.costNoComis_usd = 0; }
+      balance -= qty; sold += qty;
+    }
+    else if(op==='Pago de Amortización' && qty<0) { ac.balance+=qty; balance+=qty; amort+=Math.abs(qty); }
+    else if(op===XFER_IN && qty>0)                { ac.balance+=qty; balance+=qty; xfer_in+=qty; }
+    const avgNoComis = ac.balance>0 ? ac.costNoComis/ac.balance : 0;
+    // Snapshot all 3 slots at this point in time (for Especies tab)
+    const _slotSnap = {};
+    for(const [sk, sv] of Object.entries(acctState)) {
+      _slotSnap[sk] = {
+        balance: sv.balance,
+        avg:     sv.balance > 0 ? sv.costNoComis / sv.balance : 0,
+        costNoComis_usd: sv.costNoComis_usd || 0,
+      };
+    }
+    // Blended AR in USD snapshot
+    const snapARS = _slotSnap['AR_ARS'], snapARUSD = _slotSnap['AR_USD'];
+    const snapBlendedBal = (snapARS?.balance||0) + (snapARUSD?.balance||0);
+    if(snapBlendedBal > 0) {
+      const snapCostUSD = (snapARS?.costNoComis_usd||0) + (snapARUSD ? (snapARUSD.balance>0 ? acctState['AR_USD'].costNoComis : 0) : 0);
+      _slotSnap['AR_BLENDED_USD'] = {
+        balance: snapBlendedBal,
+        avg: snapCostUSD / snapBlendedBal,
+        hasBothLegs: (snapARS?.balance||0) > 0 && (snapARUSD?.balance||0) > 0,
+      };
+    }
+    return {...t, balance:Math.round(balance*100)/100, avg_compra:Math.round(avgNoComis*10000)/10000, _slotSnap};
+  });
+  if(balance < 0) balance = 0;
+
+  // Per-account avg (correct currency for each panel)
+  const avgByAcct = {};
+  for(const [key, ac] of Object.entries(acctState)) {
+    avgByAcct[key] = {
+      avg:        ac.balance>0 ? ac.costNoComis/ac.balance   : 0,
+      avgWithCom: ac.balance>0 ? ac.costWithComis/ac.balance : 0,
+      balance:    ac.balance,
+    };
+  }
+
+  // Blended avg in USD for AR — only when both AR_ARS and AR_USD slots have balance
+  // AR_ARS cost is tracked in USD via costNoComis_usd (using FX at purchase date)
+  // AR_USD cost is already in USD via costNoComis
+  const arARS = acctState['AR_ARS'];
+  const arUSD = acctState['AR_USD'];
+  const hasARBlended = (arARS?.balance > 0 || arUSD?.balance > 0);
+  if(hasARBlended) {
+    const costUSD_fromARS = arARS?.costNoComis_usd || 0;
+    const costUSD_fromUSD = arUSD  ? (arUSD.balance > 0 ? arUSD.costNoComis : 0) : 0;
+    const totalBal = (arARS?.balance || 0) + (arUSD?.balance || 0);
+    const totalCostUSD = costUSD_fromARS + costUSD_fromUSD;
+    avgByAcct['AR_BLENDED_USD'] = {
+      avg:     totalBal > 0 ? totalCostUSD / totalBal : 0,
+      balance: totalBal,
+      hasBothLegs: (arARS?.balance > 0) && (arUSD?.balance > 0),
+    };
+  }
+  // Global fallback (instruments in a single account)
+  const _totNo   = Object.values(acctState).reduce((s,ac)=>s+ac.costNoComis,0);
+  const _totWith = Object.values(acctState).reduce((s,ac)=>s+ac.costWithComis,0);
+  const _totBal  = Object.values(acctState).reduce((s,ac)=>s+ac.balance,0);
+  const avg        = _totBal>0 ? _totNo/_totBal   : 0;
+  const avgWithCom = _totBal>0 ? _totWith/_totBal : 0;
+  const dates    = ops.map(t=>t.fecha).filter(Boolean);
+  return {ticker, net:Math.round(balance*100)/100, bought, sold, amort, xfer_in,
+          avg,          // sin comisiones = precio del broker (global fallback)
+          avgWithCom,   // con comisiones = costo real de adquisición (global fallback)
+          avgByAcct,    // per-account avg for split tickers (e.g. MELI in ARS + USD)
+          first: dates.length?dates[0]:'', last: dates.length?dates.at(-1):'',
+          n:ops.length, accounts:[...new Set(ops.map(t=>t.cuenta))], txns};
+}
+
+function makeCard(d, netOverride, txnsFilter, splitNote) {
+  let txns = d.txns;
+  if(txnsFilter) txns = txns.filter(t=>t.cuenta.includes(txnsFilter));
+  const net = netOverride ?? d.net;
+  const totalBought = txns.filter(t=>BUY_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  // Use per-account avg when available (handles split tickers like MELI in ARS + USD)
+  const acctKey = txnsFilter
+    ? (txnsFilter.includes('EEUU') ? 'EEUU' : txnsFilter.includes('ARS') ? 'AR_ARS' : 'AR_USD')
+    : null;
+  const acctAvg = acctKey && d.avgByAcct && d.avgByAcct[acctKey];
+  const avg        = acctAvg ? acctAvg.avg        : d.avg;
+  const avgWithCom = acctAvg ? acctAvg.avgWithCom : d.avgWithCom;
+  const totalSold = txns.filter(t=>SELL_OPS.includes(t.operacion)&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  const xfer = txns.filter(t=>t.operacion===XFER_IN&&t.cantidad>0).reduce((s,t)=>s+t.cantidad,0);
+  const sortedTxns = [...txns].sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  return {
+    ticker:d.ticker, net, net_total:d.net, bought:totalBought, sold:totalSold,
+    amort:d.amort||0, xfer_in:xfer, avg, avgWithCom,
+    avgByAcct: d.avgByAcct || {},
+    first:d.first, last:d.last,
+    n:txns.length, accounts:d.accounts, split_note:splitNote||null,
+    txns: sortedTxns.map(t=>({
+      f:t.fecha, op:t.operacion, c:t.cantidad, p:t.precio, m:t.monto,
+      b:t.balance||0, a:t.avg_compra||0, acct:t.cuenta, raw:t.ticker_raw||d.ticker
+    }))
+  };
+}
+
+// ══════ CASH BALANCE ══════
+// Operations that don't move cash (pure quantity transfers)
+const CASH_SKIP_OPS = new Set([
+  'Transferencia de Titulos IN -',
+  'Depósito por transferencia interna',
+  'Extracción por Transferencia interna',
+]);
+
+// Cauciones en Dólares: the broker debits USD on placement and credits ARS on liquidation.
+// Neither movement reflects real cash flow (the USD is just immobilized internally).
+// We identify them by nro_mov: any row sharing a nro_mov with a "Caución en Dólares Arg."
+// operation should be excluded from cash calculations.
+function buildUsdCaucionMovs(rawTxns) {
+  const movs = new Set();
+  for(const t of rawTxns) {
+    if(t.operacion === 'Caución' && t.ticker === 'Caución en Dólares Arg.' && t.nro_mov && t.nro_mov !== '0') {
+      movs.add(t.nro_mov);
+    }
+  }
+  return movs;
+}
+
+function isCashSkip(t, usdCaucionMovs) {
+  if(CASH_SKIP_OPS.has(t.operacion)) return true;
+  // Skip Caución en Dólares (both the debit and the ARS liquidation)
+  if(usdCaucionMovs && usdCaucionMovs.has(t.nro_mov)) return true;
+  return false;
+}
+
+function buildCash(rawTxns, usdCaucionMovs) {
+  const balances  = {'EEUU (USD)':0, 'Argentina (ARS)':0, 'Argentina (USD)':0};
+  const movements = {'EEUU (USD)':[], 'Argentina (ARS)':[], 'Argentina (USD)':[]};
+
+  for(const t of rawTxns) {
+    if(isCashSkip(t, usdCaucionMovs)) continue;
+    const acct = t.cuenta;
+    if(!(acct in balances)) continue;
+    const m = t.monto || 0;
+    if(m === 0) continue;
+    balances[acct] += m;
+    // Deduct estimated NRA withholding for US dividends
+    const nra = calcNRA(t);
+    if(nra !== 0) balances[acct] += nra; // nra is already negative
+    movements[acct].push({fecha:t.fecha, op:t.operacion, ticker:t.ticker||'', monto:m, nra});
+  }
+
+  // Sort movements by date desc, keep last 6
+  for(const acct of Object.keys(movements)) {
+    movements[acct].sort((a,b) => b.fecha.localeCompare(a.fecha));
+    movements[acct] = movements[acct].slice(0,6);
+  }
+  return {balances, movements};
+}
+
+function renderCashStrip(containerId, accounts) {
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(!accounts || accounts.length === 0) { el.innerHTML = ''; return; }
+
+  const colorMap = {
+    'EEUU (USD)':    {cls:'cc-us',    label:'EEUU · USD',         sym:'USD'},
+    'Argentina (ARS)':{cls:'cc-ars',  label:'Argentina · ARS',    sym:'ARS'},
+    'Argentina (USD)':{cls:'cc-ar-usd',label:'Argentina · USD',   sym:'USD'},
+  };
+
+  const fmtAmt = (n, sym) => {
+    const abs = Math.abs(n);
+    const s = sym === 'ARS'
+      ? new Intl.NumberFormat('es-AR', {minimumFractionDigits:0, maximumFractionDigits:0}).format(abs)
+      : new Intl.NumberFormat('es-AR', {minimumFractionDigits:2, maximumFractionDigits:2}).format(abs);
+    return (n < 0 ? '-' : '') + (sym==='ARS' ? '$' : 'U$S ') + s;
+  };
+  const fmtShort = (n, sym) => {
+    const abs = Math.abs(n);
+    const s = sym === 'ARS'
+      ? new Intl.NumberFormat('es-AR', {minimumFractionDigits:0, maximumFractionDigits:0}).format(abs)
+      : new Intl.NumberFormat('es-AR', {minimumFractionDigits:2, maximumFractionDigits:2}).format(abs);
+    return (n < 0 ? '−' : '+') + (sym==='ARS' ? '$' : 'U$S ') + s;
+  };
+  const fmtDate = d => d && d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}` : '';
+  const fmtDesc = (op, ticker) => {
+    const t = ticker && ticker.length > 0 && !['Crédito','Caución en Pesos Arg.','Caución en Dólares Arg.','Remuneración de Saldos Líquidos'].includes(ticker) ? ` ${ticker}` : '';
+    // Shorten long op names
+    const shortOp = op
+      .replace('Depósito de Fondos - Transferencia electrónica - ','Depósito · ')
+      .replace('Extracción de Fondos - Transferencia Electrónica - ','Retiro · ')
+      .replace('Liquidación de Caución','Liq. Caución')
+      .replace('Remuneración de Saldos Líquidos','Rem. Saldos')
+      .replace('Pago de Amortización','P. Amort.')
+      .replace('Pago de Dividendos','Dividendo')
+      .replace('Pago de Renta','P. Renta')
+      .replace('Suscripción FCI','Susc. FCI')
+      .replace('Rescate FCI','Rescate FCI')
+      .replace('Suscripción Primaria','Susc. Prim.');
+    return shortOp + t;
+  };
+
+  el.innerHTML = accounts.map(({acct, balance, movs}) => {
+    const c = colorMap[acct] || {cls:'cc-us', label:acct, sym:'USD'};
+    const amtStr = fmtAmt(balance, c.sym);
+    const neg = balance < 0;
+    const logRows = movs.map(mv => `
+      <div class="cash-log-row">
+        <div class="cash-log-left">
+          <span class="cash-log-date">${fmtDate(mv.fecha)}</span>
+          <span class="cash-log-desc" title="${mv.op} ${mv.ticker}">${fmtDesc(mv.op, mv.ticker)}</span>
+        </div>
+        <span class="cash-log-amt ${mv.monto>=0?'pos':'neg'}">${fmtShort(mv.monto, c.sym)}</span>
+      </div>`).join('');
+    return `<div class="cash-card ${c.cls}">
+      <div class="cash-card-label">${c.label}</div>
+      <div class="cash-card-amount ${c.cls}${neg?' negative':''}">${amtStr}</div>
+      <div class="cash-log">
+        <div class="cash-log-title">Últimos movimientos</div>
+        ${logRows || '<div style="font-family:var(--mono);font-size:10px;color:var(--muted)">Sin movimientos</div>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function buildPortfolio(clean, fxHistory = {}) {
+  const allTickers = [...new Set(clean.map(t=>t.ticker))].sort();
+  const instruments = {};
+  for(const tk of allTickers) instruments[tk] = buildInstrument(tk, clean, fxHistory);
+
+  const usCards=[], arCards=[];
+  let optionsExcluded = 0;
+  for(const [ticker, d] of Object.entries(instruments)) {
+    if(!d.bought && !d.sold && !d.amort && !d.xfer_in) continue;
+    // Skip options contracts — vencen sin posición residual pero Balanz no registra cierre
+    if(isOption(ticker)) { optionsExcluded++; continue; }
+    const netAr = netForAcct(ticker,'Argentina',clean);
+    const netUs = netForAcct(ticker,'EEUU',clean);
+    if(netAr>0 && netUs>0) {
+      const note = `${netUs.toLocaleString('es-AR')} en EEUU · ${netAr.toLocaleString('es-AR')} en AR`;
+      usCards.push(makeCard(d, netUs, 'EEUU', note));
+      arCards.push(makeCard(d, netAr, 'Argentina', note));
+    } else if(netAr>0) {
+      arCards.push(makeCard(d));
+    } else if(netUs>0) {
+      usCards.push(makeCard(d));
+    } else {
+      const nUs = d.txns.filter(t=>t.cuenta?.includes('EEUU')).length;
+      const nAr = d.txns.filter(t=>t.cuenta?.includes('Argentina')).length;
+      (nUs>=nAr && nUs>0 ? usCards : arCards).push(makeCard(d));
+    }
+  }
+  // Remove implicit-closed false positives
+  const arClean = arCards.filter(c => !(IMPLICIT_CLOSED.has(c.ticker) && c.net>0));
+  usCards.sort((a,b) => b.net-a.net || a.ticker.localeCompare(b.ticker));
+  arClean.sort((a,b) => b.net-a.net || a.ticker.localeCompare(b.ticker));
+  return {usCards, arCards:arClean, optionsExcluded, instruments};
+}
+
+function buildAuditRows(clean, rawTxns, usdCaucionMovs) {
+  // clean: deduped+canonicalized rows shown in the table
+  // rawTxns: pre-dedup rows used for accurate cash balance (includes commission rows
+  //          that deduplicateMEP drops as "cross-account duplicates")
+  const CASH_ACCOUNTS = new Set(['EEUU (USD)', 'Argentina (ARS)', 'Argentina (USD)']);
+  // Build running cash balance using RAW txns (pre-dedup) sorted by date+nro_mov
+  const rawSorted = [...rawTxns].sort((a,b) => {
+    const d = a.fecha.localeCompare(b.fecha);
+    if(d !== 0) return d;
+    return (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
+  });
+  const runningBal = {'EEUU (USD)':0, 'Argentina (ARS)':0, 'Argentina (USD)':0};
+  // Map: "fecha|nro_mov|cuenta" -> running balance after that raw row
+  const rawBalMap = new Map();
+  for(const t of rawSorted) {
+    if(CASH_ACCOUNTS.has(t.cuenta) && !isCashSkip(t, usdCaucionMovs) && t.monto !== 0) {
+      runningBal[t.cuenta] = (runningBal[t.cuenta] || 0) + t.monto;
+      // Key by nro_mov+cuenta (nro_mov=0 rows use fecha+operacion+monto as tiebreak)
+      const k = t.nro_mov && t.nro_mov !== '0'
+        ? `${t.nro_mov}|${t.cuenta}`
+        : `0|${t.fecha}|${t.operacion}|${t.cuenta}|${Math.round((t.monto||0)*100)}`;
+      rawBalMap.set(k, runningBal[t.cuenta]);
+    }
+  }
+
+  // Sort clean rows for display
+  const sorted = [...clean].sort((a,b) => {
+    const d = a.fecha.localeCompare(b.fecha);
+    if(d !== 0) return d;
+    return (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
+  });
+
+  return sorted.map(t => {
+    // Look up cash balance for this row using the raw balance map
+    let saldo_cash = null;
+    if(CASH_ACCOUNTS.has(t.cuenta) && !isCashSkip(t, usdCaucionMovs) && t.monto !== 0) {
+      const k = t.nro_mov && t.nro_mov !== '0'
+        ? `${t.nro_mov}|${t.cuenta}`
+        : `0|${t.fecha}|${t.operacion}|${t.cuenta}|${Math.round((t.monto||0)*100)}`;
+      saldo_cash = rawBalMap.has(k) ? rawBalMap.get(k) : null;
+    }
+    return {
+      fecha:t.fecha, fecha_liq:t.fecha_liq||'', year:t.fecha.slice(0,4), cuenta:t.cuenta,
+      ticker:t.ticker, ticker_raw:t.ticker_raw||t.ticker,
+      operacion:t.operacion, cantidad:t.cantidad, precio:t.precio,
+      monto:t.monto, comision:t.comision, iva:t.iva, otros_imp:t.otros_imp||0, nro_boleto:t.nro_boleto,
+      nro_mov:t.nro_mov||0, saldo_cash,
+      nra: calcNRA(t)
+    };
+  });
+}
+
+// ══════ CASH DAILY TAB ══════
+let _cashDaily = [];   // [{fecha, ars, ar_usd, us_usd}] — one row per day with movement
+let cData = [];
+let cSort_col = 'fecha', cSort_dir = -1;
+
+function buildCashDaily(rawTxns, usdCaucionMovs) {
+  const CASH_ACCOUNTS = new Set(['EEUU (USD)', 'Argentina (ARS)', 'Argentina (USD)']);
+  // uses global isCashSkip(t, usdCaucionMovs)
+
+  // Running balance per account, accumulate by day
+  const runBal = {'Argentina (ARS)':0, 'Argentina (USD)':0, 'EEUU (USD)':0};
+  const dayMap = {}; // fecha -> {ars, ar_usd, us_usd}
+
+  const sorted = [...rawTxns].sort((a,b) => {
+    const d = a.fecha.localeCompare(b.fecha);
+    return d !== 0 ? d : (parseInt(a.nro_mov||0)) - (parseInt(b.nro_mov||0));
+  });
+
+  for(const t of sorted) {
+    if(!CASH_ACCOUNTS.has(t.cuenta)) continue;
+    if(isCashSkip(t, usdCaucionMovs)) continue;
+    if(!t.monto) continue;
+    runBal[t.cuenta] = (runBal[t.cuenta] || 0) + t.monto;
+    const nra = calcNRA(t);
+    if(nra !== 0) runBal[t.cuenta] += nra;
+    if(!dayMap[t.fecha]) dayMap[t.fecha] = {};
+    dayMap[t.fecha].ars    = runBal['Argentina (ARS)'];
+    dayMap[t.fecha].ar_usd = runBal['Argentina (USD)'];
+    dayMap[t.fecha].us_usd = runBal['EEUU (USD)'];
+  }
+
+  return Object.entries(dayMap)
+    .map(([fecha, v]) => ({fecha, ars: v.ars||0, ar_usd: v.ar_usd||0, us_usd: v.us_usd||0}))
+    .sort((a,b) => b.fecha.localeCompare(a.fecha));
+}
+
+function rebuildCashYearDropdown() {
+  const sel = document.getElementById('cYear');
+  if(!sel) return;
+  const cur = sel.value;
+  while(sel.options.length > 1) sel.remove(1);
+  const yrs = [...new Set(_cashDaily.map(r => r.fecha.slice(0,4)))].sort().reverse();
+  yrs.forEach(y => { const o = document.createElement('option'); o.value = o.textContent = y; sel.appendChild(o); });
+  if(cur) sel.value = cur;
+}
+
+function cFilter() {
+  const yr  = document.getElementById('cYear').value;
+  const mo  = document.getElementById('cMonth').value;
+  const day = (document.getElementById('cDay').value||'').trim().padStart(2,'0');
+  cData = _cashDaily.filter(r => {
+    if(yr  && r.fecha.slice(0,4) !== yr)  return false;
+    if(mo  && r.fecha.slice(5,7) !== mo)  return false;
+    if(day && day !== '00' && r.fecha.slice(8,10) !== day) return false;
+    return true;
+  });
+  cSortApply();
+}
+
+function cSort(col) {
+  if(col === cSort_col) cSort_dir *= -1;
+  else { cSort_col = col; cSort_dir = col === 'fecha' ? -1 : 1; }
+  cSortApply();
+}
+
+function cSortApply() {
+  document.querySelectorAll('#cash-tbl thead th').forEach(th => {
+    th.classList.remove('sa','sd');
+    const col = th.getAttribute('onclick')?.match(/cSort\('(\w+)'\)/)?.[1];
+    if(col === cSort_col) th.classList.add(cSort_dir === 1 ? 'sa' : 'sd');
+  });
+  cData.sort((a,b) => {
+    const va = a[cSort_col], vb = b[cSort_col];
+    return (typeof va === 'string' ? va.localeCompare(vb) : (va - vb)) * cSort_dir;
+  });
+  cRender();
+}
+
+function cRender() {
+  const tbody = document.getElementById('cTbody');
+  if(!tbody) return;
+  document.getElementById('cCount').textContent = `${cData.length} / ${_cashDaily.length} días`;
+  const fmtARS = n => (n < 0 ? '-' : '') + '$ '   + N(Math.abs(n), 2);
+  const fmtUSD = n => (n < 0 ? '-' : '') + 'U$S ' + N(Math.abs(n), 2);
+  const cls = n => n < 0 ? 'mn' : n > 0 ? 'mp' : '';
+  const fmt = d => d && d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : d;
+  tbody.innerHTML = cData.map(r => `<tr>
+    <td style="font-family:var(--mono);font-size:11px;">${fmt(r.fecha)}</td>
+    <td class="num ${cls(r.ars)}"    style="font-family:var(--mono);font-size:11px;">${fmtARS(r.ars)}</td>
+    <td class="num ${cls(r.ar_usd)}" style="font-family:var(--mono);font-size:11px;">${fmtUSD(r.ar_usd)}</td>
+    <td class="num ${cls(r.us_usd)}" style="font-family:var(--mono);font-size:11px;">${fmtUSD(r.us_usd)}</td>
+  </tr>`).join('');
+}
+
+// ══════ NRA TAB ══════
+let _nraData = [];          // all dividend EEUU rows (from AUDIT)
+let _nraSort_col = 'fecha', _nraSort_dir = -1;
+
+function buildNRAData() {
+  return AUDIT.filter(r => r.operacion === 'Pago de Dividendos' && r.cuenta === 'EEUU (USD)')
+    .map(r => {
+      const key = String(r.nro_mov);
+      const hasOverride = _nraOverrides.has(key);
+      const overrideAmt = hasOverride ? (_nraOverrideAmounts.get(key) ?? 0) : null;
+      const gross = Math.abs(r.monto||0) + Math.abs(r.comision||0) + Math.abs(r.iva||0);
+      const nra_est = hasOverride ? overrideAmt : -(gross * NRA_RATE);
+      return {...r, gross, nra_est, hasOverride, overrideAmt};
+    });
+}
+
+function nraSort(col) {
+  if(col === _nraSort_col) _nraSort_dir *= -1;
+  else { _nraSort_col = col; _nraSort_dir = col === 'fecha' ? -1 : 1; }
+  renderNRATab();
+}
+
+// ══════ NRA OVERRIDE POPOVER ══════
+let _nraPopoverMov = null; // nro_mov currently being edited
+
+function openNRAPopover(evt, nro_mov, hasOverride, overrideAmt, autoNRA) {
+  evt.stopPropagation();
+  const pop = document.getElementById('nra-popover');
+  _nraPopoverMov = String(nro_mov);
+
+  // Populate
+  document.getElementById('nra-popover-auto').textContent =
+    `Retención automática (30%): -U$S ${N(Math.abs(autoNRA), 2)}`;
+  const inp = document.getElementById('nra-popover-input');
+  inp.value = hasOverride ? (overrideAmt ?? '') : '';
+  inp.placeholder = N(autoNRA, 2) + ' (auto)';
+
+  // Position near the button
+  const btn = evt.currentTarget;
+  const rect = btn.getBoundingClientRect();
+  const popW = 270;
+  let left = rect.left;
+  if(left + popW > window.innerWidth - 12) left = window.innerWidth - popW - 12;
+  pop.style.left = left + 'px';
+  const popH = 160;
+  const top = rect.bottom + 6 + popH > window.innerHeight
+    ? rect.top - popH - 6
+    : rect.bottom + 6;
+  pop.style.top = top + 'px';
+
+  pop.classList.add('show');
+  setTimeout(() => inp.focus(), 50);
+}
+
+function closeNRAPopover() {
+  document.getElementById('nra-popover').classList.remove('show');
+  _nraPopoverMov = null;
+}
+
+async function saveNRAOverride() {
+  const nro_mov = _nraPopoverMov;
+  if(!nro_mov) return;
+  const raw = document.getElementById('nra-popover-input').value.trim();
+
+  let monto_override;
+  if(raw === '' || raw === null) {
+    // Empty = remove override (back to auto)
+    monto_override = null;
+  } else {
+    const parsed = parseFloat(raw.replace(',', '.'));
+    if(isNaN(parsed)) {
+      document.getElementById('nra-popover-input').style.borderColor = 'var(--red)';
+      return;
+    }
+    monto_override = parsed;
+  }
+
+  const btn = document.getElementById('nra-pop-save');
+  btn.textContent = '...'; btn.disabled = true;
+
+  try {
+    if(monto_override === null) {
+      // Clear override: PATCH monto_override to null (anon key may lack DELETE permission)
+      const sessionId = getActiveSessionId() || 'default';
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/nra_overrides?nro_mov=eq.${encodeURIComponent(nro_mov)}&session_id=eq.${encodeURIComponent(sessionId)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ monto_override: null, excluir: false }),
+        }
+      );
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      _nraOverrides.delete(nro_mov);
+      _nraOverrideAmounts.delete(nro_mov);
+    } else {
+      // Upsert with monto_override and session_id
+      const sessionId = getActiveSessionId() || 'default';
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/nra_overrides`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify({ nro_mov: String(nro_mov), monto_override, excluir: monto_override === 0, session_id: sessionId }),
+      });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      _nraOverrides.add(nro_mov);
+      _nraOverrideAmounts.set(nro_mov, monto_override);
+    }
+
+    // Recalculate everything
+    const usdCaucionMovs = buildUsdCaucionMovs(_historicalTxns || []);
+    const deduped  = deduplicateMEP(_historicalTxns || []);
+    const clean    = canonicalizeTickers(deduped);
+    const rawClean = canonicalizeTickers(_historicalTxns || []);
+    const auditRows = buildAuditRows(clean, rawClean, usdCaucionMovs);
+    AUDIT.length = 0; AUDIT.push(...auditRows);
+    const {balances} = buildCash(_historicalTxns || [], usdCaucionMovs);
+    _cashBalances = balances;
+    _cashDaily = buildCashDaily(_historicalTxns || [], usdCaucionMovs);
+    cData = [..._cashDaily];
+    rebuildCashYearDropdown();
+    cFilter();
+    renderPortfolioTable();
+    aFilter();
+    renderNRATab();
+    closeNRAPopover();
+    // Deferred re-render ensures Portfolio tab reflects updated cash if it was already visible
+    setTimeout(() => renderPortfolioTable(), 50);
+  } catch(e) {
+    console.error('saveNRAOverride:', e);
+    alert(`Error al guardar: ${e.message}`);
+  } finally {
+    btn.textContent = 'Guardar'; btn.disabled = false;
+  }
+}
+
+async function clearNRAOverride() {
+  // Set input to empty and save (= delete override)
+  document.getElementById('nra-popover-input').value = '';
+  await saveNRAOverride();
+}
+
+// Close popover on outside click
+document.addEventListener('click', e => {
+  const pop = document.getElementById('nra-popover');
+  if(pop && pop.classList.contains('show') && !pop.contains(e.target)) {
+    closeNRAPopover();
+  }
+});
+
+// Keep old toggleNRAOverride as no-op to avoid any stale references
+async function toggleNRAOverride() {}
+
+function rebuildNRAYearDropdown(data) {
+  const sel = document.getElementById('nraYear');
+  if(!sel) return;
+  const cur = sel.value;
+  while(sel.options.length > 1) sel.remove(1);
+  const yrs = [...new Set(data.map(r => r.fecha.slice(0,4)))].sort().reverse();
+  yrs.forEach(y => { const o = document.createElement('option'); o.value = o.textContent = y; sel.appendChild(o); });
+  if(cur) sel.value = cur;
+}
+
+function nraClear() {
+  const s = document.getElementById('nraSearch'); if(s) s.value = '';
+  const y = document.getElementById('nraYear');   if(y) y.value = '';
+  const m = document.getElementById('nraMonth');  if(m) m.value = '';
+  renderNRATab();
+}
+
+function renderNRATab() {
+  const tbody = document.getElementById('nraTbody');
+  const tfoot = document.getElementById('nraTfoot');
+  const count = document.getElementById('nraCount');
+  if(!tbody) return;
+
+  // Build full dataset first (for year dropdown)
+  const all = buildNRAData();
+  rebuildNRAYearDropdown(all);
+
+  // Apply filters
+  const q    = (document.getElementById('nraSearch')?.value || '').toLowerCase().trim();
+  const yr   = document.getElementById('nraYear')?.value  || '';
+  const mo   = document.getElementById('nraMonth')?.value || '';
+
+  _nraData = all.filter(r => {
+    if(yr && r.fecha.slice(0,4) !== yr) return false;
+    if(mo && r.fecha.slice(5,7) !== mo) return false;
+    if(q && !r.ticker.toLowerCase().includes(q) && !String(r.nro_mov).includes(q)) return false;
+    return true;
+  });
+
+  _nraData.sort((a, b) => {
+    const va = a[_nraSort_col], vb = b[_nraSort_col];
+    return (typeof va === 'string' ? va.localeCompare(vb) : ((+va||0)-(+vb||0))) * _nraSort_dir;
+  });
+  if(count) count.textContent = `${_nraData.length} / ${all.length} dividendo${all.length!==1?'s':''}`;
+  const fmt = d => d&&d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : d||'--';
+  const fU  = n => 'U$S ' + N(Math.abs(n), 2);
+  if(!_nraData.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="no-r">Sin dividendos en cuenta EEUU.</td></tr>';
+    if(tfoot) tfoot.innerHTML = '';
+    return;
+  }
+  tbody.innerHTML = _nraData.map(r => {
+    const autoNRA = -(r.gross * NRA_RATE);
+    let pillCls, pillTxt, nraDisplay;
+    if(!r.hasOverride) {
+      pillCls = 'nra-pill auto';
+      pillTxt = '30% auto';
+      nraDisplay = `<span class="mn">-${fU(Math.abs(r.nra_est))}</span>`;
+    } else if(r.overrideAmt === 0) {
+      pillCls = 'nra-pill zeroed';
+      pillTxt = 'Sin ret.';
+      nraDisplay = '<span style="color:var(--muted)">-- (override)</span>';
+    } else {
+      pillCls = 'nra-pill custom';
+      const sign = r.overrideAmt > 0 ? '+' : '';
+      pillTxt = `${sign}U$S ${N(Math.abs(r.overrideAmt),2)}`;
+      nraDisplay = r.overrideAmt < 0
+        ? `<span class="mn">-${fU(Math.abs(r.overrideAmt))}</span>`
+        : `<span class="mp">+${fU(r.overrideAmt)}</span>`;
+    }
+    return `<tr>
+      <td>${fmt(r.fecha)}</td>
+      <td><b>${r.ticker}</b></td>
+      <td class="num mp">${fU(r.monto)}</td>
+      <td class="num">${r.comision>0?fU(r.comision):'--'}</td>
+      <td class="num">${r.iva>0?fU(r.iva):'--'}</td>
+      <td class="num" style="color:var(--text)">${fU(r.gross)}</td>
+      <td class="num">${nraDisplay}</td>
+      <td class="num" style="color:var(--muted)">${r.nro_mov&&r.nro_mov!=='0'?r.nro_mov:'--'}</td>
+      <td style="text-align:center;">
+        <button class="${pillCls}" data-nramov="${r.nro_mov}" data-autonra="${autoNRA.toFixed(4)}"
+          onclick="openNRAPopover(event, '${r.nro_mov}', ${r.hasOverride}, ${r.overrideAmt ?? 'null'}, ${autoNRA.toFixed(4)})"
+        >${pillTxt}</button>
+      </td>
+    </tr>`;
+  }).join('');
+  const totalNRA   = _nraData.reduce((s, r) => s + Math.abs(r.nra_est), 0);
+  const totalGross = _nraData.reduce((s, r) => s + r.gross, 0);
+  const excluded   = _nraData.filter(r => r.excluida).length;
+  if(tfoot) tfoot.innerHTML = `<tr>
+    <td colspan="5" style="color:var(--muted)">TOTAL - ${_nraData.length} dividendos - ${excluded} excluido${excluded!==1?'s':''}</td>
+    <td class="num">${fU(totalGross)}</td>
+    <td class="num mn">-${fU(totalNRA)}</td>
+    <td colspan="2"></td>
+  </tr>`;
+}
+
+// ── State ──
+let _historicalTxns = null;  // raw (not yet deduped)
+
+// ══════ SNAPSHOT CALCULATION ══════
+async function recalcSnapshots() {
+  if(!_historicalTxns || !_historicalTxns.length) {
+    alert('No hay transacciones cargadas. Importá un archivo .xls primero.');
+    return;
+  }
+  if(!Object.keys(_fxHistory).length) {
+    alert('El historial de FX todavía no terminó de cargar. Esperá unos segundos y volvé a intentar.');
+    return;
+  }
+
+  const btn = document.getElementById('evol-recalc-btn');
+  const progressWrap = document.getElementById('evol-progress');
+  const progressBar  = document.getElementById('evol-progress-bar');
+  const progressLbl  = document.getElementById('evol-progress-label');
+  if(btn) btn.disabled = true;
+  if(progressWrap) progressWrap.style.display = 'block';
+
+  // Get all unique dates that have movements (from cashDaily)
+  const baseDates = [...new Set(_cashDaily.map(r => r.fecha))].sort();
+  if(!baseDates.length) { if(btn) btn.disabled = false; return; }
+
+  // Extender la serie hacia adelante hasta la última fecha disponible en _fxHistory,
+  // para que el gráfico no corte abruptamente en la última operación importada.
+  // El cash no cambia en esas fechas (getCashAtDate devuelve el último valor conocido).
+  const maxFXDate = Object.keys(_fxHistory).sort().at(-1) || baseDates.at(-1);
+  const lastCashDate = baseDates.at(-1);
+  const extendedDates = [];
+  if(maxFXDate > lastCashDate) {
+    // Generar fechas calendario entre lastCashDate+1 y maxFXDate inclusive
+    const cursor = new Date(lastCashDate + 'T12:00:00');
+    cursor.setDate(cursor.getDate() + 1);
+    const end = new Date(maxFXDate + 'T12:00:00');
+    while(cursor <= end) {
+      const iso = cursor.toISOString().slice(0, 10);
+      extendedDates.push(iso);
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+  const dates = [...baseDates, ...extendedDates];
+  if(!dates.length) { if(btn) btn.disabled = false; return; }
+
+  const cauciones = buildCauciones(_historicalTxns);
+  const snapshots = [];
+
+  for(let i = 0; i < dates.length; i++) {
+    const date = dates[i];
+    const pct = Math.round((i / dates.length) * 100);
+    if(progressBar) progressBar.style.width = pct + '%';
+    if(progressLbl) progressLbl.textContent = `Calculando ${date} (${i+1}/${dates.length})...`;
+
+    // Cash y valor: fuentes canónicas — misma lógica exacta que tab Portfolio y Saldo Cash
+    const precomputed = { balances: getCashAtDate(date), cauciones };
+
+    // FX for this date
+    const fx = getFXForDate(date);
+
+    // Usar las funciones canónicas — misma lógica exacta que tab Portfolio
+    const ar_usd        = getARValueAtDate(date, precomputed);
+    const ar_usd_market = getARMarketValueAtDate(date, precomputed);
+    const us_usd_cost   = getUSCostValueAtDate(date, precomputed);
+    const us_usd        = getUSValueAtDate(date, precomputed);
+
+    snapshots.push({
+      date, ar_ars: 0,
+      ar_usd:        Math.round(ar_usd*100)/100,
+      ar_usd_market: Math.round(ar_usd_market*100)/100,
+      us_usd_cost:   Math.round(us_usd_cost*100)/100,
+      us_usd:        Math.round(us_usd*100)/100,
+      fx_rate: fx
+    });
+
+    // Debug: log every 50th snapshot
+    if(i % 50 === 0) console.log(`Snapshot ${date}: ar_usd=${ar_usd.toFixed(2)}, us_usd=${us_usd.toFixed(2)}, fx=${fx}`);
+
+    // Yield to browser every 20 iterations to avoid freezing
+    if(i % 20 === 0) await new Promise(r => setTimeout(r, 0));
+  }
+
+  // ── Calcular flujos netos e índice base 100 ───────────────────────────────
+  // Método Modified Dietz simplificado: el flujo se resta del valor de hoy antes
+  // de dividir por el valor de ayer. Esto excluye depósitos/extracciones del retorno.
+  // Fórmula: retorno_diario = (total_hoy - flujo_hoy) / total_ayer - 1
+  //          idx_hoy = idx_ayer × (1 + retorno_diario)
+  // Huecos en la serie (días sin movimiento): no hay flujos intermedios,
+  // el retorno acumulado se aplica de una vez — correcto matemáticamente.
+  const flujosPorFecha = {};
+  for(const t of _historicalTxns) {
+    if(!isDeposito(t.operacion) && !isExtraccion(t.operacion)) continue;
+    if(!t.monto || !t.fecha) continue;
+    const fx_t = getFXForDate(t.fecha);
+    // monto positivo = depósito, monto negativo = extracción
+    const montoUSD = t.cuenta === 'Argentina (ARS)'
+      ? (t.monto / (fx_t > 0 ? fx_t : 1))
+      : t.monto;
+    flujosPorFecha[t.fecha] = (flujosPorFecha[t.fecha] || 0) + montoUSD;
+  }
+
+  let idx = 100;
+  for(let i = 0; i < snapshots.length; i++) {
+    const s = snapshots[i];
+    const total = s.ar_usd_market + s.us_usd; // mercado para ambos
+    if(i === 0) {
+      s.idx = 100;
+    } else {
+      const totalAyer = snapshots[i-1].ar_usd_market + snapshots[i-1].us_usd;
+      if(totalAyer > 0) {
+        const flujo = flujosPorFecha[s.date] || 0;
+        const retorno = (total - flujo) / totalAyer - 1;
+        idx = Math.round(snapshots[i-1].idx * (1 + retorno) * 10000) / 10000;
+      }
+      s.idx = idx;
+    }
+  }
+
+  if(progressLbl) progressLbl.textContent = `Guardando ${snapshots.length} snapshots en Supabase...`;
+  if(progressBar) progressBar.style.width = '100%';
+
+  // Borrar todos los snapshots existentes antes de re-insertar
+  // Esto evita que queden fechas huérfanas del cálculo anterior
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/portfolio_snapshots?date=gte.2000-01-01`, {
+      method: 'DELETE',
+      headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` }
+    });
+  } catch(e) { console.warn('Snapshot delete failed:', e); }
+
+  // Upsert to Supabase in batches of 200
+  const BATCH = 200;
+  for(let i = 0; i < snapshots.length; i += BATCH) {
+    const batch = snapshots.slice(i, i + BATCH);
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/portfolio_snapshots`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify(batch)
+      });
+      if(!r.ok) { const err = await r.text(); console.error('Snapshot upsert error:', err); }
+    } catch(e) { console.error('Snapshot upsert failed:', e); }
+  }
+
+  // Update local state and re-render chart
+  _snapshots = snapshots;
+  if(progressWrap) progressWrap.style.display = 'none';
+  if(btn) btn.disabled = false;
+  renderEvolChart();
+}
+
+// ══════ EVOLUTION CHART ══════
+let _evolChart = null;
+let _evolRange = 'MAX';
+let _evolSeries = new Set(['ar','us','total','flujos']);
+
+function evolSetRange(range) {
+  _evolRange = range;
+  document.querySelectorAll('.evol-rb').forEach(b => b.classList.toggle('act', b.dataset.range === range));
+  renderEvolChart();
+}
+
+function evolToggleSeries(series) {
+  if(_evolSeries.has(series)) _evolSeries.delete(series);
+  else _evolSeries.add(series);
+  document.querySelectorAll('.evol-series').forEach(b => b.classList.toggle('act', _evolSeries.has(b.dataset.series)));
+  renderEvolChart();
+}
+
+function buildDepositSeries(dates) {
+  // Construye la serie acumulada de depósitos netos en USD.
+  // ARS → convierte con FX del día. USD → directo.
+  // dates: array de strings YYYY-MM-DD (fechas del gráfico, ordenadas asc)
+  if(!_historicalTxns || !_historicalTxns.length) return new Array(dates.length).fill(null);
+
+  // Acumular por fecha
+  const flujosPorFecha = {};
+  for(const t of _historicalTxns) {
+    if(!t.fecha || !t.monto) continue;
+    if(!isDeposito(t.operacion) && !isExtraccion(t.operacion)) continue;
+    const fx_t = getFXForDate(t.fecha);
+    const montoUSD = t.cuenta === 'Argentina (ARS)'
+      ? t.monto / (fx_t > 0 ? fx_t : 1)
+      : t.monto;
+    flujosPorFecha[t.fecha] = (flujosPorFecha[t.fecha] || 0) + montoUSD;
+  }
+
+  // Construir serie rolling sobre las fechas del gráfico
+  // Para fechas sin snapshot usamos el acumulado anterior
+  const allFlujoDates = Object.keys(flujosPorFecha).sort();
+  let acum = 0;
+  // Pre-calcular acumulado hasta cada fecha del gráfico
+  const result = [];
+  let flujIdx = 0;
+  for(const date of dates) {
+    // Sumar todos los flujos hasta esta fecha inclusive
+    while(flujIdx < allFlujoDates.length && allFlujoDates[flujIdx] <= date) {
+      acum += flujosPorFecha[allFlujoDates[flujIdx]];
+      flujIdx++;
+    }
+    result.push(Math.round(acum * 100) / 100);
+  }
+  return result;
+}
+
+function renderEvolChart() {
+  const canvas = document.getElementById('evol-chart');
+  const emptyEl = document.getElementById('evol-empty');
+  const summaryEl = document.getElementById('evol-summary');
+  if(!canvas) return;
+
+  if(!_snapshots.length) {
+    canvas.style.display = 'none';
+    if(emptyEl) emptyEl.style.display = 'block';
+    return;
+  }
+  canvas.style.display = 'block';
+  if(emptyEl) emptyEl.style.display = 'none';
+
+  // Filter by range
+  let data = [..._snapshots].sort((a,b) => a.date.localeCompare(b.date));
+  if(_evolRange !== 'MAX') {
+    const months = {'1M':1,'3M':3,'6M':6,'1Y':12}[_evolRange] || 12;
+    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+    const cutStr = cutoff.toISOString().slice(0,10);
+    data = data.filter(r => r.date >= cutStr);
+  }
+
+  const labels = data.map(r => r.date);
+  const isoLabels = labels; // alias explícito — fechas YYYY-MM-DD para cálculos
+  const fmtLbl = d => `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
+
+  // Series de valor (eje Y izquierdo)
+  const arCosto   = data.map(r => r.ar_usd);
+  const arMercado = data.map(r => r.ar_usd_market ?? r.ar_usd); // fallback al costo si null
+  const usCosto   = data.map(r => r.us_usd_cost ?? r.us_usd);  // fallback al mercado si null
+  const usMercado = data.map(r => r.us_usd);
+  const totalCosto   = data.map((r,i) => Math.round((arCosto[i]   + usCosto[i])  *100)/100);
+  const totalMercado = data.map((r,i) => Math.round((arMercado[i] + usMercado[i])*100)/100);
+  // Alias para compatibilidad con el resto del código (idx, summary, flujos)
+  const arUSD    = arCosto;
+  const usUSD    = usMercado;
+  const totalUSD = totalMercado;
+  // Ganancias no realizadas (mercado - costo)
+  const gnArData    = data.map((r,i) => Math.round((arMercado[i]    - arCosto[i])  *100)/100);
+  const gnUsData    = data.map((r,i) => Math.round((usMercado[i]    - usCosto[i])  *100)/100);
+  const gnTotalData = data.map((r,i) => Math.round((totalMercado[i] - totalCosto[i])*100)/100);
+
+  // Flujos por fecha (en USD): depósitos positivos en verde, extracciones positivas en rojo
+  // Se pre-calculan de _historicalTxns para la ventana filtrada
+  const flujosDepo = new Array(data.length).fill(null);
+  const flujosExtr = new Array(data.length).fill(null);
+  if(_evolSeries.has('flujos') && _historicalTxns && _historicalTxns.length) {
+    const dateIndex = {};
+    data.forEach((r, i) => dateIndex[r.date] = i);
+    for(const t of _historicalTxns) {
+      if(!t.fecha || !(t.fecha in dateIndex)) continue;
+      const i = dateIndex[t.fecha];
+      const fx_t = data[i].fx_rate > 0 ? data[i].fx_rate : 1;
+      const montoUSD = t.cuenta === 'Argentina (ARS)'
+        ? Math.abs(t.monto) / fx_t
+        : Math.abs(t.monto);
+      if(isDeposito(t.operacion)  && t.monto > 0) flujosDepo[i] = (flujosDepo[i] || 0) + montoUSD;
+      if(isExtraccion(t.operacion)&& t.monto < 0) flujosExtr[i] = (flujosExtr[i] || 0) + montoUSD;
+    }
+  }
+
+  // Índice (eje Y derecho) — viene de snapshot.idx; si no existe (snapshots viejos) queda null
+  const idxData = data.map(r => r.idx ?? null);
+
+  const showIdx    = _evolSeries.has('idx');
+  const showFlujos = _evolSeries.has('flujos');
+  const hasSecondaryAxis = showIdx;
+
+  const datasets = [];
+  // ── AR ──
+  if(_evolSeries.has('ar_costo')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇦🇷 AR Costo', data: arCosto,
+    borderColor: '#3d7fff', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderDash: [4, 3],
+  });
+  if(_evolSeries.has('ar')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇦🇷 AR Mercado', data: arMercado,
+    borderColor: '#3d7fff', backgroundColor: 'transparent',
+    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  // ── EEUU ──
+  if(_evolSeries.has('us_costo')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇺🇸 EEUU Costo', data: usCosto,
+    borderColor: '#ef4444', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderDash: [4, 3],
+  });
+  if(_evolSeries.has('us')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇺🇸 EEUU Mercado', data: usMercado,
+    borderColor: '#ef4444', backgroundColor: 'transparent',
+    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  // ── Total ──
+  if(_evolSeries.has('total_costo')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '∑ Total Costo', data: totalCosto,
+    borderColor: '#a78bfa', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+    borderDash: [4, 3],
+  });
+  if(_evolSeries.has('total')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '∑ Total Mercado', data: totalMercado,
+    borderColor: '#a78bfa', backgroundColor: 'transparent',
+    borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  // ── Ganancias no realizadas ──
+  if(_evolSeries.has('gn_ar')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇦🇷 Gan. no realiz. AR', data: gnArData,
+    borderColor: '#00d4aa', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(_evolSeries.has('gn_us')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '🇺🇸 Gan. no realiz. EEUU', data: gnUsData,
+    borderColor: '#f97316', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(_evolSeries.has('gn_total')) datasets.push({
+    type: 'line', yAxisID: 'y',
+    label: '∑ Gan. no realiz. Total', data: gnTotalData,
+    borderColor: '#e879f9', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+  });
+  if(showFlujos) {
+    datasets.push({
+      type: 'bar', yAxisID: 'y',
+      label: '💰 Depósito (USD)', data: flujosDepo,
+      backgroundColor: 'rgba(34,197,94,0.5)', borderColor: '#22c55e', borderWidth: 1,
+      barPercentage: 0.4, categoryPercentage: 1,
+    });
+    datasets.push({
+      type: 'bar', yAxisID: 'y',
+      label: '💸 Extracción (USD)', data: flujosExtr,
+      backgroundColor: 'rgba(239,68,68,0.5)', borderColor: '#ef4444', borderWidth: 1,
+      barPercentage: 0.4, categoryPercentage: 1,
+    });
+  }
+  if(showIdx) datasets.push({
+    type: 'line', yAxisID: 'y2',
+    label: '📈 Índice (base 100)', data: idxData,
+    borderColor: '#f59e0b', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3,
+    fill: false, borderDash: [4, 3],
+  });
+
+  const showDepNeto = _evolSeries.has('depNeto');
+  if(showDepNeto) {
+    const depNetoData = buildDepositSeries(isoLabels);
+    datasets.push({
+      type: 'line', yAxisID: 'y',
+      label: '💵 Dep. Netos (USD)', data: depNetoData,
+      borderColor: '#ffffff', backgroundColor: 'transparent',
+      borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
+      borderDash: [6, 3],
+    });
+  }
+
+  if(_evolChart) { _evolChart.destroy(); _evolChart = null; }
+
+  const ctx = canvas.getContext('2d');
+  _evolChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: labels.map(fmtLbl), datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2330', borderColor: '#2a3040', borderWidth: 1,
+          titleColor: '#6b7a99', bodyColor: '#e8ecf5',
+          titleFont: { family: "'IBM Plex Mono'" }, bodyFont: { family: "'IBM Plex Mono'" },
+          callbacks: {
+            title: items => items[0].label,
+            label: item => {
+              if(item.raw === null || item.raw === undefined) return null;
+              if(item.dataset.label.includes('Índice'))
+                return ` ${item.dataset.label}: ${N(item.raw, 2)}`;
+              return ` ${item.dataset.label}: U$S ${new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(item.raw)}`;
+            }
+          }
+        },
+        zoom: {
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' },
+          pan:  { enabled: true, mode: 'xy' },
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#6b7a99', font: { family: "'IBM Plex Mono'", size: 10 }, maxTicksLimit: 12, maxRotation: 0 },
+          grid: { color: 'rgba(42,48,64,.5)' },
+          border: { color: '#2a3040' }
+        },
+        y: {
+          position: 'left',
+          ticks: { color: '#6b7a99', font: { family: "'IBM Plex Mono'", size: 10 },
+            callback: v => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:0,maximumFractionDigits:0}).format(v) },
+          grid: { color: 'rgba(42,48,64,.5)' },
+          border: { color: '#2a3040' }
+        },
+        y2: {
+          display: hasSecondaryAxis,
+          position: 'right',
+          ticks: { color: '#f59e0b', font: { family: "'IBM Plex Mono'", size: 10 },
+            callback: v => N(v, 1) },
+          grid: { drawOnChartArea: false },
+          border: { color: '#2a3040' }
+        }
+      }
+    }
+  });
+
+  // Summary row
+  if(summaryEl && data.length) {
+    const last = data[data.length-1];
+    const fmtU = n => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:2}).format(n);
+    const lastIdx = idxData[idxData.length-1];
+    summaryEl.innerHTML = `
+      <div style="font-family:var(--mono);font-size:11px;">
+        <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Última fecha: ${fmtLbl(last.date)}</div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;">
+          ${_evolSeries.has('ar_costo')    ? `<span style="color:#3d7fff;opacity:.7">🇦🇷 Costo: ${fmtU(arCosto[arCosto.length-1])}</span>` : ''}
+          ${_evolSeries.has('ar')          ? `<span style="color:#3d7fff">🇦🇷 Mercado: ${fmtU(arMercado[arMercado.length-1])}</span>` : ''}
+          ${_evolSeries.has('us_costo')    ? `<span style="color:#ef4444;opacity:.7">🇺🇸 Costo: ${fmtU(usCosto[usCosto.length-1])}</span>` : ''}
+          ${_evolSeries.has('us')          ? `<span style="color:#ef4444">🇺🇸 Mercado: ${fmtU(usMercado[usMercado.length-1])}</span>` : ''}
+          ${_evolSeries.has('total_costo') ? `<span style="color:#a78bfa;opacity:.7">∑ Costo: ${fmtU(totalCosto[totalCosto.length-1])}</span>` : ''}
+          ${_evolSeries.has('total')       ? `<span style="color:#a78bfa">∑ Mercado: ${fmtU(totalMercado[totalMercado.length-1])}</span>` : ''}
+          ${_evolSeries.has('gn_ar')       ? `<span style="color:#00d4aa">🇦🇷 G. no real.: ${fmtU(gnArData[gnArData.length-1])}</span>` : ''}
+          ${_evolSeries.has('gn_us')       ? `<span style="color:#f97316">🇺🇸 G. no real.: ${fmtU(gnUsData[gnUsData.length-1])}</span>` : ''}
+          ${_evolSeries.has('gn_total')    ? `<span style="color:#e879f9">∑ G. no real.: ${fmtU(gnTotalData[gnTotalData.length-1])}</span>` : ''}
+          ${showIdx && lastIdx !== null    ? `<span style="color:var(--usd)">📈 Índice: ${N(lastIdx,2)}</span>` : ''}
+          ${_evolSeries.has('depNeto')     ? `<span style="color:#ffffff">💵 Dep. Netos: ${fmtU(buildDepositSeries(isoLabels)[isoLabels.length-1])}</span>` : ''}
+          <span style="color:var(--muted);font-size:10px;">FX: ${N(last.fx_rate,2)} ARS/USD</span>
+        </div>
+      </div>`;
+  }
+}
+
+function processAndRefresh(rawMerged) {
+  _historicalTxns = rawMerged;
+  // Detectar grupos de tickers dinámicamente ANTES de buildLedger y canonicalizeTickers
+  detectTickerGroups(rawMerged);
+  // Construir ledger PRIMERO — isEffectivelyClosed lo consulta dentro de buildPortfolio
+  _ledger = buildLedger(rawMerged, _fxHistory);
+  const deduped = deduplicateMEP(rawMerged);
+  const clean   = canonicalizeTickers(deduped);
+  const {usCards, arCards, optionsExcluded, instruments} = buildPortfolio(clean, _fxHistory);
+  // Build cash balances from raw (pre-dedup) transactions
+  const usdCaucionMovs = buildUsdCaucionMovs(rawMerged);
+  const rawClean  = canonicalizeTickers(rawMerged); // canonical tickers, pre-dedup, for cash
+  const auditRows = buildAuditRows(clean, rawClean, usdCaucionMovs);
+
+  // Swap global data arrays in-place
+  AUDIT.length=0; AUDIT.push(...auditRows);
+  US.length=0;    US.push(...usCards);
+  AR.length=0;    AR.push(...arCards);
+  _instruments = instruments;
+  const {balances, movements} = buildCash(rawMerged, usdCaucionMovs);
+  _cashBalances = balances;
+  _optionsExcluded = optionsExcluded;
+
+  // Build daily cash snapshots for the Cash tab
+  _cashDaily = buildCashDaily(rawMerged, usdCaucionMovs);
+  cData = [..._cashDaily];
+  rebuildCashYearDropdown();
+  cSortApply();
+
+  // Refresh UI
+  renderPortfolioTable();
+  aFilter();
+  rebuildYearDropdown();
+  renderNRATab();
+  rebuildEspeciesDropdown();
+
+  // Cash strips removed — cash is now shown inline in the Portfolio table
+  // Options disclaimer is now handled inside renderPortfolioTable()
+
+  // Update date range in header
+  const dates = auditRows.map(r=>r.fecha).filter(Boolean).sort();
+  if(dates.length) {
+    const fmt = d => {
+    if(!d || d.length < 10) return d||'';
+    return `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}`;
+  };
+    const sessions = getSessions();
+    const session = sessions.find(s => s.id === getActiveSessionId());
+    const sessionLabel = session ? `${session.name} · ` : '';
+    document.getElementById('header-status').textContent =
+      `${sessionLabel}${fmt(dates[0])} → ${fmt(dates.at(-1))} · ${auditRows.length.toLocaleString('es-AR')} operaciones · clasificado por posición abierta`;
+    // update toolbar date range
+    const dateSpan = document.querySelector('.atb span[data-daterange]');
+    if(dateSpan) dateSpan.textContent = `${fmt(dates[0])} → ${fmt(dates.at(-1))}`;
+  }
+
+  // Save updated historical to localStorage for this session
+  try {
+    const key = getSessionTxnsKey(getActiveSessionId());
+    localStorage.setItem(key, JSON.stringify(rawMerged));
+  } catch(e) { /* storage full, ignore */ }
+
+  // Auto-fetch latest prices from Supabase
+  fetchLatestPrices();
+}
+
+// Parse the broker HTML-disguised XLS directly via DOMParser, bypassing SheetJS
+// numeric coercion entirely. This ensures "10.000,00" stays as the string "10.000,00"
+// rather than being truncated to 10 by SheetJS's parseFloat logic.
+function parseBalanzRowsFromHTML(htmlText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(htmlText, 'text/html');
+  const tableRows = Array.from(doc.querySelectorAll('table tr, tr'));
+  const rows = [];
+  let headerIdx = -1;
+  const data = tableRows.map(tr =>
+    Array.from(tr.querySelectorAll('td, th')).map(td => td.textContent.trim())
+  ).filter(r => r.length > 0);
+
+  for(let i = 0; i < data.length; i++) {
+    if(data[i][0] && String(data[i][0]).includes('Mov')) { headerIdx = i; break; }
+  }
+  if(headerIdx < 0) return null; // not a broker HTML file
+
+  for(let i = headerIdx + 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row[COL.tipo_mov]) continue;
+    if(String(row[COL.estado]||'').trim() === 'Cancelada') continue;
+    const tipoCuenta = String(row[COL.tipo_cuenta]||'').trim();
+    const cuenta = ACCOUNT_MAP[tipoCuenta] || tipoCuenta;
+    const fecha = parseDate(row[COL.fecha]);
+    if(!fecha) continue;
+    const tipoMov = String(row[COL.tipo_mov]||'');
+    rows.push({
+      fecha, cuenta,
+      fecha_liq:  parseDate(row[COL.fecha_liq]),
+      ticker:     extractTicker(tipoMov),
+      operacion:  extractOp(tipoMov),
+      cantidad:   numArg(row[COL.cantidad]),
+      precio:     numArg(row[COL.precio]),
+      monto:      numArg(row[COL.monto]),
+      comision:   numArg(row[COL.comision]),
+      iva:        numArg(row[COL.iva]),
+      otros_imp:  numArg(row[COL.otros_imp]),
+      nro_boleto: String(row[COL.nro_boleto]||'0'),
+      nro_mov:    String(row[COL.nro_mov]||'0'),
+      estado:     String(row[COL.estado]||''),
+    });
+  }
+  return rows;
+}
+
+async function handleFileImport(file) {
+  const modal = document.getElementById('import-modal');
+  const status = document.getElementById('import-status');
+
+  status.textContent = 'Leyendo archivo...';
+  showModal(true);
+
+  try {
+    // Detect broker HTML-disguised XLS by reading the first bytes as text
+    // The broker file starts with an HTML tag, not a binary signature
+    const textBuf = await file.slice(0, 512).text();
+    const isHtmlXls = /<html|<table|<tr|<!DOCTYPE/i.test(textBuf);
+
+    let incoming;
+    if(isHtmlXls) {
+      // Broker HTML file: parse via DOMParser to preserve exact cell strings
+      // This avoids SheetJS truncating "10.000,00" → 10 via parseFloat
+      status.textContent = 'Procesando archivo del broker...';
+      await new Promise(r => setTimeout(r, 30));
+      const fullText = await file.text();
+      incoming = parseBalanzRowsFromHTML(fullText);
+      if(!incoming) throw new Error('No se encontró tabla de operaciones en el archivo HTML.');
+    } else {
+      // Real XLSX file: use SheetJS as before
+      const buf = await file.arrayBuffer();
+      const workbook = XLSX.read(buf, {type:'array', raw:true, cellDates:false});
+      status.textContent = 'Procesando transacciones...';
+      await new Promise(r => setTimeout(r, 30));
+      incoming = parseBalanzRows(workbook);
+    }
+
+    if(!incoming.length) throw new Error('No se encontraron transacciones en el archivo.');
+
+    // Get current historical base from localStorage only
+    let historical = _historicalTxns;
+    if(!historical) {
+      const stored = localStorage.getItem('portfolio_txns');
+      historical = stored ? JSON.parse(stored) : [];
+    }
+
+    status.textContent = 'Mergeando con histórico...';
+    await new Promise(r => setTimeout(r, 30));
+
+    const {merged, added} = mergeTransactions(historical, incoming);
+    processAndRefresh(merged);
+
+    status.textContent = `✓ ${added} operaciones nuevas importadas (${merged.length} total)`;
+    status.style.color = 'var(--green)';
+    setTimeout(() => showModal(false), 2500);
+
+  } catch(err) {
+    status.textContent = `✗ Error: ${err.message}`;
+    status.style.color = 'var(--red)';
+    console.error(err);
+  }
+}
+
+function showModal(show) {
+  document.getElementById('import-modal').style.display = show ? 'flex' : 'none';
+}
+
+// ══════ SESSION MANAGEMENT ══════
+// Sessions stored in localStorage as:
+//   sessions_index: [{id, name, createdAt}]
+//   portfolio_txns_{id}: [...transactions]
+// NRA overrides in Supabase filtered by session_id column.
+
+function generateSessionId() {
+  return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
+}
+
+function getSessions() {
+  try { return JSON.parse(localStorage.getItem('sessions_index') || '[]'); }
+  catch(e) { return []; }
+}
+
+function saveSessions(sessions) {
+  localStorage.setItem('sessions_index', JSON.stringify(sessions));
+}
+
+function getActiveSessionId() {
+  return localStorage.getItem('active_session_id') || null;
+}
+
+function setActiveSessionId(id) {
+  localStorage.setItem('active_session_id', id);
+}
+
+function getSessionTxnsKey(id) {
+  return `portfolio_txns_${id}`;
+}
+
+function renderSessionDropdown() {
+  const sel = document.getElementById('session-select');
+  if(!sel) return;
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  sel.innerHTML = sessions.map(s =>
+    `<option value="${s.id}" ${s.id === activeId ? 'selected' : ''}>${s.name}</option>`
+  ).join('');
+  if(!sessions.length) {
+    sel.innerHTML = '<option value="">Sin sesiones</option>';
+  }
+}
+
+function newSessionPrompt() {
+  const name = prompt('Nombre para la nueva sesión:', 'Mi cuenta');
+  if(!name || !name.trim()) return;
+  const id = generateSessionId();
+  const sessions = getSessions();
+  sessions.push({id, name: name.trim(), createdAt: new Date().toISOString()});
+  saveSessions(sessions);
+  setActiveSessionId(id);
+  renderSessionDropdown();
+  // Clear current UI state and start fresh
+  _historicalTxns = null;
+  AUDIT.length = 0; US.length = 0; AR.length = 0;
+  _cashBalances = null; _optionsExcluded = 0; _instruments = {};
+  _nraOverrides = new Set(); _nraOverrideAmounts = new Map();
+  _cashDaily = []; cData = [];
+  showEmptyState();
+  fetchLatestPrices();
+}
+
+function renameSessionPrompt() {
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  if(!session) return;
+  const name = prompt('Nuevo nombre:', session.name);
+  if(!name || !name.trim()) return;
+  session.name = name.trim();
+  saveSessions(sessions);
+  renderSessionDropdown();
+}
+
+function switchSession(id) {
+  if(!id) return;
+  setActiveSessionId(id);
+  renderSessionDropdown();
+  // Load transactions for this session
+  const key = getSessionTxnsKey(id);
+  const stored = localStorage.getItem(key);
+  // Reset NRA overrides — will be fetched fresh for this session
+  _nraOverrides = new Set(); _nraOverrideAmounts = new Map();
+  if(stored) {
+    try {
+      const raw = JSON.parse(stored);
+      processAndRefresh(raw);
+    } catch(e) {
+      console.error('switchSession parse error:', e);
+      showEmptyState();
+      fetchLatestPrices();
+    }
+  } else {
+    _historicalTxns = null;
+    AUDIT.length = 0; US.length = 0; AR.length = 0;
+    _cashBalances = null; _optionsExcluded = 0; _instruments = {};
+    _cashDaily = []; cData = [];
+    showEmptyState();
+    fetchLatestPrices();
+  }
+}
+
+// ══════ CLEAR DATA (session-aware) ══════
+function showClearConfirm() {
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  const nameEl = document.getElementById('clear-session-name');
+  if(nameEl) nameEl.textContent = session ? `"${session.name}"` : 'esta sesión';
+  document.getElementById('clear-modal').style.display = 'flex';
+}
+function hideClearConfirm() {
+  document.getElementById('clear-modal').style.display = 'none';
+}
+async function clearAllData() {
+  hideClearConfirm();
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  // Remove txns from localStorage
+  if(activeId) localStorage.removeItem(getSessionTxnsKey(activeId));
+  // Remove NRA overrides for this session from Supabase
+  if(activeId) {
+    try {
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/nra_overrides?session_id=eq.${encodeURIComponent(activeId)}`,
+        { method: 'DELETE', headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      );
+    } catch(e) { console.warn('Could not delete NRA overrides for session:', e); }
+  }
+  // Remove session from index
+  const newSessions = sessions.filter(s => s.id !== activeId);
+  saveSessions(newSessions);
+  // Switch to another session or start fresh
+  if(newSessions.length) {
+    setActiveSessionId(newSessions[0].id);
+    switchSession(newSessions[0].id);
+  } else {
+    localStorage.removeItem('active_session_id');
+    _historicalTxns = null;
+    AUDIT.length = 0; US.length = 0; AR.length = 0;
+    _cashBalances = null; _optionsExcluded = 0; _instruments = {};
+    _nraOverrides = new Set(); _nraOverrideAmounts = new Map();
+    _cashDaily = []; cData = [];
+    showEmptyState();
+    fetchLatestPrices();
+  }
+  renderSessionDropdown();
+}
+
+// ══════ INIT ══════
+(function init() {
+  // Migrate legacy data (portfolio_txns without session) to a default session
+  const legacy = localStorage.getItem('portfolio_txns');
+  let sessions = getSessions();
+  if(legacy && !sessions.length) {
+    // Use 'default' as the session ID so existing NRA overrides in Supabase still match
+    const id = 'default';
+    sessions = [{id, name: 'Mi cuenta', createdAt: new Date().toISOString()}];
+    saveSessions(sessions);
+    localStorage.setItem(getSessionTxnsKey(id), legacy);
+    localStorage.removeItem('portfolio_txns');
+    setActiveSessionId(id);
+  }
+  // Ensure there's at least one session
+  if(!sessions.length) {
+    const id = 'default';
+    sessions = [{id, name: 'Mi cuenta', createdAt: new Date().toISOString()}];
+    saveSessions(sessions);
+    setActiveSessionId(id);
+  }
+  // Ensure active session exists
+  const activeId = getActiveSessionId();
+  if(!activeId || !sessions.find(s => s.id === activeId)) {
+    setActiveSessionId(sessions[0].id);
+  }
+  renderSessionDropdown();
+  // Inicializar date picker del Portfolio con la fecha de hoy
+  const pdInp = document.getElementById('portfolio-date');
+  if(pdInp) pdInp.value = fmtDateDMY(_portfolioDate);
+  // Load active session data
+  const stored = localStorage.getItem(getSessionTxnsKey(getActiveSessionId()));
+  if(stored) {
+    try {
+      const raw = JSON.parse(stored);
+      processAndRefresh(raw);
+    } catch(e) {
+      console.error('Error loading stored data:', e);
+      showEmptyState();
+    }
+  } else {
+    showEmptyState();
+    fetchLatestPrices();
+  }
+  // Always fetch extended data
+  fetchPricesHistory();
+  fetchFXHistory();
+  fetchSnapshots();
+
+  // Restore last active tab (default: portfolio)
+  const savedTab = localStorage.getItem('active_tab') || 'portfolio';
+  const tabEl = document.querySelector(`.tab[onclick*="'${savedTab}'"]`);
+  if(tabEl) switchTab(tabEl, savedTab);
+  else {
+    const fallback = document.querySelector(".tab[onclick*=\"'portfolio'\"]");
+    if(fallback) switchTab(fallback, 'portfolio');
+  }
+})();
+
+function showEmptyState() {
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  const hdr = document.getElementById('header-status');
+  if(hdr) hdr.textContent = session
+    ? `${session.name} · Sin datos — importá un archivo .xls de Balanz para comenzar`
+    : 'Sin datos — importá un archivo .xls de Balanz para comenzar';
+  _cashBalances = null;
+  _optionsExcluded = 0;
+  _instruments = {};
+  renderPortfolioTable();
+  aFilter();
+  _cashDaily = []; cData = [];
+  const ct = document.getElementById('cTbody'); if(ct) ct.innerHTML = '';
+  const cc = document.getElementById('cCount'); if(cc) cc.textContent = '';
+}
+
+// ══════ NRA CSV EXPORT ══════
+function exportNRAcsv() {
+  const all = buildNRAData();
+  if(!all.length) { alert('No hay dividendos para exportar.'); return; }
+  const sessions = getSessions();
+  const activeId = getActiveSessionId();
+  const session = sessions.find(s => s.id === activeId);
+  const sessionName = session ? session.name : 'portfolio';
+
+  const headers = ['Fecha','Ticker','Monto neto USD','Comisión USD','IVA USD','Bruto estimado USD','Ret. NRA USD','Tipo retención','Nro. Mov.'];
+  const rows = all.map(r => {
+    const tipo = !r.hasOverride ? 'Auto 30%' : (r.overrideAmt === 0 ? 'Override: sin retención' : 'Override: manual');
+    return [
+      r.fecha,
+      r.ticker,
+      r.monto.toFixed(2),
+      r.comision.toFixed(2),
+      r.iva.toFixed(2),
+      r.gross.toFixed(2),
+      r.nra_est !== null ? r.nra_est.toFixed(2) : '0.00',
+      tipo,
+      r.nro_mov || '',
+    ];
+  });
+
+  const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `NRA_${sessionName.replace(/[^a-z0-9]/gi,'_')}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  INSTRUMENT LEDGER — fuente de verdad para balances de títulos.
+//  Opera sobre rawTxns crudos (pre-dedup, pre-canonicalización).
+//
+//  Regla clave: el broker registra DOS filas por operación cuando
+//  el instrumento opera fuera de su cuenta nativa:
+//    - Fila 1 en cuenta nativa (EEUU para sufijo C, AR USD para sufijo D): títulos + monto
+//    - Fila 2 en Argentina (ARS): solo comisiones — NO mueve títulos
+//  movesTitle() determina cuál fila mueve títulos.
+//
+//  Toda venta consume del pool regional proporcionalmente (una sola bolsa).
+// ══════════════════════════════════════════════════════════════════════
+
+function buildLedger(rawTxns, fxHistory = {}) {
+  if(!rawTxns || !rawTxns.length) return {};
+
+  function movesTitle(ticker_raw, cuenta) {
+    const upper = ticker_raw.toUpperCase();
+    const canonical = TICKER_TO_GROUP[upper];
+    if(canonical) {
+      const suffix = upper.slice(canonical.length);
+      if(suffix === 'C') return cuenta.includes('EEUU');
+      if(suffix === 'D') return cuenta.includes('USD') && cuenta.includes('Argentina');
+    }
+    return true;
+  }
+
+  function getTitleSlot(ticker_raw, cuenta) {
+    if(cuenta.includes('EEUU')) return 'EEUU';
+    if(cuenta.includes('ARS'))  return 'AR_ARS';
+    return 'AR_USD';
+  }
+
+  function getFX(fecha) {
+    if(!fecha || !Object.keys(fxHistory).length) return null;
+    const dates = Object.keys(fxHistory).filter(d => d <= fecha).sort();
+    if(dates.length) return fxHistory[dates[dates.length - 1]];
+    const all = Object.keys(fxHistory).sort();
+    return all.length ? fxHistory[all[0]] : null;
+  }
+
+  function normFecha(f) {
+    if(!f) return '';
+    if(/^\d{4}-\d{2}-\d{2}$/.test(f)) return f;
+    const parts = f.split('/');
+    if(parts.length !== 3) return f;
+    const [d, m, y] = parts;
+    const yr = y.length === 2 ? (parseInt(y) < 50 ? '20'+y : '19'+y) : y;
+    return `${yr}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+
+  function calcCostNoC(t) {
+    const raw = t.ticker_raw || t.ticker;
+    if(isBond(raw)) return (t.precio || 0) * (t.cantidad || 0) / 100;
+    return Math.abs(t.monto || 0) - Math.abs(t.comision || 0)
+      - Math.abs(t.iva || 0) - Math.abs(t.otros_imp || 0);
+  }
+
+  function calcCostWithC(t) {
+    const raw = t.ticker_raw || t.ticker;
+    if(isBond(raw)) return (t.precio || 0) * (t.cantidad || 0) / 100;
+    return Math.abs(t.monto || 0);
+  }
+
+  function round4(n) { return Math.round(n * 10000) / 10000; }
+
+  function snapTotals(s, fecha) {
+    const balAR   = round4(s.AR_ARS.bal + s.AR_USD.bal);
+    const balEEUU = round4(s.EEUU.bal);
+    const arCostUSD     = (s.AR_ARS.costUSD     || 0) + s.AR_USD.costUSD;
+    const arCostUSD_wc  = (s.AR_ARS.costUSD_withC || 0) + s.AR_USD.costWithC;
+    const avgAR_usd     = balAR > 0 ? arCostUSD    / balAR : 0;
+    const avgAR_usd_wc  = balAR > 0 ? arCostUSD_wc / balAR : 0;
+    const fx = getFX(normFecha(fecha));
+    const avgAR_ars = balAR > 0
+      ? (s.AR_USD.bal <= 0
+          ? (s.AR_ARS.costARS || 0) / balAR
+          : avgAR_usd * (fx || 1))
+      : 0;
+    const avgAR_ars_wc = balAR > 0
+      ? (s.AR_USD.bal <= 0
+          ? (s.AR_ARS.costARS_withC || 0) / balAR
+          : avgAR_usd_wc * (fx || 1))
+      : 0;
+    return {
+      AR_ARS: {
+        bal:     round4(s.AR_ARS.bal),
+        avgNoC:  s.AR_ARS.bal > 0 ? (s.AR_ARS.costARS||0)       / s.AR_ARS.bal : 0,
+        avgWithC: s.AR_ARS.bal > 0 ? (s.AR_ARS.costARS_withC||0) / s.AR_ARS.bal : 0,
+      },
+      AR_USD: {
+        bal:     round4(s.AR_USD.bal),
+        avgNoC:  s.AR_USD.bal > 0 ? s.AR_USD.costUSD  / s.AR_USD.bal : 0,
+        avgWithC: s.AR_USD.bal > 0 ? s.AR_USD.costWithC / s.AR_USD.bal : 0,
+      },
+      EEUU: {
+        bal:     round4(s.EEUU.bal),
+        avgNoC:  s.EEUU.bal > 0 ? s.EEUU.costUSD   / s.EEUU.bal : 0,
+        avgWithC: s.EEUU.bal > 0 ? s.EEUU.costWithC / s.EEUU.bal : 0,
+      },
+      balAR, balEEUU, balTotal: round4(balAR + balEEUU),
+      avgAR_usd,    avgAR_ars,
+      avgAR_usd_wc, avgAR_ars_wc,
+      avgEEUU_usd:    s.EEUU.bal > 0 ? s.EEUU.costUSD   / s.EEUU.bal : 0,
+      avgEEUU_usd_wc: s.EEUU.bal > 0 ? s.EEUU.costWithC / s.EEUU.bal : 0,
+      fx: fx || null,
+    };
+  }
+
+  // Agrupar por ticker canónico
+  const byTicker = {};
+  for(const t of rawTxns) {
+    const raw = t.ticker || '';
+    if(!raw || raw.includes(' ') || isOption(raw)) continue;
+    const canonical = TICKER_TO_GROUP[raw] || raw;
+    byTicker[canonical] = byTicker[canonical] || [];
+    byTicker[canonical].push(t);
+  }
+
+  const ledger = {};
+
+  for(const [canonical, txnsRaw] of Object.entries(byTicker)) {
+    // ── Adelantar fecha de Pago de Amortización para letras con gap Renta→Amort ──
+    // Patrón: existe un "Pago de Renta" con fecha_conc != fecha_liq (liquidación demorada)
+    //         y un "Pago de Amortización" cuya fecha == fecha_liq del Pago de Renta.
+    // En ese caso el broker registra la caja en fecha_conc (por concertación) pero
+    // la baja de títulos recién en fecha_liq, generando double counting en el gap.
+    // Fix: usar la fecha del Pago de Renta como fecha efectiva de la Amortización,
+    //      para que ambos eventos caigan el mismo día en el ledger.
+    // Solo se modifica la copia local — los datos crudos (_historicalTxns) no se tocan.
+    const rentasConGap = txnsRaw
+      .filter(t => t.operacion === 'Pago de Renta' && t.fecha && t.fecha_liq && t.fecha !== t.fecha_liq)
+      .map(t => ({ fechaRenta: normFecha(t.fecha), fechaLiq: normFecha(t.fecha_liq) }));
+
+    const txns = rentasConGap.length === 0 ? txnsRaw : txnsRaw.map(t => {
+      if(t.operacion !== 'Pago de Amortización') return t;
+      const fechaAmort = normFecha(t.fecha);
+      const match = rentasConGap.find(r => r.fechaLiq === fechaAmort);
+      if(!match) return t;
+      // Reemplazar fecha efectiva por la del Pago de Renta (sin mutar el objeto original)
+      return { ...t, fecha: match.fechaRenta };
+    });
+
+    txns.sort((a, b) => {
+      const da = normFecha(a.fecha), db = normFecha(b.fecha);
+      if(da !== db) return da.localeCompare(db);
+      return (parseInt(a.nro_mov || 0)) - (parseInt(b.nro_mov || 0));
+    });
+
+    const s = {
+      AR_ARS: { bal:0, costARS:0, costUSD:0, costWithC:0, costARS_withC:0, costUSD_withC:0 },
+      AR_USD: { bal:0, costUSD:0, costWithC:0 },
+      EEUU:   { bal:0, costUSD:0, costWithC:0 },
+    };
+
+    const processedTxns = txns.map(t => {
+      const raw    = t.ticker_raw || t.ticker || '';
+      const cuenta = t.cuenta || '';
+      const op     = t.operacion || '';
+      const qty    = t.cantidad  || 0;
+
+      if(!movesTitle(raw, cuenta)) {
+        return { ...t, _movesTitle: false, _slot: null, _snap: snapTotals(s, t.fecha) };
+      }
+
+      const slot = getTitleSlot(raw, cuenta);
+
+      if(BUY_OPS.includes(op) && qty > 0) {
+        const costNC = calcCostNoC(t);
+        const costWC = calcCostWithC(t);
+        s[slot].bal       += qty;
+        s[slot].costWithC += costWC;
+        if(slot === 'AR_ARS') {
+          s.AR_ARS.costARS += costNC;
+          const fx = getFX(normFecha(t.fecha));
+          if(fx && fx > 0) {
+            s.AR_ARS.costUSD     += costNC / fx;
+            s.AR_ARS.costUSD_withC += costWC / fx;
+          }
+          s.AR_ARS.costARS_withC += costWC;
+        } else {
+          s[slot].costUSD += costNC;
+        }
+
+      } else if(SELL_OPS.includes(op) && qty > 0) {
+        // Transferencias implícitas — tracked para visualización en tab Especies
+        // xferAR:   qty que sale (-) o entra (+) en el pool AR en esta txn
+        // xferEEUU: qty que sale (-) o entra (+) en EEUU en esta txn
+        let xferAR = 0, xferEEUU = 0;
+
+        if(slot === 'EEUU') {
+          // Detectar si es venta MEP (sufijo C, ej: AY24C, MELIC).
+          const upper = raw.toUpperCase();
+          const _canon = TICKER_TO_GROUP[upper];
+          const _suffix = _canon ? upper.slice(_canon.length) : '';
+          const isMEP_C = _suffix === 'C';
+
+          if(isMEP_C) {
+            // Venta MEP (sufijo C): los títulos salen del pool AR, el cash va a EEUU.
+            // El broker registra la operación en cuenta EEUU solo para indicar dónde
+            // se acredita el dinero. Los títulos NUNCA pasan por el slot EEUU —
+            // se venden directamente del pool AR (AR_ARS → AR_USD).
+            // No hay transferencia implícita AR→EEUU. s.EEUU no se toca.
+            let remaining = qty;
+
+            // Paso 1: consumir de AR_ARS
+            if(s.AR_ARS.bal > 0) {
+              const take = Math.min(remaining, s.AR_ARS.bal);
+              const r = Math.max(0, (s.AR_ARS.bal - take) / s.AR_ARS.bal);
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r;
+              s.AR_ARS.costUSD      *= r; s.AR_ARS.costUSD_withC *= r; s.AR_ARS.costWithC *= r;
+              s.AR_ARS.bal -= take;
+              if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costARS_withC=0; s.AR_ARS.costUSD=0; s.AR_ARS.costUSD_withC=0; s.AR_ARS.costWithC=0; }
+              remaining -= take;
+            }
+
+            // Paso 2: consumir de AR_USD si todavía sobra
+            if(remaining > 0 && s.AR_USD.bal > 0) {
+              const take = Math.min(remaining, s.AR_USD.bal);
+              const r = Math.max(0, (s.AR_USD.bal - take) / s.AR_USD.bal);
+              s.AR_USD.costUSD  *= r; s.AR_USD.costWithC *= r;
+              s.AR_USD.bal -= take;
+              if(s.AR_USD.bal <= 0) { s.AR_USD.bal=0; s.AR_USD.costUSD=0; s.AR_USD.costWithC=0; }
+              remaining -= take;
+            }
+            // xferAR y xferEEUU quedan en 0 — no hay transferencia implícita
+
+          } else {
+            // Venta directa desde EEUU (compra original en EEUU, sin sufijo C)
+            if(s.EEUU.bal > 0) {
+              const sellQty = Math.min(qty, s.EEUU.bal);
+              const r = Math.max(0, (s.EEUU.bal - sellQty) / s.EEUU.bal);
+              s.EEUU.costUSD  *= r; s.EEUU.costWithC *= r;
+              s.EEUU.bal -= qty;
+              if(s.EEUU.bal <= 0) { s.EEUU.bal=0; s.EEUU.costUSD=0; s.EEUU.costWithC=0; }
+            }
+          }
+
+        } else {
+          // Venta desde AR — consumir del slot propio primero,
+          // luego del otro slot AR, luego de EEUU si hace falta.
+          const otherSlot = slot === 'AR_ARS' ? 'AR_USD' : 'AR_ARS';
+          let remaining = qty;
+
+          // Paso 1: consumir del slot propio
+          if(s[slot].bal > 0) {
+            const take = Math.min(remaining, s[slot].bal);
+            const r = Math.max(0, (s[slot].bal - take) / s[slot].bal);
+            if(slot === 'AR_ARS') {
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r;
+              s.AR_ARS.costUSD_withC *= r;
+            }
+            s[slot].costUSD  *= r; s[slot].costWithC *= r;
+            s[slot].bal -= take;
+            if(s[slot].bal <= 0) { s[slot].bal=0; s[slot].costARS=0; s[slot].costARS_withC=0; s[slot].costUSD=0; s[slot].costUSD_withC=0; s[slot].costWithC=0; }
+            remaining -= take;
+          }
+
+          // Paso 2: consumir del otro slot AR (transferencia implícita AR interna)
+          if(remaining > 0 && s[otherSlot].bal > 0) {
+            const take = Math.min(remaining, s[otherSlot].bal);
+            const r = Math.max(0, (s[otherSlot].bal - take) / s[otherSlot].bal);
+            if(otherSlot === 'AR_ARS') {
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r;
+              s.AR_ARS.costUSD_withC *= r;
+            }
+            s[otherSlot].costUSD  *= r; s[otherSlot].costWithC *= r;
+            s[otherSlot].bal -= take;
+            if(s[otherSlot].bal <= 0) { s[otherSlot].bal=0; s[otherSlot].costARS=0; s[otherSlot].costARS_withC=0; s[otherSlot].costUSD=0; s[otherSlot].costUSD_withC=0; s[otherSlot].costWithC=0; }
+            remaining -= take;
+          }
+
+          // Paso 3: si todavía sobra, los títulos vienen de EEUU → transferencia implícita EEUU → AR
+          if(remaining > 0 && s.EEUU.bal > 0) {
+            const xferQty    = Math.min(remaining, s.EEUU.bal);
+            const avgEEUU_usd = s.EEUU.bal > 0 ? s.EEUU.costUSD / s.EEUU.bal : 0;
+            const r = Math.max(0, (s.EEUU.bal - xferQty) / s.EEUU.bal);
+            s.EEUU.costUSD  *= r; s.EEUU.costWithC *= r;
+            s.EEUU.bal -= xferQty;
+            if(s.EEUU.bal <= 0) { s.EEUU.bal=0; s.EEUU.costUSD=0; s.EEUU.costWithC=0; }
+            // Acreditar en el slot AR destino al costo promedio de EEUU
+            const fx = getFX(normFecha(t.fecha));
+            s[slot].bal       += xferQty;
+            s[slot].costUSD   += avgEEUU_usd * xferQty;
+            s[slot].costWithC += avgEEUU_usd * xferQty;
+            if(slot === 'AR_ARS' && fx && fx > 0) {
+              s.AR_ARS.costARS       += avgEEUU_usd * xferQty * fx;
+              s.AR_ARS.costARS_withC += avgEEUU_usd * xferQty * fx;
+              s.AR_ARS.costUSD_withC += avgEEUU_usd * xferQty;
+            }
+            // Ahora vender del slot AR
+            const r2 = Math.max(0, (s[slot].bal - xferQty) / s[slot].bal);
+            if(slot === 'AR_ARS') {
+              s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r2;
+              s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r2;
+              s.AR_ARS.costUSD_withC *= r2;
+            }
+            s[slot].costUSD  *= r2; s[slot].costWithC *= r2;
+            s[slot].bal -= xferQty;
+            if(s[slot].bal <= 0) { s[slot].bal=0; s[slot].costARS=0; s[slot].costARS_withC=0; s[slot].costUSD=0; s[slot].costUSD_withC=0; s[slot].costWithC=0; }
+            xferEEUU = -xferQty;  // sale de EEUU
+            xferAR   = +xferQty;  // entra en AR
+          }
+        }
+
+        // Guardar transferencias implícitas en el snap de esta txn
+        t = { ...t, _xferAR: xferAR || 0, _xferEEUU: xferEEUU || 0 };
+
+      } else if(op === XFER_IN && qty > 0) {
+        const costNC = Math.abs(t.comision||0) + Math.abs(t.iva||0) + Math.abs(t.otros_imp||0);
+        s[slot].bal       += qty;
+        s[slot].costWithC += costNC;
+        if(slot === 'AR_ARS') {
+          s.AR_ARS.costARS       += costNC;
+          s.AR_ARS.costARS_withC += costNC;
+          const fx = getFX(normFecha(t.fecha));
+          if(fx && fx > 0) {
+            s.AR_ARS.costUSD       += costNC / fx;
+            s.AR_ARS.costUSD_withC += costNC / fx;
+          }
+        } else {
+          s[slot].costUSD += costNC;
+        }
+
+      } else if(op === 'Pago de Amortización' && qty < 0) {
+        const absQty = Math.abs(qty);
+        const sv = s[slot];
+        if(sv.bal > 0) {
+          const r = Math.max(0, (sv.bal - absQty) / sv.bal);
+          if(slot === 'AR_ARS') {
+            sv.costARS       = (sv.costARS || 0) * r;
+            sv.costARS_withC = (sv.costARS_withC || 0) * r;
+            sv.costUSD_withC *= r;
+          }
+          sv.costUSD  *= r; sv.costWithC *= r;
+          sv.bal -= absQty;
+          if(sv.bal <= 0) { sv.bal=0; sv.costARS=0; sv.costARS_withC=0; sv.costUSD=0; sv.costUSD_withC=0; sv.costWithC=0; }
+        }
+      }
+
+      return { ...t, _movesTitle: true, _slot: slot, _snap: snapTotals(s, t.fecha) };
+    });
+
+    const balAR    = round4(s.AR_ARS.bal + s.AR_USD.bal);
+    const balEEUU  = round4(s.EEUU.bal);
+    const balTotal = round4(balAR + balEEUU);
+    const arCostUSD = (s.AR_ARS.costUSD || 0) + s.AR_USD.costUSD;
+    const avgAR_usd = balAR > 0 ? arCostUSD / balAR : 0;
+    const lastDate  = txns[txns.length - 1]?.fecha || '';
+    const avgAR_ars = balAR > 0
+      ? (s.AR_USD.bal <= 0
+          ? (s.AR_ARS.costARS || 0) / balAR
+          : avgAR_usd * (getFX(normFecha(lastDate)) || 1))
+      : 0;
+    const avgEEUU_usd = balEEUU > 0 ? s.EEUU.costUSD / balEEUU : 0;
+
+    const dates    = txns.map(t => normFecha(t.fecha)).filter(Boolean);
+    const lastYear = lastDate ? parseInt((normFecha(lastDate)||'').slice(0, 4)) : 0;
+
+    ledger[canonical] = {
+      ticker: canonical,
+      txns:   processedTxns,
+      slots:  { AR_ARS: {...s.AR_ARS}, AR_USD: {...s.AR_USD}, EEUU: {...s.EEUU} },
+      totals: { balAR, balEEUU, balTotal, avgAR_usd, avgAR_ars, avgEEUU_usd },
+      meta: {
+        isClosed:  balAR <= 0 && balEEUU <= 0,
+        isStale:   (balAR <= 0 && balEEUU <= 0) && lastYear > 0 && lastYear <= STALE_CUTOFF_YEAR,
+        isBond:    isBond(canonical),
+        firstDate: dates.length ? dates[0] : '',
+        lastDate:  dates.length ? dates[dates.length-1] : '',
+        opCount:   txns.length,
+      },
+    };
+  }
+
+  return ledger;
+}
+
+// ══════ ESPECIES TAB ══════
+
+// Clasificación de ticker en categoría para el tab Especies
+function espCategorizeTicker(tk) {
+  // 1. Letras: ticker con guión (ej: L22J6-1705, I15G8-1505)
+  if(tk.includes('-')) return 'letras';
+  // 2. Bonos: en BOND_TICKERS
+  if(BOND_TICKERS.has(tk)) return 'bonos';
+  // 3. FCI: tiene al menos una op de suscripción o rescate FCI
+  const inst = _ledger[tk];
+  if(inst) {
+    const hasFCI = inst.txns.some(t =>
+      t.operacion === 'Suscripción FCI' || t.operacion === 'Rescate FCI'
+    );
+    if(hasFCI) return 'fci';
+  }
+  // 4. Acciones: resto de instrumentos reconocibles (alfanumérico puro)
+  if(/^[A-Z0-9]+$/.test(tk)) return 'acciones';
+  // 5. Otros: fallback
+  return 'otros';
+}
+
+function rebuildEspeciesDropdown() {
+  const CAT_IDS = ['acciones','bonos','letras','fci','otros'];
+
+  // Guardar selección activa antes de repoblar
+  let curTicker = '', curCat = '';
+  for(const cat of CAT_IDS) {
+    const s = document.getElementById(`esp-sel-${cat}`);
+    if(s && s.value) { curTicker = s.value; curCat = cat; break; }
+  }
+
+  // Tickers con balance abierto (net > 0) → para mostrar cantidad
+  const openTickers = new Map(); // ticker -> net total
+  for(const d of [...AR, ...US]) {
+    if(d.net > 0) openTickers.set(d.ticker, (openTickers.get(d.ticker) || 0) + d.net);
+  }
+
+  // Instrumentos reales: sin espacios, no opción, al menos una compra en _ledger
+  const realTickers = Object.keys(_ledger).filter(tk => {
+    if(tk.includes(' ') || isOption(tk)) return false;
+    const inst = _ledger[tk];
+    if(!inst) return false;
+    return inst.txns.some(t => BUY_OPS.includes(t.operacion) && (t.cantidad || 0) > 0);
+  });
+
+  // Agrupar por categoría
+  const bycat = {};
+  for(const cat of CAT_IDS) bycat[cat] = [];
+  for(const tk of realTickers) {
+    const cat = espCategorizeTicker(tk);
+    bycat[cat].push(tk);
+  }
+
+  // Poblar cada selector
+  for(const cat of CAT_IDS) {
+    const sel = document.getElementById(`esp-sel-${cat}`);
+    if(!sel) continue;
+
+    const tickers = bycat[cat].sort();
+    const openInCat   = tickers.filter(tk =>  openTickers.has(tk));
+    const closedInCat = tickers.filter(tk => !openTickers.has(tk));
+
+    sel.innerHTML = '<option value="">—</option>';
+
+    if(openInCat.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = `● Abiertas (${openInCat.length})`;
+      openInCat.forEach(tk => {
+        const o = document.createElement('option');
+        const net = openTickers.get(tk);
+        o.value = tk;
+        o.textContent = `${tk}  (${new Intl.NumberFormat('es-AR').format(Math.round(net))})`;
+        grp.appendChild(o);
+      });
+      sel.appendChild(grp);
+    }
+
+    if(closedInCat.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = `○ Cerradas (${closedInCat.length})`;
+      closedInCat.forEach(tk => {
+        const o = document.createElement('option');
+        o.value = o.textContent = tk;
+        grp.appendChild(o);
+      });
+      sel.appendChild(grp);
+    }
+  }
+
+  // Restaurar selección previa si sigue existiendo
+  if(curTicker && curCat) {
+    const sel = document.getElementById(`esp-sel-${curCat}`);
+    if(sel) sel.value = curTicker;
+  }
+}
+
+// Manejo de cambio en cualquiera de los 5 selectores de categoría
+function espCatChange(changedCat) {
+  const CAT_IDS = ['acciones','bonos','letras','fci','otros'];
+  // Limpiar todos los demás selectores
+  for(const cat of CAT_IDS) {
+    if(cat === changedCat) continue;
+    const s = document.getElementById(`esp-sel-${cat}`);
+    if(s) s.value = '';
+  }
+  renderEspecies();
+}
+
+// Obtener el ticker actualmente seleccionado en cualquiera de los 5 selectores
+function espGetSelectedTicker() {
+  const CAT_IDS = ['acciones','bonos','letras','fci','otros'];
+  for(const cat of CAT_IDS) {
+    const s = document.getElementById(`esp-sel-${cat}`);
+    if(s && s.value) return s.value;
+  }
+  return '';
+}
+
+function renderEspecies() {
+  const ticker  = espGetSelectedTicker();
+  const tbody   = document.getElementById('espTbody');
+  const tfoot   = document.getElementById('espTfoot');
+  const empty   = document.getElementById('esp-empty');
+  const sumEl   = document.getElementById('esp-summary');
+  const tbl     = document.getElementById('esp-tbl');
+  if(!tbody) return;
+
+  if(!ticker) {
+    tbody.innerHTML = '';
+    if(tfoot) tfoot.innerHTML = '';
+    if(tbl) tbl.style.display = 'none';
+    if(empty) empty.style.display = 'block';
+    if(sumEl) sumEl.textContent = '';
+    const expBtn = document.getElementById('esp-export-btn');
+    if(expBtn) expBtn.style.display = 'none';
+    const fn = document.getElementById('esp-footnote');
+    if(fn) fn.style.display = 'none';
+    return;
+  }
+  if(tbl) tbl.style.display = '';
+  if(empty) empty.style.display = 'none';
+  const fn = document.getElementById('esp-footnote');
+  if(fn) fn.style.display = 'block';
+  const expBtn = document.getElementById('esp-export-btn');
+  if(expBtn) expBtn.style.display = '';
+
+  // ── Fuente de datos: _ledger ─────────────────────────────────────────────
+  const inst = _ledger[ticker];
+  if(!inst || !inst.txns || !inst.txns.length) {
+    tbody.innerHTML = '<tr><td colspan="20" class="no-r">Sin operaciones para esta especie.</td></tr>';
+    if(tfoot) tfoot.innerHTML = '';
+    if(sumEl) sumEl.textContent = '';
+    return;
+  }
+
+  const BUY_SET  = new Set(BUY_OPS);
+  const SELL_SET = new Set(SELL_OPS);
+  const fmtDate  = d => d&&d.length>=10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : d||'--';
+
+  // Determine which sides exist
+  const hasAR   = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina'));
+  // hasAR_EEUU: ventas/compras con sufijo C (MELIC, AY24C) — títulos salen de AR, cash va a EEUU
+  const hasAR_EEUU = inst.txns.some(t => {
+    if(!t.cuenta || !t.cuenta.includes('EEUU')) return false;
+    const raw2 = (t.ticker_raw || t.ticker || '').toUpperCase();
+    const canon2 = TICKER_TO_GROUP[raw2];
+    const suffix2 = canon2 ? raw2.slice(canon2.length) : '';
+    return suffix2 === 'C';
+  });
+  // hasEEUU_real: operaciones directas en EEUU sin sufijo C (compras/ventas reales en NYSE)
+  const hasEEUU_real = inst.txns.some(t => {
+    if(!t.cuenta || !t.cuenta.includes('EEUU')) return false;
+    const raw2 = (t.ticker_raw || t.ticker || '').toUpperCase();
+    const canon2 = TICKER_TO_GROUP[raw2];
+    const suffix2 = canon2 ? raw2.slice(canon2.length) : '';
+    return suffix2 !== 'C';
+  });
+  const hasEEUU = hasEEUU_real; // alias para compatibilidad con exportEspeciesXLS
+  const hasAR_ARS = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina') && t.cuenta.includes('ARS'));
+  const hasAR_USD = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
+
+  // Group all txns by date into buckets for display
+  const dateBuckets = {};
+  for(const t of inst.txns) {
+    const { operacion: op, cantidad: qty, cuenta, precio, fecha } = t;
+    if(!dateBuckets[fecha]) dateBuckets[fecha] = {
+      ar_ars:  { compras:0, ventas:0, precio:null, monto:0 },
+      ar_usd:  { compras:0, ventas:0, precio:null, monto:0 },
+      ar_eeuu: { compras:0, ventas:0, precio:null, monto:0 },
+      eeuu:    { compras:0, ventas:0, precio:null, monto:0 },
+      xfer:0, amort:0, xferAR:0, xferEEUU:0, lastSnap: null,
+    };
+    const bucket = dateBuckets[fecha];
+    const isEEUU = cuenta && cuenta.includes('EEUU');
+    const isARS  = cuenta && cuenta.includes('ARS');
+
+    // Detectar si es operación sufijo C (MELIC, AY24C): va a sub-sección AR_EEUU
+    const raw2   = (t.ticker_raw || t.ticker || '').toUpperCase();
+    const canon2 = TICKER_TO_GROUP[raw2];
+    const suffix2 = canon2 ? raw2.slice(canon2.length) : '';
+    const isSufijoC = isEEUU && suffix2 === 'C';
+
+    const side = isSufijoC ? bucket.ar_eeuu
+               : isEEUU    ? bucket.eeuu
+               : isARS     ? bucket.ar_ars
+               :              bucket.ar_usd;
+
+    if(t._movesTitle !== false) {
+      if(BUY_SET.has(op) && qty > 0) {
+        side.compras += qty;
+        if(precio > 0) side.precio = precio;
+        side.monto += calcBuyCost(t, true);
+      } else if(SELL_SET.has(op) && qty > 0) {
+        side.ventas += qty;
+        if(precio > 0) side.precio = precio;
+        side.monto += Math.abs(t.monto || 0);
+        // Acumular transferencias implícitas del ledger (solo para no-sufijo-C)
+        if(!isSufijoC) {
+          if(t._xferAR)   bucket.xferAR   += t._xferAR;
+          if(t._xferEEUU) bucket.xferEEUU += t._xferEEUU;
+        }
+      } else if(op === XFER_IN && qty > 0) {
+        bucket.xfer += qty;
+      } else if(op === 'Pago de Amortización' && qty < 0) {
+        bucket.amort += Math.abs(qty);
+      }
+    }
+    if(t._snap) bucket.lastSnap = t._snap;
+  }
+
+  // Build rows from date buckets
+  const dates = Object.keys(dateBuckets).sort();
+  const rows  = dates.map(fecha => {
+    const bucket = dateBuckets[fecha];
+    const fxDate = getFXForDate(fecha);
+    const snap   = bucket.lastSnap || {};
+
+    const sAR_ARS = snap.AR_ARS || { bal:0, avgNoC:0 };
+    const sAR_USD = snap.AR_USD || { bal:0, avgNoC:0 };
+    const sEEUU   = snap.EEUU   || { bal:0, avgNoC:0 };
+
+    const balAR    = snap.balAR    ?? (sAR_ARS.bal + sAR_USD.bal);
+    const balEEUU  = snap.balEEUU  ?? sEEUU.bal;
+    const balTotal = snap.balTotal ?? (balAR + balEEUU);
+
+    const avgBlendedUSD = snap.avgAR_usd > 0 ? snap.avgAR_usd : null;
+    const avgBlendedARS = snap.avgAR_ars > 0 ? snap.avgAR_ars
+      : (avgBlendedUSD && fxDate > 0 ? avgBlendedUSD * fxDate : null);
+    const avgEEUU = sEEUU.bal > 0 ? sEEUU.avgNoC : null;
+
+    let valAR_ARS = null, valAR_USD = null, valEEUU = null;
+    if(balAR > 0 && avgBlendedARS) valAR_ARS = avgBlendedARS * balAR;
+    if(balAR > 0 && avgBlendedUSD) valAR_USD = avgBlendedUSD * balAR;
+    if(balEEUU > 0 && avgEEUU)     valEEUU   = avgEEUU * balEEUU;
+
+    return { fecha, fx:fxDate, bucket, balAR, balEEUU, balTotal,
+             avgBlendedUSD, avgBlendedARS, avgEEUU, valAR_ARS, valAR_USD, valEEUU };
+  });
+
+  // ── Column headers ───────────────────────────────────────────────────────
+  const groupRow = document.getElementById('esp-thead-groups');
+  const colRow   = document.getElementById('esp-thead-cols');
+  const arARS_cols  = hasAR_ARS   ? 4 : 0;
+  const arUSD_cols  = hasAR_USD   ? 4 : 0;
+  const arEEUU_cols = hasAR_EEUU  ? 4 : 0;
+  const arBase_cols = 7;
+  const arColspan   = hasAR ? arARS_cols + arUSD_cols + arEEUU_cols + arBase_cols : 0;
+
+  if(groupRow) {
+    let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
+    if(hasAR) {
+      let arLabel = '🇦🇷 Argentina';
+      const subLabels = [];
+      if(hasAR_ARS)  subLabels.push('$');
+      if(hasAR_USD)  subLabels.push('U$S AR');
+      if(hasAR_EEUU) subLabels.push('U$S EEUU');
+      if(subLabels.length > 1) arLabel += ` <span style="font-size:9px;opacity:.6">· ${subLabels.join(' y ')}</span>`;
+      gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">${arLabel}</th>`;
+    }
+    if(hasEEUU_real) gh += `<th class="esp-group-us esp-divider-strong" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
+    gh += `<th class="esp-group-shared esp-divider-strong" colspan="1" style="text-align:center;color:var(--purple);">Valoriz.</th>`;
+    gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
+    groupRow.innerHTML = gh;
+  }
+
+  if(colRow) {
+    let ch = `<th style="text-align:left;">Fecha</th><th style="text-align:left;min-width:60px;">Op.</th>`;
+    if(hasAR) {
+      if(hasAR_ARS) ch += `
+        <th class="esp-num esp-group-ar" style="color:var(--green);">C $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">V $</th>
+        <th class="esp-num esp-group-ar">Precio $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto $</th>`;
+      if(hasAR_USD) ch += `
+        <th class="esp-num esp-group-ar${hasAR_ARS?' esp-divider-soft':''}" style="color:var(--green);">C U$S AR</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">V U$S AR</th>
+        <th class="esp-num esp-group-ar">Precio U$S</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto U$S</th>`;
+      if(hasAR_EEUU) ch += `
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--green);">C U$S EE</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">V U$S EE</th>
+        <th class="esp-num esp-group-ar">Precio U$S</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto U$S</th>`;
+      ch += `
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--purple);">Xfer.</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Amort.</th>
+        <th class="esp-num esp-group-ar">Bal AR</th>
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--ar);">Avg $</th>
+        <th class="esp-num esp-group-ar" style="color:var(--usd);">Avg U$S</th>
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--ar);">Valoriz. ARS</th>
+        <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD</th>`;
+    }
+    if(hasEEUU_real) ch += `
+      <th class="esp-num esp-group-us esp-divider-strong" style="color:var(--green);">Compras</th>
+      <th class="esp-num esp-group-us" style="color:var(--purple);">Xfer.</th>
+      <th class="esp-num esp-group-us" style="color:var(--red);">Ventas</th>
+      <th class="esp-num esp-group-us" style="color:var(--muted);">Amort.</th>
+      <th class="esp-num esp-group-us">Bal EEUU</th>
+      <th class="esp-num esp-group-us esp-divider-soft" style="color:var(--usd);">Precio USD</th>
+      <th class="esp-num esp-group-us" style="color:var(--muted);">Monto USD</th>
+      <th class="esp-num esp-group-us esp-divider-soft" style="color:var(--us);">Avg USD</th>
+      <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD</th>`;
+    ch += `<th class="esp-num esp-divider-strong" style="color:var(--purple);">Valoriz. Total</th>`;
+    ch += `<th class="esp-num esp-divider-strong" style="color:var(--muted);">FX</th>`;
+    colRow.innerHTML = ch;
+  }
+
+  // ── Cell helpers ─────────────────────────────────────────────────────────
+  const fmtQc  = n => n > 0 ? `<span class="esp-pos">${N(n,0)}</span>`  : '<span class="esp-muted">—</span>';
+  const fmtQv  = n => n > 0 ? `<span class="esp-neg">(${N(n,0)})</span>`  : '<span class="esp-muted">—</span>';
+  const fmtQx  = n => n > 0 ? `<span style="color:var(--purple)">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtQa  = n => n > 0 ? `<span class="esp-muted">${N(n,0)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtBal = n => { const cls = n>0?'esp-pos':n<0?'esp-neg':'esp-muted'; return `<span class="${cls}">${n<0?'('+N(Math.abs(n),0)+')':N(n,0)}</span>`; };
+  const fmtXferImpl = n => n === 0 ? '' : `<span class="${n>0?'esp-pos':'esp-neg'}" style="margin-left:3px">${n>0?'+'+N(n,0):'('+N(Math.abs(n),0)+')'}</span>`;
+  const fmtPx  = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtAvg = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtVal = (n,sym) => n!=null&&n>0 ? `<span class="${sym==='ars'?'esp-ars':'esp-usd'}">${sym==='ars'?'$':'U$S'} ${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+  const fmtFX  = n => n ? `<span class="esp-muted">${N(n,2)}</span>` : '<span class="esp-muted">—</span>';
+
+  const opLabel = dateOps => {
+    const opNames = [...new Set(dateOps.map(t => {
+      const o = t.operacion;
+      if(o==='Compra'||o==='Compra de Dólares') return 'Compra';
+      if(o==='Venta'||o==='Venta de Dólares')   return 'Venta';
+      if(o===XFER_IN)                            return 'Transf.';
+      if(o==='Pago de Amortización')             return 'Amort.';
+      return o.slice(0,12);
+    }))];
+    return opNames.join(' / ');
+  };
+
+  // ── Tbody ────────────────────────────────────────────────────────────────
+  tbody.innerHTML = rows.map(r => {
+    const { bucket } = r;
+    const ars  = bucket.ar_ars;
+    const ausd = bucket.ar_usd;
+    const aee  = bucket.ar_eeuu;
+    const us   = bucket.eeuu;
+    const opLbl = opLabel(inst.txns.filter(t => t.fecha === r.fecha));
+
+    let html = `<tr>
+      <td style="white-space:nowrap;">${fmtDate(r.fecha)}</td>
+      <td style="font-size:9px;color:var(--muted);white-space:nowrap;">${opLbl}</td>`;
+    if(hasAR) {
+      if(hasAR_ARS) html += `
+        <td class="esp-num">${fmtQc(ars.compras)}</td>
+        <td class="esp-num">${fmtQv(ars.ventas)}</td>
+        <td class="esp-num">${fmtPx(ars.precio, 'ars')}</td>
+        <td class="esp-num">${fmtVal(ars.monto > 0 ? ars.monto : null, 'ars')}</td>`;
+      if(hasAR_USD) html += `
+        <td class="esp-num${hasAR_ARS?' esp-divider-soft':''}">${fmtQc(ausd.compras)}</td>
+        <td class="esp-num">${fmtQv(ausd.ventas)}</td>
+        <td class="esp-num">${fmtPx(ausd.precio, 'usd')}</td>
+        <td class="esp-num">${fmtVal(ausd.monto > 0 ? ausd.monto : null, 'usd')}</td>`;
+      if(hasAR_EEUU) html += `
+        <td class="esp-num esp-divider-soft">${fmtQc(aee.compras)}</td>
+        <td class="esp-num">${fmtQv(aee.ventas)}</td>
+        <td class="esp-num">${fmtPx(aee.precio, 'usd')}</td>
+        <td class="esp-num">${fmtVal(aee.monto > 0 ? aee.monto : null, 'usd')}</td>`;
+      html += `
+        <td class="esp-num esp-divider-soft">${bucket.xferAR !== 0 ? fmtXferImpl(bucket.xferAR) : fmtQx(bucket.xfer)}</td>
+        <td class="esp-num">${fmtQa(bucket.amort)}</td>
+        <td class="esp-num">${fmtBal(r.balAR)}</td>
+        <td class="esp-num esp-divider-soft">${fmtAvg(r.avgBlendedARS, 'ars')}</td>
+        <td class="esp-num">${fmtAvg(r.avgBlendedUSD, 'usd')}</td>
+        <td class="esp-num esp-divider-soft">${fmtVal(r.valAR_ARS, 'ars')}</td>
+        <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
+    }
+    if(hasEEUU_real) html += `
+      <td class="esp-num esp-divider-strong">${fmtQc(us.compras)}</td>
+      <td class="esp-num">${bucket.xferEEUU !== 0 ? fmtXferImpl(bucket.xferEEUU) : fmtQx(hasAR ? 0 : bucket.xfer)}</td>
+      <td class="esp-num">${fmtQv(us.ventas)}</td>
+      <td class="esp-num">${fmtQa(hasAR ? 0 : bucket.amort)}</td>
+      <td class="esp-num">${fmtBal(r.balEEUU)}</td>
+      <td class="esp-num esp-divider-soft">${fmtPx(us.precio, 'usd')}</td>
+      <td class="esp-num">${fmtVal(us.monto > 0 ? us.monto : null, 'usd')}</td>
+      <td class="esp-num esp-divider-soft">${fmtAvg(r.avgEEUU, 'usd')}</td>
+      <td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
+    html += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${fmtVal((r.valAR_USD ?? 0) + (r.valEEUU ?? 0) || null, 'usd')}</td>`;
+    html += `<td class="esp-num esp-divider-strong">${fmtFX(r.fx)}</td></tr>`;
+    return html;
+  }).join('');
+
+  // ── Footer ───────────────────────────────────────────────────────────────
+  const last = rows[rows.length - 1];
+  if(tfoot) {
+    const arDataCols = arARS_cols + arUSD_cols + arEEUU_cols;
+    let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${inst.meta.opCount} op.</td>`;
+    if(hasAR) {
+      fh += `<td colspan="${arDataCols + 2}"></td>`;
+      fh += `
+        <td class="esp-num esp-pos">${N(last.balAR, 0)}</td>
+        <td class="esp-num">${fmtAvg(last.avgBlendedARS, 'ars')}</td>
+        <td class="esp-num">${fmtAvg(last.avgBlendedUSD, 'usd')}</td>
+        <td class="esp-num">${fmtVal(last.valAR_ARS, 'ars')}</td>
+        <td class="esp-num">${fmtVal(last.valAR_USD, 'usd')}</td>`;
+    }
+    if(hasEEUU_real) {
+      fh += `<td colspan="4" class="${hasAR?'esp-divider-strong':''}"></td>`;
+      fh += `
+        <td class="esp-num esp-pos">${N(last.balEEUU, 0)}</td>
+        <td class="esp-divider-soft"></td><td></td>
+        <td class="esp-num esp-divider-soft">${fmtAvg(last.avgEEUU, 'usd')}</td>
+        <td class="esp-num">${fmtVal(last.valEEUU, 'usd')}</td>`;
+    }
+    fh += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${fmtVal((last.valAR_USD ?? 0) + (last.valEEUU ?? 0) || null, 'usd')}</td>`;
+    fh += `<td class="esp-divider-strong"></td></tr>`;
+    tfoot.innerHTML = fh;
+  }
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  if(sumEl) {
+    const parts = [];
+    if(hasAR && last.balAR > 0)          parts.push(`AR: ${N(last.balAR, 0)} tít.`);
+    if(hasEEUU_real && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU, 0)} tít.`);
+    if(last.balTotal > 0)                parts.push(`Total: ${N(last.balTotal, 0)} tít.`);
+    sumEl.textContent = parts.join(' · ');
+  }
+
+  // Save for XLS export
+  _especiesRows  = rows;
+  _especiesState = { ticker, hasAR, hasEEUU: hasEEUU_real, hasAR_ARS, hasAR_USD, hasAR_EEUU, opsLen: inst.meta.opCount };
+}
+
+
+// ══════ ESPECIES XLS EXPORT ══════
+function exportEspeciesXLS() {
+  if(!_especiesRows.length || !_especiesState.ticker) return;
+  const { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, hasAR_EEUU, opsLen } = _especiesState;
+
+  // ── Column definitions ──────────────────────────────────────────────────
+  // Each col: { header, group, getValue(row), fmt }
+  // fmt: 'date' | 'num0' | 'num2' | 'text'
+  const cols = [
+    { header:'Fecha', group:'', fmt:'date', get: r => r.fecha },
+    { header:'Op.',   group:'', fmt:'text', get: r => {
+        const parts = [];
+        const ars = r.bucket.ar_ars, ausd = r.bucket.ar_usd, aee = r.bucket.ar_eeuu, us = r.bucket.eeuu;
+        if(ars.compras>0||ars.ventas>0) { if(ars.compras>0) parts.push('Compra $'); if(ars.ventas>0) parts.push('Venta $'); }
+        if(ausd.compras>0||ausd.ventas>0) { if(ausd.compras>0) parts.push('Compra U$S AR'); if(ausd.ventas>0) parts.push('Venta U$S AR'); }
+        if(aee.compras>0||aee.ventas>0) { if(aee.compras>0) parts.push('Compra U$S EE'); if(aee.ventas>0) parts.push('Venta U$S EE'); }
+        if(us.compras>0||us.ventas>0) { if(us.compras>0) parts.push('Compra EEUU'); if(us.ventas>0) parts.push('Venta EEUU'); }
+        if(r.bucket.xfer>0) parts.push('Transf.');
+        if(r.bucket.amort>0) parts.push('Amort.');
+        return [...new Set(parts)].join(' / ') || '';
+    }},
+  ];
+  if(hasAR) {
+    if(hasAR_ARS) cols.push(
+      { header:'C $',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_ars.compras || null },
+      { header:'V $',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_ars.ventas  || null },
+      { header:'Precio $', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_ars.precio  || null },
+      { header:'Monto $',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_ars.monto > 0 ? r.bucket.ar_ars.monto : null },
+    );
+    if(hasAR_USD) cols.push(
+      { header:'C U$S AR',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.compras || null },
+      { header:'V U$S AR',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.ventas  || null },
+      { header:'Precio U$S AR', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.precio  || null },
+      { header:'Monto U$S AR',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.monto > 0 ? r.bucket.ar_usd.monto : null },
+    );
+    if(hasAR_EEUU) cols.push(
+      { header:'C U$S EE',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_eeuu.compras || null },
+      { header:'V U$S EE',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_eeuu.ventas  || null },
+      { header:'Precio U$S EE', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_eeuu.precio  || null },
+      { header:'Monto U$S EE',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_eeuu.monto > 0 ? r.bucket.ar_eeuu.monto : null },
+    );
+    cols.push(
+      { header:'Xfer.',        group:'Argentina', fmt:'num0', get: r => (r.bucket.xfer || 0) + (r.bucket.xferAR || 0) || null },
+      { header:'Amort.',       group:'Argentina', fmt:'num0', get: r => r.bucket.amort || null },
+      { header:'Bal AR',       group:'Argentina', fmt:'num0', get: r => r.balAR },
+      { header:'Avg $',        group:'Argentina', fmt:'num2', get: r => r.avgBlendedARS },
+      { header:'Avg U$S',      group:'Argentina', fmt:'num2', get: r => r.avgBlendedUSD },
+      { header:'Valoriz. ARS', group:'Argentina', fmt:'num2', get: r => r.valAR_ARS },
+      { header:'Valoriz. USD', group:'Argentina', fmt:'num2', get: r => r.valAR_USD },
+    );
+  }
+  if(hasEEUU) {
+    cols.push(
+      { header:'Compras',      group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.compras || null },
+      { header:'Xfer.',        group:'EEUU', fmt:'num0', get: r => (!hasAR ? (r.bucket.xfer || 0) : 0) + (r.bucket.xferEEUU || 0) || null },
+      { header:'Ventas',       group:'EEUU', fmt:'num0', get: r => r.bucket.eeuu.ventas  || null },
+      { header:'Amort.',       group:'EEUU', fmt:'num0', get: r => !hasAR ? (r.bucket.amort || null) : null },
+      { header:'Bal EEUU',     group:'EEUU', fmt:'num0', get: r => r.balEEUU },
+      { header:'Precio USD',   group:'EEUU', fmt:'num2', get: r => r.bucket.eeuu.precio || null },
+      { header:'Monto USD',    group:'EEUU', fmt:'num2', get: r => r.bucket.eeuu.monto > 0 ? r.bucket.eeuu.monto : null },
+      { header:'Avg USD',      group:'EEUU', fmt:'num2', get: r => r.avgEEUU },
+      { header:'Valoriz. USD', group:'EEUU', fmt:'num2', get: r => r.valEEUU },
+    );
+  }
+  cols.push({ header:'Valoriz. Total USD', group:'', fmt:'num2', get: r => ((r.valAR_USD ?? 0) + (r.valEEUU ?? 0)) || null });
+  cols.push({ header:'FX', group:'', fmt:'num2', get: r => r.fx });
+
+  // ── Build AOA ───────────────────────────────────────────────────────────
+  // Row 1: group headers (merge labels across their columns)
+  const groupRow = cols.map(c => c.group);
+  // Deduplicate consecutive same-group labels (keep first, blank the rest)
+  const groupRowDeduped = groupRow.map((g, i) =>
+    (g && g !== groupRow[i-1]) ? (g === 'Argentina' ? '🇦🇷 Argentina' : '🇺🇸 EEUU') : ''
+  );
+
+  // Row 2: column headers
+  const headerRow = cols.map(c => c.header);
+
+  // Data rows
+  const dataRows = _especiesRows.map(r => cols.map(c => {
+    const v = c.get(r);
+    if(v === null || v === undefined) return null;
+    return v;
+  }));
+
+  // Footer row
+  const last = _especiesRows[_especiesRows.length - 1];
+  const footerRow = cols.map(c => {
+    if(c.header === 'Fecha')        return `POSICIÓN FINAL · ${opsLen} op.`;
+    if(c.header === 'Bal AR')        return last.balAR;
+    if(c.header === 'Avg $')         return last.avgBlendedARS;
+    if(c.header === 'Avg U$S')       return last.avgBlendedUSD;
+    if(c.header === 'Valoriz. ARS')  return last.valAR_ARS;
+    if(c.header === 'Valoriz. USD' && c.group === 'Argentina') return last.valAR_USD;
+    if(c.header === 'Bal EEUU')      return last.balEEUU;
+    if(c.header === 'Avg USD')       return last.avgEEUU;
+    if(c.header === 'Valoriz. USD' && c.group === 'EEUU') return last.valEEUU;
+    if(c.header === 'Valoriz. Total USD') return ((last.valAR_USD ?? 0) + (last.valEEUU ?? 0)) || null;
+    return null;
+  });
+
+  const aoa = [groupRowDeduped, headerRow, ...dataRows, footerRow];
+
+  // ── Create worksheet ────────────────────────────────────────────────────
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const nRows = aoa.length;
+  const nCols = cols.length;
+
+  // Helper to get cell address
+  const addr = (r, c) => XLSX.utils.encode_cell({r, c});
+
+  // ── Merge group header cells ────────────────────────────────────────────
+  ws['!merges'] = ws['!merges'] || [];
+  let mergeStart = null, mergeGroup = null;
+  groupRowDeduped.forEach((g, ci) => {
+    const rawGroup = groupRow[ci];
+    if(rawGroup && rawGroup !== mergeGroup) {
+      if(mergeStart !== null && ci - mergeStart > 1)
+        ws['!merges'].push({s:{r:0,c:mergeStart}, e:{r:0,c:ci-1}});
+      mergeStart = ci; mergeGroup = rawGroup;
+    } else if(!rawGroup && mergeGroup) {
+      // end of group
+      if(mergeStart !== null && ci - mergeStart > 1)
+        ws['!merges'].push({s:{r:0,c:mergeStart}, e:{r:0,c:ci-1}});
+      mergeStart = null; mergeGroup = null;
+    }
+  });
+  if(mergeStart !== null && nCols - mergeStart > 1)
+    ws['!merges'].push({s:{r:0,c:mergeStart}, e:{r:0,c:nCols-1}});
+
+  // ── Cell styles ─────────────────────────────────────────────────────────
+  // Note: SheetJS free (XLSX.js CDN) doesn't support cell styles — we skip
+  // styling here. The structure, merges, number formats, and col widths work
+  // without the paid version.
+
+  // ── Number formats ──────────────────────────────────────────────────────
+  // Apply to data rows + footer (rows 2..nRows-1, 0-indexed)
+  for(let ri = 2; ri < nRows; ri++) {
+    for(let ci = 0; ci < nCols; ci++) {
+      const cell = ws[addr(ri, ci)];
+      if(!cell || cell.v === null || cell.v === undefined) continue;
+      const fmt = cols[ci].fmt;
+      if(fmt === 'date') {
+        // Store as string dd/mm/yyyy — already formatted in r.fecha as YYYY-MM-DD
+        const iso = cell.v; // "YYYY-MM-DD"
+        if(typeof iso === 'string' && iso.length === 10) {
+          cell.v = `${iso.slice(8,10)}/${iso.slice(5,7)}/${iso.slice(0,4)}`;
+          cell.t = 's';
+        }
+      } else if(fmt === 'num0' && typeof cell.v === 'number') {
+        cell.z = '#,##0';
+      } else if(fmt === 'num2' && typeof cell.v === 'number') {
+        cell.z = '#,##0.00';
+      }
+    }
+  }
+
+  // ── Column widths ───────────────────────────────────────────────────────
+  ws['!cols'] = cols.map(c => {
+    if(c.header === 'Fecha')  return { wch: 12 };
+    if(c.header === 'Op.')    return { wch: 10 };
+    if(c.fmt === 'num0')      return { wch: 11 };
+    if(c.fmt === 'num2')      return { wch: 14 };
+    return { wch: 12 };
+  });
+
+  // ── Freeze header rows ──────────────────────────────────────────────────
+  ws['!freeze'] = { xSplit: 0, ySplit: 2 };
+
+  // ── Build and download ──────────────────────────────────────────────────
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, ticker.slice(0, 31));
+  XLSX.writeFile(wb, `Especies_${ticker}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+// ══════ FX TAB ══════
+let _fxTabSort = 'date', _fxTabDir = -1; // default: fecha desc
+
+function fxTabSort(col) {
+  if(col === _fxTabSort) _fxTabDir *= -1;
+  else { _fxTabSort = col; _fxTabDir = -1; }
+  renderFXTab();
+}
+
+function fxTabClear() {
+  const s = document.getElementById('fx-tab-search'); if(s) s.value = '';
+  const y = document.getElementById('fx-tab-year');   if(y) y.value = '';
+  renderFXTab();
+}
+
+function rebuildFXYearDropdown() {
+  const sel = document.getElementById('fx-tab-year');
+  if(!sel || !_fxHistory) return;
+  const years = [...new Set(Object.keys(_fxHistory).map(d => d.slice(0,4)))].sort().reverse();
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Todos los años</option>';
+  years.forEach(y => {
+    const o = document.createElement('option');
+    o.value = o.textContent = y;
+    sel.appendChild(o);
+  });
+  if(cur && years.includes(cur)) sel.value = cur;
+}
+
+function renderFXTab() {
+  const tbody   = document.getElementById('fxTbody');
+  const countEl = document.getElementById('fx-tab-count');
+  if(!tbody) return;
+
+  if(!_fxHistory || !Object.keys(_fxHistory).length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="no-r">Sin datos de tipo de cambio.</td></tr>';
+    if(countEl) countEl.textContent = '';
+    return;
+  }
+
+  const search = (document.getElementById('fx-tab-search')?.value || '').trim();
+  const year   = document.getElementById('fx-tab-year')?.value  || '';
+
+  // Build display rows with filters
+  let rows = Object.entries(_fxHistory)
+    .map(([date, rate]) => ({ date, rate }))
+    .filter(r => {
+      if(year   && !r.date.startsWith(year)) return false;
+      if(search && !r.date.includes(search)) return false;
+      return true;
+    });
+
+  // Sort for display
+  rows.sort((a, b) => {
+    if(_fxTabSort === 'date') return a.date.localeCompare(b.date) * _fxTabDir;
+    return (a.rate - b.rate) * _fxTabDir;
+  });
+
+  // Chronological lookup for computing variations (always vs unfiltered history)
+  const chronological = Object.entries(_fxHistory)
+    .map(([date, rate]) => ({ date, rate }))
+    .sort((a,b) => a.date.localeCompare(b.date));
+  const rateByDate = {};
+  chronological.forEach(r => rateByDate[r.date] = r.rate);
+  const allDates = chronological.map(r => r.date);
+
+  const fmtDate = d => d && d.length >= 10
+    ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)}` : d;
+  const fmtRate = n => new Intl.NumberFormat('es-AR',
+    {minimumFractionDigits:2, maximumFractionDigits:2}).format(n);
+  const fmtVar = (pct, show) => {
+    if(!show || pct === null) return '<span style="color:var(--muted)">—</span>';
+    const sign = pct >= 0 ? '+' : '';
+    const cls  = pct >= 0 ? 'mp' : 'mn';
+    return `<span class="${cls}">${sign}${pct.toFixed(2)}%</span>`;
+  };
+
+  tbody.innerHTML = rows.map(r => {
+    const idx = allDates.indexOf(r.date);
+    // Var. diaria: vs entrada anterior en el histórico completo
+    let varDay = null;
+    if(idx > 0) {
+      const prev = rateByDate[allDates[idx - 1]];
+      if(prev > 0) varDay = ((r.rate - prev) / prev) * 100;
+    }
+    // Var. 30d: vs entrada más cercana hace 30 días o más
+    let var30 = null;
+    const d30 = new Date(r.date); d30.setDate(d30.getDate() - 30);
+    const d30str = d30.toISOString().slice(0,10);
+    const prior = allDates.filter(d => d <= d30str);
+    if(prior.length) {
+      const p30 = rateByDate[prior[prior.length - 1]];
+      if(p30 > 0) var30 = ((r.rate - p30) / p30) * 100;
+    }
+
+    return `<tr>
+      <td style="color:var(--muted);font-size:11px;">${fmtDate(r.date)}</td>
+      <td class="num" style="font-size:13px;font-weight:600;color:var(--ar);">$ ${fmtRate(r.rate)}</td>
+      <td class="num">${fmtVar(varDay, idx > 0)}</td>
+      <td class="num">${fmtVar(var30,  prior.length > 0)}</td>
+    </tr>`;
+  }).join('');
+
+  if(countEl) countEl.textContent = `${rows.length.toLocaleString('es-AR')} registros`;
+}
+</script>
+
+<!-- NRA Override Popover -->
+<div id="nra-popover">
+  <div id="nra-popover-title">Override retención NRA</div>
+  <div id="nra-popover-auto"></div>
+  <input id="nra-popover-input" type="number" step="0.01"
+    placeholder="ej: -6.15 (negativo = egreso)"
+    onkeydown="if(event.key==='Enter') saveNRAOverride(); if(event.key==='Escape') closeNRAPopover();">
+  <div id="nra-popover-hint">
+    Ingresá el monto con signo.<br>
+    Negativo = egreso de caja · Cero = sin retención · Vacío = volver al 30% auto.
+  </div>
+  <div class="nra-popover-btns">
+    <button id="nra-pop-save" onclick="saveNRAOverride()">Guardar</button>
+    <button id="nra-pop-clear" onclick="clearNRAOverride()">Limpiar (auto)</button>
+    <button id="nra-pop-cancel" onclick="closeNRAPopover()">Cancelar</button>
+  </div>
+</div>
+
+<!-- Import Modal -->
+<div id="import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:28px 32px;min-width:360px;max-width:480px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)">IMPORTAR TRANSACCIONES</span>
+      <button onclick="showModal(false)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px;">✕</button>
+    </div>
+    <div id="drop-zone" style="border:2px dashed var(--border);border-radius:6px;padding:32px 24px;text-align:center;cursor:pointer;transition:border-color .15s;"
+         onclick="document.getElementById('file-input').click()"
+         ondragover="event.preventDefault();this.style.borderColor='var(--ar)'"
+         ondragleave="this.style.borderColor='var(--border)'"
+         ondrop="event.preventDefault();this.style.borderColor='var(--border)';handleFileImport(event.dataTransfer.files[0])">
+      <div style="font-size:28px;margin-bottom:10px;">📂</div>
+      <div style="font-family:var(--mono);font-size:12px;color:var(--text);margin-bottom:6px;">Arrastrá el archivo acá</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);">o hacé click para seleccionar</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px;">.xls · .xlsx</div>
+    </div>
+    <input id="file-input" type="file" accept=".xls,.xlsx" style="display:none"
+           onchange="handleFileImport(this.files[0])">
+    <div id="import-status" style="font-family:var(--mono);font-size:11px;color:var(--muted);text-align:center;margin-top:14px;min-height:18px;"></div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.6;">
+        <b style="color:var(--text)">Cómo exportar de Balanz:</b><br>
+        Reportes → Movimientos Históricos → seleccioná el rango completo → Exportar .xls
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- NRA Tab Panel -->
+<div id="panel-nra" class="panel" style="padding:0;">
+  <div class="atb">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--usd);white-space:nowrap;">🏛 Ret. NRA</span>
+    <input class="fi" id="nraSearch" type="text" placeholder="🔍  Ticker o nro. mov..." style="width:200px" oninput="renderNRATab()">
+    <select class="fi" id="nraYear" onchange="renderNRATab()"><option value="">Todos los años</option></select>
+    <select class="fi" id="nraMonth" onchange="renderNRATab()">
+      <option value="">Todos los meses</option>
+      <option value="01">Enero</option><option value="02">Febrero</option><option value="03">Marzo</option>
+      <option value="04">Abril</option><option value="05">Mayo</option><option value="06">Junio</option>
+      <option value="07">Julio</option><option value="08">Agosto</option><option value="09">Septiembre</option>
+      <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+    </select>
+    <button class="fb" onclick="nraClear()">✕ Limpiar</button>
+    <button class="fb" onclick="exportNRAcsv()" style="color:var(--green);border-color:rgba(34,197,94,.3);">↓ CSV</button>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);flex:1;min-width:0;">
+      30% estimado sobre bruto (monto + comis + IVA). Marcá "No aplica" para excluir una fila.
+    </span>
+    <span class="a-count" id="nraCount"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="nra-tbl" style="min-width:820px;">
+      <thead><tr>
+        <th style="text-align:left;cursor:pointer;user-select:none;" onclick="nraSort('fecha')">Fecha</th>
+        <th style="text-align:left;cursor:pointer;user-select:none;" onclick="nraSort('ticker')">Ticker</th>
+        <th class="num" style="cursor:pointer;user-select:none;" onclick="nraSort('monto')">Monto neto</th>
+        <th class="num">Comisión</th>
+        <th class="num">IVA</th>
+        <th class="num">Bruto estimado</th>
+        <th class="num" style="color:var(--usd)">Ret. NRA (30%)</th>
+        <th class="num">Nro. Mov.</th>
+        <th style="text-align:center;">Override</th>
+      </tr></thead>
+      <tbody id="nraTbody"></tbody>
+      <tfoot id="nraTfoot"></tfoot>
+    </table>
+  </div>
+</div>
+
+<!-- Evolución Panel -->
+<div id="panel-evol" class="panel" style="padding:0;">
+  <div class="atb" style="gap:12px;">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;">📈 Evolución del Portfolio</span>
+    <div style="display:flex;gap:6px;align-items:center;margin-left:auto;">
+      <!-- Range selector -->
+      <div id="evol-range" style="display:flex;background:var(--s2);border:1px solid var(--border);border-radius:4px;overflow:hidden;">
+        <button class="evol-rb" data-range="1M" onclick="evolSetRange('1M')">1M</button>
+        <button class="evol-rb" data-range="3M" onclick="evolSetRange('3M')">3M</button>
+        <button class="evol-rb" data-range="6M" onclick="evolSetRange('6M')">6M</button>
+        <button class="evol-rb" data-range="1Y" onclick="evolSetRange('1Y')">1Y</button>
+        <button class="evol-rb act" data-range="MAX" onclick="evolSetRange('MAX')">MAX</button>
+      </div>
+      <!-- Series toggles -->
+      <button class="evol-series" data-series="ar_costo" onclick="evolToggleSeries('ar_costo')" style="border-color:#3d7fff;color:#3d7fff;opacity:.7;">🇦🇷 AR Costo</button>
+      <button class="evol-series act" data-series="ar" onclick="evolToggleSeries('ar')" style="border-color:#3d7fff;color:#3d7fff;">🇦🇷 AR Mercado</button>
+      <button class="evol-series" data-series="us_costo" onclick="evolToggleSeries('us_costo')" style="border-color:#ef4444;color:#ef4444;opacity:.7;">🇺🇸 EEUU Costo</button>
+      <button class="evol-series act" data-series="us" onclick="evolToggleSeries('us')" style="border-color:#ef4444;color:#ef4444;">🇺🇸 EEUU Mercado</button>
+      <button class="evol-series" data-series="total_costo" onclick="evolToggleSeries('total_costo')" style="border-color:#a78bfa;color:#a78bfa;opacity:.7;">∑ Total Costo</button>
+      <button class="evol-series act" data-series="total" onclick="evolToggleSeries('total')" style="border-color:#a78bfa;color:#a78bfa;">∑ Total Mercado</button>
+      <button class="evol-series" data-series="gn_ar" onclick="evolToggleSeries('gn_ar')" style="border-color:#00d4aa;color:#00d4aa;">🇦🇷 G. No Realiz.</button>
+      <button class="evol-series" data-series="gn_us" onclick="evolToggleSeries('gn_us')" style="border-color:#f97316;color:#f97316;">🇺🇸 G. No Realiz.</button>
+      <button class="evol-series" data-series="gn_total" onclick="evolToggleSeries('gn_total')" style="border-color:#e879f9;color:#e879f9;">∑ G. No Realiz.</button>
+      <button class="evol-series act" data-series="flujos" onclick="evolToggleSeries('flujos')" style="border-color:#22c55e;color:#22c55e;">💰 Flujos</button>
+      <button class="evol-series" data-series="idx" onclick="evolToggleSeries('idx')" style="border-color:#f59e0b;color:#f59e0b;">📈 Índice</button>
+      <button class="evol-series" data-series="depNeto" onclick="evolToggleSeries('depNeto')" style="border-color:#ffffff;color:#ffffff;">💵 Dep. Netos</button>
+      <!-- Recalc button -->
+      <button class="fb" id="evol-recalc-btn" onclick="recalcSnapshots()" style="color:var(--usd);border-color:var(--usd);white-space:nowrap;">⟳ Recalcular</button>
+    </div>
+  </div>
+  <!-- Progress bar (hidden by default) -->
+  <div id="evol-progress" style="display:none;padding:6px 20px;background:var(--surface);border-bottom:1px solid var(--border);">
+    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px;" id="evol-progress-label">Calculando...</div>
+    <div style="background:var(--s2);border-radius:2px;height:4px;overflow:hidden;">
+      <div id="evol-progress-bar" style="height:100%;width:0%;background:var(--usd);transition:width .1s;"></div>
+    </div>
+  </div>
+  <!-- Chart -->
+  <div style="padding:20px 24px;height:calc(100vh - 160px);display:flex;flex-direction:column;gap:16px;">
+    <div style="flex:1;position:relative;min-height:0;">
+      <canvas id="evol-chart"></canvas>
+    </div>
+    <div id="evol-empty" style="display:none;text-align:center;padding:60px 0;font-family:var(--mono);font-size:12px;color:var(--muted);">
+      Sin datos — presioná <span style="color:var(--usd)">⟳ Recalcular</span> para generar la evolución histórica.
+    </div>
+    <!-- Summary row -->
+    <div id="evol-summary" style="display:flex;gap:20px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:12px;"></div>
+  </div>
+</div>
+
+<!-- Especies Panel -->
+<div id="panel-especies" class="panel" style="padding:0;">
+  <div class="atb" style="gap:10px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--us);white-space:nowrap;">🔍 Especies</span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Acciones</span>
+      <select class="fi esp-cat-select" id="esp-sel-acciones" onchange="espCatChange('acciones')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Bonos</span>
+      <select class="fi esp-cat-select" id="esp-sel-bonos" onchange="espCatChange('bonos')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Letras</span>
+      <select class="fi esp-cat-select" id="esp-sel-letras" onchange="espCatChange('letras')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">FCI</span>
+      <select class="fi esp-cat-select" id="esp-sel-fci" onchange="espCatChange('fci')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Otros</span>
+      <select class="fi esp-cat-select" id="esp-sel-otros" onchange="espCatChange('otros')" style="width:150px;">
+        <option value="">—</option>
+      </select>
+    </div>
+    <button class="fb" id="esp-export-btn" onclick="exportEspeciesXLS()" style="display:none;color:var(--green);border-color:rgba(34,197,94,.3);">↓ XLS</button>
+    <span id="esp-summary" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="esp-tbl" style="min-width:1200px;display:none;">
+      <thead>
+        <tr id="esp-thead-groups">
+          <!-- group headers injected by JS -->
+        </tr>
+        <tr id="esp-thead-cols">
+          <!-- col headers injected by JS -->
+        </tr>
+      </thead>
+      <tbody id="espTbody"></tbody>
+      <tfoot id="espTfoot"></tfoot>
+    </table>
+    <div id="esp-footnote" style="display:none;padding:10px 12px;font-family:var(--mono);font-size:9px;color:var(--muted);border-top:1px solid var(--border);line-height:1.7;">
+      * <b style="color:var(--text)">Precio</b>: precio unitario del broker, sin comisiones ni impuestos. &nbsp;·&nbsp;
+      <b style="color:var(--text)">Monto</b>: monto total de la operación tal como lo reporta el broker (incluye comisión, IVA y otros impuestos). &nbsp;·&nbsp;
+      <b style="color:var(--text)">Avg</b>: costo promedio ponderado (VWAP) sin comisiones ni impuestos, comparable con el precio de mercado.
+    </div>
+    <div id="esp-empty" style="padding:60px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--muted);">
+      Elegí una especie del selector para ver su detalle.
+    </div>
+  </div>
+</div>
+
+<!-- FX Panel -->
+<div id="panel-fx" class="panel" style="padding:0;">
+  <div class="atb" style="gap:12px;">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ar);white-space:nowrap;">💱 Tipo de Cambio · USD/ARS</span>
+    <input class="fi" id="fx-tab-search" type="text" placeholder="🔍  Filtrar fecha..." style="width:180px" oninput="renderFXTab()">
+    <select class="fi" id="fx-tab-year" onchange="renderFXTab()"><option value="">Todos los años</option></select>
+    <button class="fb" onclick="fxTabClear()">✕ Limpiar</button>
+    <span class="a-count" id="fx-tab-count"></span>
+  </div>
+  <div class="audit-wrap">
+    <table id="fx-tab-tbl" style="min-width:320px;">
+      <thead><tr>
+        <th style="text-align:left;cursor:pointer;user-select:none;" onclick="fxTabSort('date')">Fecha</th>
+        <th class="num" style="cursor:pointer;user-select:none;" onclick="fxTabSort('rate')">ARS / USD</th>
+        <th class="num" style="color:var(--muted);">Var. diaria</th>
+        <th class="num" style="color:var(--muted);">Var. 30d</th>
+      </tr></thead>
+      <tbody id="fxTbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Clear Data Modal -->
+<div id="clear-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:28px 32px;min-width:320px;max-width:420px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)">BORRAR SESIÓN</span>
+      <button onclick="hideClearConfirm()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px;">✕</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:22px;">
+      Esto va a borrar <span style="color:var(--red);font-weight:600;" id="clear-session-name">esta sesión</span> y todas sus transacciones del browser.<br><br>
+      <span style="font-size:10px;">Los overrides NRA en Supabase de esta sesión también se eliminarán. Los archivos .xls originales no se modifican.</span>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="hideClearConfirm()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--border);background:var(--s2);color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;">Cancelar</button>
+      <button onclick="clearAllData()" style="padding:7px 18px;border-radius:4px;border:1px solid var(--red);background:rgba(239,68,68,.15);color:var(--red);font-family:var(--mono);font-size:11px;cursor:pointer;font-weight:600;">🗑 Borrar sesión</button>
+    </div>
+  </div>
+</div>
+
+<!-- SheetJS CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Chart.js + zoom plugin -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
+
+</body>
+</html>
