@@ -4447,7 +4447,7 @@ function renderEspecies() {
       gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">${arLabel}</th>`;
     }
     if(hasEEUU_real) gh += `<th class="esp-group-us esp-divider-strong" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
-    gh += `<th class="esp-group-shared esp-divider-strong" colspan="1" style="text-align:center;color:var(--purple);">Total</th>`;
+    gh += `<th class="esp-group-shared esp-divider-strong" colspan="1" style="text-align:center;color:var(--purple);">Valoriz.</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
   }
@@ -4489,7 +4489,7 @@ function renderEspecies() {
       <th class="esp-num esp-group-us" style="color:var(--muted);">Monto USD</th>
       <th class="esp-num esp-group-us esp-divider-soft" style="color:var(--us);">Avg USD</th>
       <th class="esp-num esp-group-us" style="color:var(--us);">Valoriz. USD</th>`;
-    ch += `<th class="esp-num esp-divider-strong" style="color:var(--purple);">Bal Total</th>`;
+    ch += `<th class="esp-num esp-divider-strong" style="color:var(--purple);">Valoriz. Total</th>`;
     ch += `<th class="esp-num esp-divider-strong" style="color:var(--muted);">FX</th>`;
     colRow.innerHTML = ch;
   }
@@ -4565,7 +4565,7 @@ function renderEspecies() {
       <td class="esp-num">${fmtVal(us.monto > 0 ? us.monto : null, 'usd')}</td>
       <td class="esp-num esp-divider-soft">${fmtAvg(r.avgEEUU, 'usd')}</td>
       <td class="esp-num">${fmtVal(r.valEEUU, 'usd')}</td>`;
-    html += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${fmtBal(r.balTotal)}</td>`;
+    html += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${fmtVal((r.valAR_USD ?? 0) + (r.valEEUU ?? 0) || null, 'usd')}</td>`;
     html += `<td class="esp-num esp-divider-strong">${fmtFX(r.fx)}</td></tr>`;
     return html;
   }).join('');
@@ -4592,7 +4592,7 @@ function renderEspecies() {
         <td class="esp-num esp-divider-soft">${fmtAvg(last.avgEEUU, 'usd')}</td>
         <td class="esp-num">${fmtVal(last.valEEUU, 'usd')}</td>`;
     }
-    fh += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${N(last.balTotal, 0)}</td>`;
+    fh += `<td class="esp-num esp-divider-strong" style="color:var(--purple)">${fmtVal((last.valAR_USD ?? 0) + (last.valEEUU ?? 0) || null, 'usd')}</td>`;
     fh += `<td class="esp-divider-strong"></td></tr>`;
     tfoot.innerHTML = fh;
   }
@@ -4676,6 +4676,7 @@ function exportEspeciesXLS() {
       { header:'Valoriz. USD', group:'EEUU', fmt:'num2', get: r => r.valEEUU },
     );
   }
+  cols.push({ header:'Valoriz. Total USD', group:'', fmt:'num2', get: r => ((r.valAR_USD ?? 0) + (r.valEEUU ?? 0)) || null });
   cols.push({ header:'FX', group:'', fmt:'num2', get: r => r.fx });
 
   // ── Build AOA ───────────────────────────────────────────────────────────
@@ -4708,6 +4709,7 @@ function exportEspeciesXLS() {
     if(c.header === 'Bal EEUU')      return last.balEEUU;
     if(c.header === 'Avg USD')       return last.avgEEUU;
     if(c.header === 'Valoriz. USD' && c.group === 'EEUU') return last.valEEUU;
+    if(c.header === 'Valoriz. Total USD') return ((last.valAR_USD ?? 0) + (last.valEEUU ?? 0)) || null;
     return null;
   });
 
