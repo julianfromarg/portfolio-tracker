@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 12/04/2026 v20
+## Versión: 15/04/2026 v21
 
 ---
 
@@ -44,7 +44,7 @@ Sin precio (al costo): `ADRO, CO26, TO26`
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~4750 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~5140 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `contexto.md` | Este archivo |
 
@@ -431,14 +431,20 @@ cuenta Argentina (USD) → slot 'AR_USD'
 ```
 
 ### Lógica de ventas — CRÍTICO
-**Venta desde AR:**
+**Venta desde AR (slots AR_ARS o AR_USD):**
 1. Consumir del slot propio primero
 2. Si no alcanza, consumir del otro slot AR
 3. Si todavía no alcanza, transferencia implícita EEUU → AR
 
-**Venta desde EEUU (sufijo C, ej AY24C):**
-1. Transferencia implícita AR → EEUU proporcional (solo si `isMEP_C`)
-2. Venta normal desde EEUU
+**Venta con sufijo C (ej: MELIC, AY24C) — cuenta EEUU:**
+- El broker registra la cuenta como EEUU solo para indicar dónde se acredita el cash.
+- Los títulos **salen del pool AR** (AR_ARS → AR_USD), igual que una venta desde AR.
+- `s.EEUU` **no se toca** — nunca hay transferencia implícita AR→EEUU en ventas.
+- `_xferAR` y `_xferEEUU` quedan en 0 para estas operaciones.
+- La única forma de que títulos crucen físicamente entre cuentas es vía `Transferencia de Titulos IN -`, que el broker registra explícitamente.
+
+**Venta directa desde EEUU (sin sufijo C, ej: GLOB vendido en NYSE):**
+- Venta normal desde slot EEUU.
 
 **Reducción proporcional en ventas — AR_ARS:** se reducen `costARS`, `costUSD`, `costWithC`, `costARS_withC`, `costUSD_withC` todos con el mismo ratio. Reset a 0 si balance llega a 0.
 
@@ -482,30 +488,38 @@ Cuando llega el FX history, se reconstruye el ledger y el portfolio completo, y 
 5. **Otros** — fallback
 
 ### Layout de la tabla — columnas dinámicas:
-Flags: `hasAR`, `hasEEUU`, `hasAR_ARS`, `hasAR_USD`.
+Flags: `hasAR`, `hasEEUU_real`, `hasAR_ARS`, `hasAR_USD`, `hasAR_EEUU`.
 
 **Grupo 🇦🇷 Argentina** (solo si `hasAR`):
 - Sub-sección **$** (solo si `hasAR_ARS`): C $ · V $ · Precio $ · Monto $
-- Sub-sección **U$S** (solo si `hasAR_USD`): C U$S · V U$S · Precio U$S · Monto U$S
+- Sub-sección **U$S AR** (solo si `hasAR_USD`): C U$S AR · V U$S AR · Precio U$S · Monto U$S
+- Sub-sección **U$S EE** (solo si `hasAR_EEUU`): C U$S EE · V U$S EE · Precio U$S · Monto U$S — operaciones con sufijo C (MELIC, AY24C): títulos salen de AR, cash va a EEUU
 - Columnas compartidas: Xfer. · Amort. · Bal AR · **Avg $** · **Avg U$S** · Valoriz. ARS · Valoriz. USD
 
-**Grupo 🇺🇸 EEUU** (solo si `hasEEUU`):
+**Grupo 🇺🇸 EEUU** (solo si `hasEEUU_real` — compras/ventas directas en NYSE, sin sufijo C):
 - Compras · **Xfer.** · Ventas · Amort. · Bal EEUU · Precio USD · Monto USD · Avg USD · Valoriz. USD
 
 **Columna Xfer.**:
-- Transferencia implícita del ledger (`_xferAR`/`_xferEEUU`): `(N)` rojo si sale, `+N` verde si entra
+- Transferencias implícitas reales del ledger (`_xferAR`/`_xferEEUU`): `(N)` rojo si sale, `+N` verde si entra
+- Las ventas con sufijo C **no generan** `_xferAR`/`_xferEEUU` — van a la sub-sección AR_EEUU
 - Sin transferencia implícita: XFER_IN real del broker o `—`
 
-**Grupo Total** (siempre): Bal Total (violeta) · FX
+**Grupo Valoriz.** (siempre): Valoriz. Total (= `valAR_USD + valEEUU`, en USD, violeta) · FX
+
+**Detección de flags:**
+- `hasAR_EEUU`: hay txns con sufijo C en cuenta EEUU (`ticker_raw` termina en C y `canonical` existe en `TICKER_TO_GROUP`)
+- `hasEEUU_real`: hay txns en cuenta EEUU sin sufijo C
+- `hasEEUU` (alias de `hasEEUU_real`): usado en `_especiesState` para el XLS export
 
 ### Export XLS (`exportEspeciesXLS()`):
 - Lee de `_especiesRows` y `_especiesState` — NO scrapea el DOM
-- Columnas condicionales según `hasAR_ARS`, `hasAR_USD`, `hasEEUU`
+- Columnas condicionales según `hasAR_ARS`, `hasAR_USD`, `hasAR_EEUU`, `hasEEUU`
+- Columna final: "Valoriz. Total USD" = `valAR_USD + valEEUU`
 
 ### Globals de estado:
 ```javascript
 let _especiesRows  = [];  // rows del último renderEspecies (para XLS export)
-let _especiesState = {};  // {ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen}
+let _especiesState = {};  // {ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, hasAR_EEUU, opsLen}
 ```
 
 ### Funciones clave:
@@ -892,7 +906,13 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
 | Date picker Portfolio en formato mm/dd/yyyy | `<input type="date">` usa locale del browser | Reemplazado por `<input type="text">` con `parseDateDMY`/`fmtDateDMY` y botones `‹`/`›` para navegar ±1 día |
 
-### Precios AR y mejoras de Portfolio (v18-v19)
+### Lógica de balances y CEDEARs (v21)
+
+| Cambio | Descripción |
+|---|---|
+| Eliminada transferencia implícita AR→EEUU en ventas sufijo C | El modelo anterior asumía que una venta MELIC/AY24C transfería títulos de AR a EEUU y luego los vendía desde EEUU. Esto era incorrecto: el broker registra la cuenta EEUU solo para indicar dónde se acredita el cash. Los títulos siempre salen del pool AR. `buildLedger` ahora trata ventas sufijo C igual que ventas desde AR (consume AR_ARS → AR_USD). `s.EEUU` no se toca. |
+| Nueva sub-sección AR_EEUU en tab Especies | `hasAR_EEUU`: flag que se activa cuando hay operaciones sufijo C en cuenta EEUU. Agrega columnas "C U$S EE · V U$S EE · Precio U$S · Monto U$S" dentro del grupo Argentina. `hasEEUU_real`: operaciones directas en NYSE (sin sufijo C). Ambos flags coexisten sin conflicto. |
+| Columna "Valoriz. Total" reemplaza "Bal Total" en Especies | La columna final del tab Especies antes mostraba `balAR + balEEUU` en títulos (unidad heterogénea). Ahora muestra `valAR_USD + valEEUU` en USD (valorización al costo promedio). |
 
 | Cambio | Descripción |
 |---|---|
@@ -959,8 +979,9 @@ Pegá este documento + el HTML al inicio del chat.
 - **`isEffectivelyClosed` consulta `_ledger` antes de declarar stale** — no eliminar ese check
 - **`movesTitle()` determina qué fila mueve títulos** — la fila de comisión (cuenta ARS) NO mueve
 - **Ventas desde AR:** consumir slot propio → otro slot AR → EEUU→AR
-- **Ventas desde EEUU:** xfer implícita AR→EEUU proporcional SOLO si sufijo C (`isMEP_C`)
-- **`_xferAR` y `_xferEEUU` en cada txn de venta** — los usa `renderEspecies`, no eliminar
+- **Ventas con sufijo C (MELIC, AY24C):** los títulos salen del pool AR (AR_ARS → AR_USD), igual que una venta desde AR. `s.EEUU` no se toca. No hay transferencia implícita AR→EEUU en ventas. El cash va a EEUU pero eso lo maneja `buildCash`, no `buildLedger`.
+- **Transferencias reales de títulos:** solo ocurren cuando el broker registra `Transferencia de Titulos IN -` explícitamente. Nunca asumir transferencia implícita para operaciones de Venta.
+- **`_xferAR` y `_xferEEUU` en cada txn de venta** — los usa `renderEspecies`; son 0 para ventas con sufijo C
 
 **► FX Y PRECIOS:**
 - **FX siempre desde `_fxHistory`/`_fxLatest`** — no agregar inputs manuales de FX
