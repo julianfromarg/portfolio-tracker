@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 15/04/2026 v21
+## Versión: 15/04/2026 v22
 
 ---
 
@@ -905,6 +905,12 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Precios EEUU no cargaban (solo EWZ) | `fetchPricesHistory` combinaba `limit` en URL + `Range` header → error 416 | Paginación correcta sin `limit` en URL |
 | P&L y tarjeta Ganancia vacíos al abrir | `renderPortfolioTable` corría antes de `fetchPricesHistory` | `renderPortfolioTable()` al final de `fetchPricesHistory` si hay txns |
 | Date picker Portfolio en formato mm/dd/yyyy | `<input type="date">` usa locale del browser | Reemplazado por `<input type="text">` con `parseDateDMY`/`fmtDateDMY` y botones `‹`/`›` para navegar ±1 día |
+
+### Evolución — extensión de serie hacia adelante (v22)
+
+| Cambio | Descripción |
+|---|---|
+| `recalcSnapshots` extiende la serie hasta hoy | Antes el gráfico cortaba en la fecha del último movimiento importado. Ahora `recalcSnapshots` genera fechas calendario desde el día siguiente al último `_cashDaily` hasta `today`, inclusive. El cash no cambia en esas fechas (`getCashAtDate` devuelve el último saldo conocido). Los precios y FX usan el fallback del último disponible vía `getPriceForDate` / `getFXForDate`. Requiere ⟳ Recalcular después de deployar. |
 
 ### Lógica de balances y CEDEARs (v21)
 
