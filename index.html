@@ -3976,49 +3976,52 @@ function buildLedger(rawTxns, fxHistory = {}) {
         let xferAR = 0, xferEEUU = 0;
 
         if(slot === 'EEUU') {
-          // Transferencia implícita AR → EEUU solo para tickers con sufijo C (ej: AY24C).
-          // Esos son ventas MEP donde los títulos salen físicamente de AR hacia EEUU.
-          // Para otros instrumentos (ej: GLOB vendido en NYSE), la venta es independiente
-          // del pool AR — no hay transferencia implícita.
+          // Detectar si es venta MEP (sufijo C, ej: AY24C, MELIC).
           const upper = raw.toUpperCase();
           const _canon = TICKER_TO_GROUP[upper];
           const _suffix = _canon ? upper.slice(_canon.length) : '';
           const isMEP_C = _suffix === 'C';
 
-          const balAR = s.AR_ARS.bal + s.AR_USD.bal;
-          if(isMEP_C && balAR > 0) {
-            const xferQty   = Math.min(qty, balAR);
-            const rARS      = s.AR_ARS.bal / balAR;
-            const rARU      = s.AR_USD.bal / balAR;
-            const arCostUSD = (s.AR_ARS.costUSD || 0) + s.AR_USD.costUSD;
-            const avgAR_usd = arCostUSD / balAR;
+          if(isMEP_C) {
+            // Venta MEP (sufijo C): los títulos salen del pool AR, el cash va a EEUU.
+            // El broker registra la operación en cuenta EEUU solo para indicar dónde
+            // se acredita el dinero. Los títulos NUNCA pasan por el slot EEUU —
+            // se venden directamente del pool AR (AR_ARS → AR_USD).
+            // No hay transferencia implícita AR→EEUU. s.EEUU no se toca.
+            let remaining = qty;
+
+            // Paso 1: consumir de AR_ARS
             if(s.AR_ARS.bal > 0) {
-              const r = Math.max(0, (s.AR_ARS.bal - xferQty * rARS) / s.AR_ARS.bal);
+              const take = Math.min(remaining, s.AR_ARS.bal);
+              const r = Math.max(0, (s.AR_ARS.bal - take) / s.AR_ARS.bal);
               s.AR_ARS.costARS       = (s.AR_ARS.costARS || 0) * r;
               s.AR_ARS.costARS_withC = (s.AR_ARS.costARS_withC || 0) * r;
-              s.AR_ARS.costUSD      *= r; s.AR_ARS.costUSD_withC  *= r; s.AR_ARS.costWithC *= r;
-              s.AR_ARS.bal          -= xferQty * rARS;
+              s.AR_ARS.costUSD      *= r; s.AR_ARS.costUSD_withC *= r; s.AR_ARS.costWithC *= r;
+              s.AR_ARS.bal -= take;
               if(s.AR_ARS.bal <= 0) { s.AR_ARS.bal=0; s.AR_ARS.costARS=0; s.AR_ARS.costARS_withC=0; s.AR_ARS.costUSD=0; s.AR_ARS.costUSD_withC=0; s.AR_ARS.costWithC=0; }
+              remaining -= take;
             }
-            if(s.AR_USD.bal > 0) {
-              const r = Math.max(0, (s.AR_USD.bal - xferQty * rARU) / s.AR_USD.bal);
+
+            // Paso 2: consumir de AR_USD si todavía sobra
+            if(remaining > 0 && s.AR_USD.bal > 0) {
+              const take = Math.min(remaining, s.AR_USD.bal);
+              const r = Math.max(0, (s.AR_USD.bal - take) / s.AR_USD.bal);
               s.AR_USD.costUSD  *= r; s.AR_USD.costWithC *= r;
-              s.AR_USD.bal      -= xferQty * rARU;
+              s.AR_USD.bal -= take;
               if(s.AR_USD.bal <= 0) { s.AR_USD.bal=0; s.AR_USD.costUSD=0; s.AR_USD.costWithC=0; }
+              remaining -= take;
             }
-            s.EEUU.bal      += xferQty;
-            s.EEUU.costUSD  += avgAR_usd * xferQty;
-            s.EEUU.costWithC += avgAR_usd * xferQty;
-            xferAR   = -xferQty;  // sale de AR
-            xferEEUU = +xferQty;  // entra en EEUU
-          }
-          // Venta normal desde EEUU
-          if(s.EEUU.bal > 0) {
-            const sellQty = Math.min(qty, s.EEUU.bal);
-            const r = Math.max(0, (s.EEUU.bal - sellQty) / s.EEUU.bal);
-            s.EEUU.costUSD  *= r; s.EEUU.costWithC *= r;
-            s.EEUU.bal -= qty;
-            if(s.EEUU.bal <= 0) { s.EEUU.bal=0; s.EEUU.costUSD=0; s.EEUU.costWithC=0; }
+            // xferAR y xferEEUU quedan en 0 — no hay transferencia implícita
+
+          } else {
+            // Venta directa desde EEUU (compra original en EEUU, sin sufijo C)
+            if(s.EEUU.bal > 0) {
+              const sellQty = Math.min(qty, s.EEUU.bal);
+              const r = Math.max(0, (s.EEUU.bal - sellQty) / s.EEUU.bal);
+              s.EEUU.costUSD  *= r; s.EEUU.costWithC *= r;
+              s.EEUU.bal -= qty;
+              if(s.EEUU.bal <= 0) { s.EEUU.bal=0; s.EEUU.costUSD=0; s.EEUU.costWithC=0; }
+            }
           }
 
         } else {
@@ -4325,7 +4328,23 @@ function renderEspecies() {
 
   // Determine which sides exist
   const hasAR   = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina'));
-  const hasEEUU = inst.txns.some(t => t.cuenta && t.cuenta.includes('EEUU'));
+  // hasAR_EEUU: ventas/compras con sufijo C (MELIC, AY24C) — títulos salen de AR, cash va a EEUU
+  const hasAR_EEUU = inst.txns.some(t => {
+    if(!t.cuenta || !t.cuenta.includes('EEUU')) return false;
+    const raw2 = (t.ticker_raw || t.ticker || '').toUpperCase();
+    const canon2 = TICKER_TO_GROUP[raw2];
+    const suffix2 = canon2 ? raw2.slice(canon2.length) : '';
+    return suffix2 === 'C';
+  });
+  // hasEEUU_real: operaciones directas en EEUU sin sufijo C (compras/ventas reales en NYSE)
+  const hasEEUU_real = inst.txns.some(t => {
+    if(!t.cuenta || !t.cuenta.includes('EEUU')) return false;
+    const raw2 = (t.ticker_raw || t.ticker || '').toUpperCase();
+    const canon2 = TICKER_TO_GROUP[raw2];
+    const suffix2 = canon2 ? raw2.slice(canon2.length) : '';
+    return suffix2 !== 'C';
+  });
+  const hasEEUU = hasEEUU_real; // alias para compatibilidad con exportEspeciesXLS
   const hasAR_ARS = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina') && t.cuenta.includes('ARS'));
   const hasAR_USD = inst.txns.some(t => t.cuenta && t.cuenta.includes('Argentina') && !t.cuenta.includes('ARS'));
 
@@ -4334,15 +4353,26 @@ function renderEspecies() {
   for(const t of inst.txns) {
     const { operacion: op, cantidad: qty, cuenta, precio, fecha } = t;
     if(!dateBuckets[fecha]) dateBuckets[fecha] = {
-      ar_ars: { compras:0, ventas:0, precio:null, monto:0 },
-      ar_usd: { compras:0, ventas:0, precio:null, monto:0 },
-      eeuu:   { compras:0, ventas:0, precio:null, monto:0 },
+      ar_ars:  { compras:0, ventas:0, precio:null, monto:0 },
+      ar_usd:  { compras:0, ventas:0, precio:null, monto:0 },
+      ar_eeuu: { compras:0, ventas:0, precio:null, monto:0 },
+      eeuu:    { compras:0, ventas:0, precio:null, monto:0 },
       xfer:0, amort:0, xferAR:0, xferEEUU:0, lastSnap: null,
     };
     const bucket = dateBuckets[fecha];
     const isEEUU = cuenta && cuenta.includes('EEUU');
     const isARS  = cuenta && cuenta.includes('ARS');
-    const side   = isEEUU ? bucket.eeuu : (isARS ? bucket.ar_ars : bucket.ar_usd);
+
+    // Detectar si es operación sufijo C (MELIC, AY24C): va a sub-sección AR_EEUU
+    const raw2   = (t.ticker_raw || t.ticker || '').toUpperCase();
+    const canon2 = TICKER_TO_GROUP[raw2];
+    const suffix2 = canon2 ? raw2.slice(canon2.length) : '';
+    const isSufijoC = isEEUU && suffix2 === 'C';
+
+    const side = isSufijoC ? bucket.ar_eeuu
+               : isEEUU    ? bucket.eeuu
+               : isARS     ? bucket.ar_ars
+               :              bucket.ar_usd;
 
     if(t._movesTitle !== false) {
       if(BUY_SET.has(op) && qty > 0) {
@@ -4353,9 +4383,11 @@ function renderEspecies() {
         side.ventas += qty;
         if(precio > 0) side.precio = precio;
         side.monto += Math.abs(t.monto || 0);
-        // Acumular transferencias implícitas del ledger
-        if(t._xferAR)   bucket.xferAR   += t._xferAR;
-        if(t._xferEEUU) bucket.xferEEUU += t._xferEEUU;
+        // Acumular transferencias implícitas del ledger (solo para no-sufijo-C)
+        if(!isSufijoC) {
+          if(t._xferAR)   bucket.xferAR   += t._xferAR;
+          if(t._xferEEUU) bucket.xferEEUU += t._xferEEUU;
+        }
       } else if(op === XFER_IN && qty > 0) {
         bucket.xfer += qty;
       } else if(op === 'Pago de Amortización' && qty < 0) {
@@ -4397,19 +4429,24 @@ function renderEspecies() {
   // ── Column headers ───────────────────────────────────────────────────────
   const groupRow = document.getElementById('esp-thead-groups');
   const colRow   = document.getElementById('esp-thead-cols');
-  const arARS_cols  = hasAR_ARS ? 4 : 0;
-  const arUSD_cols  = hasAR_USD ? 4 : 0;
+  const arARS_cols  = hasAR_ARS   ? 4 : 0;
+  const arUSD_cols  = hasAR_USD   ? 4 : 0;
+  const arEEUU_cols = hasAR_EEUU  ? 4 : 0;
   const arBase_cols = 7;
-  const arColspan   = hasAR ? arARS_cols + arUSD_cols + arBase_cols : 0;
+  const arColspan   = hasAR ? arARS_cols + arUSD_cols + arEEUU_cols + arBase_cols : 0;
 
   if(groupRow) {
     let gh = `<th class="esp-group-shared" colspan="2" style="text-align:left;"></th>`;
     if(hasAR) {
       let arLabel = '🇦🇷 Argentina';
-      if(hasAR_ARS && hasAR_USD) arLabel += ' <span style="font-size:9px;opacity:.6">· $ y U$S</span>';
+      const subLabels = [];
+      if(hasAR_ARS)  subLabels.push('$');
+      if(hasAR_USD)  subLabels.push('U$S AR');
+      if(hasAR_EEUU) subLabels.push('U$S EEUU');
+      if(subLabels.length > 1) arLabel += ` <span style="font-size:9px;opacity:.6">· ${subLabels.join(' y ')}</span>`;
       gh += `<th class="esp-group-ar" colspan="${arColspan}" style="text-align:center;">${arLabel}</th>`;
     }
-    if(hasEEUU) gh += `<th class="esp-group-us esp-divider-strong" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
+    if(hasEEUU_real) gh += `<th class="esp-group-us esp-divider-strong" colspan="9" style="text-align:center;">🇺🇸 EEUU</th>`;
     gh += `<th class="esp-group-shared esp-divider-strong" colspan="1" style="text-align:center;color:var(--purple);">Total</th>`;
     gh += `<th class="esp-group-shared" style="text-align:right;">FX</th>`;
     groupRow.innerHTML = gh;
@@ -4424,8 +4461,13 @@ function renderEspecies() {
         <th class="esp-num esp-group-ar">Precio $</th>
         <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto $</th>`;
       if(hasAR_USD) ch += `
-        <th class="esp-num esp-group-ar${hasAR_ARS?' esp-divider-soft':''}" style="color:var(--green);">C U$S</th>
-        <th class="esp-num esp-group-ar" style="color:var(--red);">V U$S</th>
+        <th class="esp-num esp-group-ar${hasAR_ARS?' esp-divider-soft':''}" style="color:var(--green);">C U$S AR</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">V U$S AR</th>
+        <th class="esp-num esp-group-ar">Precio U$S</th>
+        <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto U$S</th>`;
+      if(hasAR_EEUU) ch += `
+        <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--green);">C U$S EE</th>
+        <th class="esp-num esp-group-ar" style="color:var(--red);">V U$S EE</th>
         <th class="esp-num esp-group-ar">Precio U$S</th>
         <th class="esp-num esp-group-ar" style="color:var(--muted);">Monto U$S</th>`;
       ch += `
@@ -4437,7 +4479,7 @@ function renderEspecies() {
         <th class="esp-num esp-group-ar esp-divider-soft" style="color:var(--ar);">Valoriz. ARS</th>
         <th class="esp-num esp-group-ar" style="color:var(--usd);">Valoriz. USD</th>`;
     }
-    if(hasEEUU) ch += `
+    if(hasEEUU_real) ch += `
       <th class="esp-num esp-group-us esp-divider-strong" style="color:var(--green);">Compras</th>
       <th class="esp-num esp-group-us" style="color:var(--purple);">Xfer.</th>
       <th class="esp-num esp-group-us" style="color:var(--red);">Ventas</th>
@@ -4481,6 +4523,7 @@ function renderEspecies() {
     const { bucket } = r;
     const ars  = bucket.ar_ars;
     const ausd = bucket.ar_usd;
+    const aee  = bucket.ar_eeuu;
     const us   = bucket.eeuu;
     const opLbl = opLabel(inst.txns.filter(t => t.fecha === r.fecha));
 
@@ -4498,6 +4541,11 @@ function renderEspecies() {
         <td class="esp-num">${fmtQv(ausd.ventas)}</td>
         <td class="esp-num">${fmtPx(ausd.precio, 'usd')}</td>
         <td class="esp-num">${fmtVal(ausd.monto > 0 ? ausd.monto : null, 'usd')}</td>`;
+      if(hasAR_EEUU) html += `
+        <td class="esp-num esp-divider-soft">${fmtQc(aee.compras)}</td>
+        <td class="esp-num">${fmtQv(aee.ventas)}</td>
+        <td class="esp-num">${fmtPx(aee.precio, 'usd')}</td>
+        <td class="esp-num">${fmtVal(aee.monto > 0 ? aee.monto : null, 'usd')}</td>`;
       html += `
         <td class="esp-num esp-divider-soft">${bucket.xferAR !== 0 ? fmtXferImpl(bucket.xferAR) : fmtQx(bucket.xfer)}</td>
         <td class="esp-num">${fmtQa(bucket.amort)}</td>
@@ -4507,7 +4555,7 @@ function renderEspecies() {
         <td class="esp-num esp-divider-soft">${fmtVal(r.valAR_ARS, 'ars')}</td>
         <td class="esp-num">${fmtVal(r.valAR_USD, 'usd')}</td>`;
     }
-    if(hasEEUU) html += `
+    if(hasEEUU_real) html += `
       <td class="esp-num esp-divider-strong">${fmtQc(us.compras)}</td>
       <td class="esp-num">${bucket.xferEEUU !== 0 ? fmtXferImpl(bucket.xferEEUU) : fmtQx(hasAR ? 0 : bucket.xfer)}</td>
       <td class="esp-num">${fmtQv(us.ventas)}</td>
@@ -4525,7 +4573,7 @@ function renderEspecies() {
   // ── Footer ───────────────────────────────────────────────────────────────
   const last = rows[rows.length - 1];
   if(tfoot) {
-    const arDataCols = arARS_cols + arUSD_cols;
+    const arDataCols = arARS_cols + arUSD_cols + arEEUU_cols;
     let fh = `<tr><td colspan="2" style="color:var(--muted);">POSICIÓN FINAL · ${inst.meta.opCount} op.</td>`;
     if(hasAR) {
       fh += `<td colspan="${arDataCols + 2}"></td>`;
@@ -4536,7 +4584,7 @@ function renderEspecies() {
         <td class="esp-num">${fmtVal(last.valAR_ARS, 'ars')}</td>
         <td class="esp-num">${fmtVal(last.valAR_USD, 'usd')}</td>`;
     }
-    if(hasEEUU) {
+    if(hasEEUU_real) {
       fh += `<td colspan="4" class="${hasAR?'esp-divider-strong':''}"></td>`;
       fh += `
         <td class="esp-num esp-pos">${N(last.balEEUU, 0)}</td>
@@ -4552,22 +4600,22 @@ function renderEspecies() {
   // ── Summary ──────────────────────────────────────────────────────────────
   if(sumEl) {
     const parts = [];
-    if(hasAR && last.balAR > 0)     parts.push(`AR: ${N(last.balAR, 0)} tít.`);
-    if(hasEEUU && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU, 0)} tít.`);
-    if(last.balTotal > 0)           parts.push(`Total: ${N(last.balTotal, 0)} tít.`);
+    if(hasAR && last.balAR > 0)          parts.push(`AR: ${N(last.balAR, 0)} tít.`);
+    if(hasEEUU_real && last.balEEUU > 0) parts.push(`EEUU: ${N(last.balEEUU, 0)} tít.`);
+    if(last.balTotal > 0)                parts.push(`Total: ${N(last.balTotal, 0)} tít.`);
     sumEl.textContent = parts.join(' · ');
   }
 
   // Save for XLS export
   _especiesRows  = rows;
-  _especiesState = { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen: inst.meta.opCount };
+  _especiesState = { ticker, hasAR, hasEEUU: hasEEUU_real, hasAR_ARS, hasAR_USD, hasAR_EEUU, opsLen: inst.meta.opCount };
 }
 
 
 // ══════ ESPECIES XLS EXPORT ══════
 function exportEspeciesXLS() {
   if(!_especiesRows.length || !_especiesState.ticker) return;
-  const { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, opsLen } = _especiesState;
+  const { ticker, hasAR, hasEEUU, hasAR_ARS, hasAR_USD, hasAR_EEUU, opsLen } = _especiesState;
 
   // ── Column definitions ──────────────────────────────────────────────────
   // Each col: { header, group, getValue(row), fmt }
@@ -4576,10 +4624,11 @@ function exportEspeciesXLS() {
     { header:'Fecha', group:'', fmt:'date', get: r => r.fecha },
     { header:'Op.',   group:'', fmt:'text', get: r => {
         const parts = [];
-        const ars = r.bucket.ar_ars, ausd = r.bucket.ar_usd, us = r.bucket.eeuu;
+        const ars = r.bucket.ar_ars, ausd = r.bucket.ar_usd, aee = r.bucket.ar_eeuu, us = r.bucket.eeuu;
         if(ars.compras>0||ars.ventas>0) { if(ars.compras>0) parts.push('Compra $'); if(ars.ventas>0) parts.push('Venta $'); }
-        if(ausd.compras>0||ausd.ventas>0) { if(ausd.compras>0) parts.push('Compra U$S'); if(ausd.ventas>0) parts.push('Venta U$S'); }
-        if(us.compras>0||us.ventas>0) { if(us.compras>0) parts.push('Compra'); if(us.ventas>0) parts.push('Venta'); }
+        if(ausd.compras>0||ausd.ventas>0) { if(ausd.compras>0) parts.push('Compra U$S AR'); if(ausd.ventas>0) parts.push('Venta U$S AR'); }
+        if(aee.compras>0||aee.ventas>0) { if(aee.compras>0) parts.push('Compra U$S EE'); if(aee.ventas>0) parts.push('Venta U$S EE'); }
+        if(us.compras>0||us.ventas>0) { if(us.compras>0) parts.push('Compra EEUU'); if(us.ventas>0) parts.push('Venta EEUU'); }
         if(r.bucket.xfer>0) parts.push('Transf.');
         if(r.bucket.amort>0) parts.push('Amort.');
         return [...new Set(parts)].join(' / ') || '';
@@ -4593,10 +4642,16 @@ function exportEspeciesXLS() {
       { header:'Monto $',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_ars.monto > 0 ? r.bucket.ar_ars.monto : null },
     );
     if(hasAR_USD) cols.push(
-      { header:'C U$S',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.compras || null },
-      { header:'V U$S',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.ventas  || null },
-      { header:'Precio U$S', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.precio  || null },
-      { header:'Monto U$S',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.monto > 0 ? r.bucket.ar_usd.monto : null },
+      { header:'C U$S AR',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.compras || null },
+      { header:'V U$S AR',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_usd.ventas  || null },
+      { header:'Precio U$S AR', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.precio  || null },
+      { header:'Monto U$S AR',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_usd.monto > 0 ? r.bucket.ar_usd.monto : null },
+    );
+    if(hasAR_EEUU) cols.push(
+      { header:'C U$S EE',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_eeuu.compras || null },
+      { header:'V U$S EE',      group:'Argentina', fmt:'num0', get: r => r.bucket.ar_eeuu.ventas  || null },
+      { header:'Precio U$S EE', group:'Argentina', fmt:'num2', get: r => r.bucket.ar_eeuu.precio  || null },
+      { header:'Monto U$S EE',  group:'Argentina', fmt:'num2', get: r => r.bucket.ar_eeuu.monto > 0 ? r.bucket.ar_eeuu.monto : null },
     );
     cols.push(
       { header:'Xfer.',        group:'Argentina', fmt:'num0', get: r => (r.bucket.xfer || 0) + (r.bucket.xferAR || 0) || null },
