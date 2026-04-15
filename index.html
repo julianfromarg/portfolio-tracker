@@ -2943,7 +2943,7 @@ async function recalcSnapshots() {
   // Extender la serie hacia adelante hasta la última fecha disponible en _fxHistory,
   // para que el gráfico no corte abruptamente en la última operación importada.
   // El cash no cambia en esas fechas (getCashAtDate devuelve el último valor conocido).
-  const maxFXDate = Object.keys(_fxHistory).sort().at(-1) || baseDates.at(-1);
+  const maxFXDate = new Date().toISOString().slice(0, 10);
   const lastCashDate = baseDates.at(-1);
   const extendedDates = [];
   if(maxFXDate > lastCashDate) {
