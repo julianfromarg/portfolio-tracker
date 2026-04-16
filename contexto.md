@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 15/04/2026 v22
+## Versión: 16/04/2026 v23
 
 ---
 
@@ -44,7 +44,7 @@ Sin precio (al costo): `ADRO, CO26, TO26`
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~5140 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~5330 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `contexto.md` | Este archivo |
 
@@ -839,7 +839,116 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 
 ---
 
-## Bugs resueltos — no repetir
+## Sistema de diseño UI — v23
+
+### Filosofía
+Estilo Mercury (neobanco): reduccionismo radical, densidad informativa sin ruido, confianza silenciosa. Sin gradientes, sin animaciones llamativas, sin colores decorativos.
+
+### Tipografía
+- **Fuente:** Inter (Google Fonts), pesos 300/400/500/600/700
+- **Reemplaza:** IBM Plex Mono + IBM Plex Sans (eliminados en v23)
+- **Antialiasing:** `-webkit-font-smoothing: antialiased` en body
+- **OpenType:** `font-feature-settings: 'cv02','cv03','cv04','cv11'`
+- `--mono` y `--sans` apuntan ambos a Inter (el mono se mantiene como alias para no romper referencias)
+
+### Tokens CSS (`:root`)
+```css
+/* Mercury Light */
+--background:  hsl(0,0%,100%)        /* fondo principal */
+--foreground:  hsl(220,20%,10%)      /* texto principal */
+--card:        hsl(0,0%,100%)        /* fondo de tarjetas */
+--surface:     hsl(220,20%,98%)      /* fondo secciones alternativas */
+--muted:       hsl(220,14%,96%)      /* fondos inactivos, badges */
+--muted-fg:    hsl(220,10%,46%)      /* texto secundario, labels */
+--border:      hsl(220,13%,91%)      /* bordes, separadores */
+--primary:     hsl(220,80%,50%)      /* CTAs, elementos interactivos */
+--gain:        hsl(142,71%,38%)      /* verde ganancias/positivos */
+--loss:        hsl(0,72%,51%)        /* rojo pérdidas/negativos */
+--ar-accent:   hsl(166,84%,35%)      /* teal — mercado argentino */
+--us-accent:   hsl(220,80%,50%)      /* azul — mercado US */
+--radius:      0.5rem
+
+/* Aliases legacy — NO eliminar, los usa el JS generado */
+--bg: var(--background)
+--s2: var(--muted)
+--text: var(--foreground)
+--us: var(--us-accent)
+--ar: var(--ar-accent)
+--ars: var(--ar-accent)
+--usd: hsl(220,80%,50%)
+--green: var(--gain)
+--red: var(--loss)
+--purple: hsl(258,68%,55%)
+```
+
+**CRÍTICO — aliases legacy:** el JS genera HTML con `var(--green)`, `var(--red)`, `var(--ar)`, `var(--us)`, `var(--purple)` etc. en inline styles. Estos aliases deben mantenerse en `:root` siempre. Si se cambia la paleta, actualizar tanto los tokens nuevos como los aliases.
+
+**CRÍTICO — `var(--muted)` vs `var(--muted-fg)`:**
+- `var(--muted)` = color de fondo gris claro (para backgrounds de badges, inputs inactivos, hover de tabs)
+- `var(--muted-fg)` = color de texto gris medio (para labels, timestamps, texto secundario)
+- Son distintos. NO intercambiarlos. Todo inline style de texto debe usar `var(--muted-fg)`.
+
+### Header
+- Sticky `top:0`, `z-index:100`
+- `background: rgba(255,255,255,0.85)` con `backdrop-filter: blur(8px)`
+- `border-bottom: 1px solid var(--border)`
+- Título: `font-size:14px; font-weight:600; letter-spacing:-.01em`
+
+### Tabs
+- Sticky `top:49px` (debajo del header), `z-index:99`
+- Contenedor: `background:var(--background); border-bottom:1px solid var(--border)`
+- Tab inactivo: `color:var(--muted-fg); border-radius:6px; padding:6px 14px`
+- Tab activo (todas las clases `act-*`): `background:var(--foreground); color:#fff`
+- Sin emojis en labels, sin border-bottom coloreado por tab
+- Botón "Importar .xls": CTA azul `background:var(--primary); color:#fff`
+
+### KPI Cards (`.pf-card`)
+- `background:var(--card); border:1px solid var(--border); border-radius:var(--radius)`
+- `padding:20px 24px; box-shadow:0 1px 2px rgba(0,0,0,.04)`
+- Sin barra de color superior (eliminada en v23)
+- Label: `font-size:11px; font-weight:600; text-transform:uppercase; color:var(--muted-fg)`
+- Número hero: `font-size:20px; font-weight:700; letter-spacing:-.03em`
+- Sub: `font-size:12px; color:var(--muted-fg)`
+- Hover: `box-shadow:0 2px 8px rgba(0,0,0,.07)`
+- Sin emojis en labels de cards
+
+### Toggle AR/EEUU y AR Mode
+- Contenedor pill: `background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:3px`
+- Botón activo: `background:var(--foreground); color:#fff; border-radius:5px`
+- Botón inactivo: `background:transparent; color:var(--muted-fg)`
+- `switchPortfolio()` usa `var(--foreground)`/`#fff` — no `var(--ar)`/`var(--us)`
+
+### Tabla Portfolio (`#portfolio-tbl`)
+- Headers: `font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--muted-fg); background:var(--surface)`
+- Rows: `padding:12px 14px; font-size:13px; font-weight:500; border-bottom:1px solid var(--border)`
+- Hover: `background:hsl(220,20%,99%)` — muy sutil
+- Footer: `padding:12px 14px; font-size:13px; font-weight:600; border-top:2px solid var(--border); background:var(--surface)`
+- Sin zebra striping
+
+### Inputs y botones (`.fi`, `.fb`)
+- `.fi`: `background:var(--background); border:1px solid var(--border); border-radius:var(--radius); font-size:13px; focus: border-color:var(--primary)`
+- `.fb`: `background:var(--background); border:1px solid var(--border); color:var(--muted-fg); font-size:13px; hover: border-color:var(--foreground); color:var(--foreground)`
+
+### Modales (Import, Clear)
+- Overlay: `background:rgba(0,0,0,.6)` (no `.7`)
+- Modal: `background:var(--card); border-radius:var(--radius); box-shadow:0 8px 24px rgba(0,0,0,.12)`
+- Títulos: `font-size:15px; font-weight:600` (sin uppercase)
+- Drop zone: `background:var(--surface); border:2px dashed var(--border)` → drag: `border-color:var(--primary); background:hsl(220,80%,97%)`
+
+### Chart.js (Evolución)
+- Tooltip: `backgroundColor:'#ffffff'; borderColor:'hsl(220,13%,91%)'; titleColor:'hsl(220,10%,46%)'; bodyColor:'hsl(220,20%,10%)'`
+- Ejes: `color:'hsl(220,10%,46%)'`; grid: `color:'hsl(220,13%,93%)'`
+- Fuente: `'Inter', sans-serif` en ticks y tooltip
+
+### Scrollbar
+```css
+::-webkit-scrollbar { width:6px; height:6px }
+::-webkit-scrollbar-track { background:transparent }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px }
+::-webkit-scrollbar-thumb:hover { background:var(--muted-fg) }
+```
+
+---
 
 ### Parseo y pipeline
 
@@ -928,9 +1037,24 @@ Filtra por año y texto. Orden por fecha o tasa. Var. diaria y Var. 30d calculad
 | Eliminada fila "TOTAL ARGENTINA/EEUU" del footer | Info redundante con las tarjetas. |
 | 4 series nuevas en Evolución + Ganancias no realizadas | AR Costo, AR Mercado, EEUU Costo, EEUU Mercado, Total Costo, Total Mercado (las 3 "Mercado" activas por default). Más 3 series "Ganancias no realizadas" (mercado - costo) para AR, EEUU y Total. Índice base 100 ahora usa mercado (`ar_usd_market + us_usd`). |
 
----
+### Rediseño UI — Mercury Light (v23)
 
-## Cómo pedir cambios en un chat nuevo
+| Cambio | Descripción |
+|---|---|
+| Paleta completa reemplazada | Dark theme eliminado. Nueva paleta Mercury light con tokens semánticos: `--background`, `--foreground`, `--surface`, `--muted`, `--muted-fg`, `--border`, `--primary`, `--gain`, `--loss`, `--ar-accent`, `--us-accent`. Aliases legacy (`--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`) mantenidos en `:root` para compatibilidad con JS generado. |
+| Tipografía | IBM Plex Mono + IBM Plex Sans reemplazados por Inter. `--mono` y `--sans` apuntan ambos a Inter. Antialiasing activado. OpenType features `cv02/cv03/cv04/cv11`. |
+| Header | Sticky con `backdrop-filter:blur(8px)`, fondo blanco translúcido. Título limpio sin uppercase. |
+| Tabs | Estilo Mercury: pill activo negro (`var(--foreground)`/blanco), sin colores por tab, sin emojis, sin border-bottom coloreado. Botón "Importar .xls" convertido a CTA azul primario. |
+| KPI Cards | Sin barra de color superior. `border:1px solid var(--border)`, `box-shadow:0 1px 2px`. Labels en `var(--muted-fg)` uppercase. Números hero bold. Sin emojis en labels. Placeholders sin texto "disponible en Fase 2". |
+| Toggle AR/EEUU | Pill rediseñado: contenedor `background:var(--muted)`, botón activo `background:var(--foreground)/color:#fff`. `switchPortfolio()` actualizado para usar estos colores. |
+| Tabla Portfolio | Headers `font-size:11px`, muted, uppercase. Rows `padding:12px 14px`, `font-size:13px`, border-b sutil. Hover suavísimo `hsl(220,20%,99%)`. Sin zebra. |
+| Modales | Overlay `.6` opacidad. `background:var(--card)`. `box-shadow:0 8px 24px rgba(0,0,0,.12)`. Títulos en case normal. Drop zone con hover azul primario. |
+| Chart.js | Tooltip light (fondo blanco, borde `--border`). Ejes `hsl(220,10%,46%)`, grid `hsl(220,13%,93%)`. Fuente Inter. |
+| Pills / badges | Reemplazados rgba oscuros por HSL semánticos: compra=verde claro sobre blanco, venta=rojo claro, otros=gris. |
+| Inline styles JS | Todos los `var(--muted)`, `var(--text)`, `var(--usd)`, `var(--mono)` en HTML generado por JS actualizados a `var(--muted-fg)`, `var(--foreground)`, `var(--primary)`, fuente Inter. |
+| Scrollbar | 6px, transparente, thumb en `var(--border)` con hover `var(--muted-fg)`. |
+
+---
 
 Pegá este documento + el HTML al inicio del chat.
 
@@ -1002,6 +1126,16 @@ Pegá este documento + el HTML al inicio del chat.
 - **Paginación Supabase: usar solo `Range` header, sin `limit` en URL** — combinarlos da error 416
 - **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
 - **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
+
+**► UI Y DISEÑO (v23):**
+- **Paleta: usar SIEMPRE tokens semánticos** — `var(--foreground)`, `var(--muted-fg)`, `var(--border)`, `var(--primary)`, `var(--gain)`, `var(--loss)`, `var(--ar-accent)`, `var(--us-accent)`. Nunca hardcodear hex en CSS nuevo.
+- **`var(--muted)` ≠ `var(--muted-fg)`** — `--muted` es un color de fondo (gris claro), `--muted-fg` es color de texto (gris medio). Todo texto secundario usa `--muted-fg`.
+- **Aliases legacy en `:root` son intocables** — `--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`, `--bg`, `--s2`, `--text` deben existir siempre. El JS genera HTML con estos vars en inline styles.
+- **Tab activo: un solo estilo Mercury** — `background:var(--foreground); color:#fff`. No restaurar colores por tab (verde para portfolio, amarillo para cash, etc.).
+- **KPI Cards sin barra superior** — no restaurar `::before` con colores. El diseño Mercury usa solo border + shadow.
+- **`switchPortfolio()` usa `var(--foreground)`/`#fff`** — no `var(--ar)`/`var(--us)` para el toggle activo.
+- **Chart.js: tooltip y ejes light** — `backgroundColor:'#ffffff'`, no `'#1e2330'`. Fuente Inter, no IBM Plex.
+- **Diseño de referencia:** ver sección "Sistema de diseño UI — v23" en este documento.
 
 **► MISC:**
 - **`fetchLatestPrices()` recalcula cash post-overrides** — no eliminar
