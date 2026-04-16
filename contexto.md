@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 16/04/2026 v23
+## Versión: 16/04/2026 v24
 
 ---
 
@@ -44,7 +44,7 @@ Sin precio (al costo): `ADRO, CO26, TO26`
 
 | Archivo | Descripción |
 |---|---|
-| `index.html` | El dashboard completo (en repo portfolio-tracker). ~5330 líneas. |
+| `index.html` | El dashboard completo (en repo portfolio-tracker). ~5500 líneas. |
 | `MovimientosHistoricos_Completo.xls` | Export de Balanz: Reportes → Movimientos Históricos |
 | `contexto.md` | Este archivo |
 
@@ -884,61 +884,51 @@ Estilo Mercury (neobanco): reduccionismo radical, densidad informativa sin ruido
 **CRÍTICO — aliases legacy:** el JS genera HTML con `var(--green)`, `var(--red)`, `var(--ar)`, `var(--us)`, `var(--purple)` etc. en inline styles. Estos aliases deben mantenerse en `:root` siempre. Si se cambia la paleta, actualizar tanto los tokens nuevos como los aliases.
 
 **CRÍTICO — `var(--muted)` vs `var(--muted-fg)`:**
-- `var(--muted)` = color de fondo gris claro (para backgrounds de badges, inputs inactivos, hover de tabs)
-- `var(--muted-fg)` = color de texto gris medio (para labels, timestamps, texto secundario)
-- Son distintos. NO intercambiarlos. Todo inline style de texto debe usar `var(--muted-fg)`.
+- `var(--muted)` = color de **fondo** gris claro (backgrounds de badges, inputs inactivos, hover de tabs)
+- `var(--muted-fg)` = color de **texto** gris medio (labels, timestamps, texto secundario)
+- Son distintos. NO intercambiarlos. Todo inline style de texto secundario usa `var(--muted-fg)`.
 
 ### Header
 - Sticky `top:0`, `z-index:100`
 - `background: rgba(255,255,255,0.85)` con `backdrop-filter: blur(8px)`
-- `border-bottom: 1px solid var(--border)`
 - Título: `font-size:14px; font-weight:600; letter-spacing:-.01em`
 
 ### Tabs
 - Sticky `top:49px` (debajo del header), `z-index:99`
-- Contenedor: `background:var(--background); border-bottom:1px solid var(--border)`
 - Tab inactivo: `color:var(--muted-fg); border-radius:6px; padding:6px 14px`
-- Tab activo (todas las clases `act-*`): `background:var(--foreground); color:#fff`
+- Tab activo: `background:var(--foreground) !important; color:#fff !important; border:none !important`
+- **CRÍTICO:** los `!important` son necesarios — el estilo base del `.tab` tiene `border:none; background:transparent` que puede ganarle en algunos browsers sin `!important`
 - Sin emojis en labels, sin border-bottom coloreado por tab
-- Botón "Importar .xls": CTA azul `background:var(--primary); color:#fff`
+- Botón "Importar .xls": `background:var(--primary); color:#fff`
 
 ### KPI Cards (`.pf-card`)
 - `background:var(--card); border:1px solid var(--border); border-radius:var(--radius)`
 - `padding:20px 24px; box-shadow:0 1px 2px rgba(0,0,0,.04)`
-- Sin barra de color superior (eliminada en v23)
+- Sin barra de color superior (`::before` eliminado en v23)
 - Label: `font-size:11px; font-weight:600; text-transform:uppercase; color:var(--muted-fg)`
 - Número hero: `font-size:20px; font-weight:700; letter-spacing:-.03em`
-- Sub: `font-size:12px; color:var(--muted-fg)`
-- Hover: `box-shadow:0 2px 8px rgba(0,0,0,.07)`
 - Sin emojis en labels de cards
 
 ### Toggle AR/EEUU y AR Mode
-- Contenedor pill: `background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:3px`
-- Botón activo: `background:var(--foreground); color:#fff; border-radius:5px`
-- Botón inactivo: `background:transparent; color:var(--muted-fg)`
-- `switchPortfolio()` usa `var(--foreground)`/`#fff` — no `var(--ar)`/`var(--us)`
+- Contenedor pill: `background:var(--muted); border:1px solid var(--border); padding:3px`
+- Botón activo: `background:var(--foreground); color:#fff`
+- `switchPortfolio()` usa `var(--foreground)`/`#fff` — NO `var(--ar)`/`var(--us)`
 
 ### Tabla Portfolio (`#portfolio-tbl`)
-- Headers: `font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--muted-fg); background:var(--surface)`
+- Headers: `font-size:11px; font-weight:600; text-transform:uppercase; color:var(--muted-fg); background:var(--surface)`
 - Rows: `padding:12px 14px; font-size:13px; font-weight:500; border-bottom:1px solid var(--border)`
 - Hover: `background:hsl(220,20%,99%)` — muy sutil
-- Footer: `padding:12px 14px; font-size:13px; font-weight:600; border-top:2px solid var(--border); background:var(--surface)`
 - Sin zebra striping
 
-### Inputs y botones (`.fi`, `.fb`)
-- `.fi`: `background:var(--background); border:1px solid var(--border); border-radius:var(--radius); font-size:13px; focus: border-color:var(--primary)`
-- `.fb`: `background:var(--background); border:1px solid var(--border); color:var(--muted-fg); font-size:13px; hover: border-color:var(--foreground); color:var(--foreground)`
-
-### Modales (Import, Clear)
-- Overlay: `background:rgba(0,0,0,.6)` (no `.7`)
-- Modal: `background:var(--card); border-radius:var(--radius); box-shadow:0 8px 24px rgba(0,0,0,.12)`
-- Títulos: `font-size:15px; font-weight:600` (sin uppercase)
-- Drop zone: `background:var(--surface); border:2px dashed var(--border)` → drag: `border-color:var(--primary); background:hsl(220,80%,97%)`
-
 ### Chart.js (Evolución)
-- Tooltip: `backgroundColor:'#ffffff'; borderColor:'hsl(220,13%,91%)'; titleColor:'hsl(220,10%,46%)'; bodyColor:'hsl(220,20%,10%)'`
+- Tooltip: `backgroundColor:'#ffffff'; borderColor:'hsl(220,13%,91%)'`
 - Ejes: `color:'hsl(220,10%,46%)'`; grid: `color:'hsl(220,13%,93%)'`
-- Fuente: `'Inter', sans-serif` en ticks y tooltip
+- Fuente: `'Inter', sans-serif`
+- **Eje Y dinámico (v24):** ver sección Tab Evolución más abajo
+
+### Serie Dep. Netos
+- Color: `hsl(220,60%,35%)` — azul marino oscuro, visible en light mode
+- En versiones anteriores era `#ffffff` (invisible en light)
 
 ### Scrollbar
 ```css
@@ -947,6 +937,60 @@ Estilo Mercury (neobanco): reduccionismo radical, densidad informativa sin ruido
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px }
 ::-webkit-scrollbar-thumb:hover { background:var(--muted-fg) }
 ```
+
+---
+
+## Tab 📈 Evolución — detalles adicionales (v23-v24)
+
+### Time slider de rango
+Slider de doble thumb debajo del toolbar (visible solo cuando hay snapshots cargados).
+
+**HTML:** `#evol-slider-wrap` con clase `visible` cuando hay datos. Contiene:
+- `#evol-slider-label-from` / `#evol-slider-label-to` — fechas en formato `dd/mm/yy`
+- `#evol-slider-track` con `#evol-slider-range` (barra azul del rango)
+- Dos `<input type="range">` superpuestos: `#evol-slider-from` y `#evol-slider-to`
+
+**Estado:**
+```javascript
+let _evolSliderFrom   = 0;     // índice en _snapshots ordenados asc
+let _evolSliderTo     = 100;   // índice
+let _evolSliderActive = false; // true cuando el slider controla el rango
+```
+
+**Funciones:**
+- `evolSliderInit()` — inicializa/resetea el slider al rango completo. Se llama en `fetchSnapshots()` y al final de `recalcSnapshots()`.
+- `evolSliderUpdateUI()` — actualiza labels y barra azul sin re-renderizar el chart.
+- `onEvolSlider()` — handler de los inputs. Maneja cruce de thumbs, z-index dinámico para que el thumb activo quede arriba, desactiva botones de rango rápido.
+- `evolSetRange(range)` — resetea `_evolSliderActive = false` y vuelve a poner el slider en rango completo.
+
+**Interacción con botones 1M/3M/6M/1Y/MAX:**
+- Slider activo → botones sin clase `act`
+- Click en botón → slider se resetea al rango completo, `_evolSliderActive = false`
+- Coexisten — el slider es granularidad libre, los botones son shortcuts rápidos
+
+**Filtrado en `renderEvolChart()`:**
+```javascript
+if(_evolSliderActive) {
+  data = data.slice(fi, ti + 1); // fi y ti son índices en el array ordenado asc
+} else if(_evolRange && _evolRange !== 'MAX') {
+  // filtro por fecha como antes
+}
+```
+
+### Eje Y dinámico
+**Lógica:** calcula el mínimo de todas las series de valor activas en la ventana visible, usa el 80% redondeado a miles como piso.
+
+```javascript
+// Series consideradas: ar_costo, ar, us_costo, us, total_costo, total, gn_ar, gn_us, gn_total
+// NO se consideran: flujos, idx (tienen escala distinta)
+if(rawMin > 1000) {
+  yFloor = Math.floor(rawMin * 0.80 / 1000) * 1000;
+}
+// Se pasa como min: yFloor > 0 ? yFloor : undefined
+// undefined → Chart.js escala automáticamente (para series negativas o <1000)
+```
+
+**Efecto:** si las series visibles oscilan entre 130k y 150k, el eje arranca ~104k en lugar de 0, usando todo el espacio vertical disponible.
 
 ---
 
@@ -1037,24 +1081,39 @@ Estilo Mercury (neobanco): reduccionismo radical, densidad informativa sin ruido
 | Eliminada fila "TOTAL ARGENTINA/EEUU" del footer | Info redundante con las tarjetas. |
 | 4 series nuevas en Evolución + Ganancias no realizadas | AR Costo, AR Mercado, EEUU Costo, EEUU Mercado, Total Costo, Total Mercado (las 3 "Mercado" activas por default). Más 3 series "Ganancias no realizadas" (mercado - costo) para AR, EEUU y Total. Índice base 100 ahora usa mercado (`ar_usd_market + us_usd`). |
 
+---
+
 ### Rediseño UI — Mercury Light (v23)
 
 | Cambio | Descripción |
 |---|---|
-| Paleta completa reemplazada | Dark theme eliminado. Nueva paleta Mercury light con tokens semánticos: `--background`, `--foreground`, `--surface`, `--muted`, `--muted-fg`, `--border`, `--primary`, `--gain`, `--loss`, `--ar-accent`, `--us-accent`. Aliases legacy (`--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`) mantenidos en `:root` para compatibilidad con JS generado. |
-| Tipografía | IBM Plex Mono + IBM Plex Sans reemplazados por Inter. `--mono` y `--sans` apuntan ambos a Inter. Antialiasing activado. OpenType features `cv02/cv03/cv04/cv11`. |
-| Header | Sticky con `backdrop-filter:blur(8px)`, fondo blanco translúcido. Título limpio sin uppercase. |
-| Tabs | Estilo Mercury: pill activo negro (`var(--foreground)`/blanco), sin colores por tab, sin emojis, sin border-bottom coloreado. Botón "Importar .xls" convertido a CTA azul primario. |
-| KPI Cards | Sin barra de color superior. `border:1px solid var(--border)`, `box-shadow:0 1px 2px`. Labels en `var(--muted-fg)` uppercase. Números hero bold. Sin emojis en labels. Placeholders sin texto "disponible en Fase 2". |
-| Toggle AR/EEUU | Pill rediseñado: contenedor `background:var(--muted)`, botón activo `background:var(--foreground)/color:#fff`. `switchPortfolio()` actualizado para usar estos colores. |
-| Tabla Portfolio | Headers `font-size:11px`, muted, uppercase. Rows `padding:12px 14px`, `font-size:13px`, border-b sutil. Hover suavísimo `hsl(220,20%,99%)`. Sin zebra. |
-| Modales | Overlay `.6` opacidad. `background:var(--card)`. `box-shadow:0 8px 24px rgba(0,0,0,.12)`. Títulos en case normal. Drop zone con hover azul primario. |
-| Chart.js | Tooltip light (fondo blanco, borde `--border`). Ejes `hsl(220,10%,46%)`, grid `hsl(220,13%,93%)`. Fuente Inter. |
-| Pills / badges | Reemplazados rgba oscuros por HSL semánticos: compra=verde claro sobre blanco, venta=rojo claro, otros=gris. |
-| Inline styles JS | Todos los `var(--muted)`, `var(--text)`, `var(--usd)`, `var(--mono)` en HTML generado por JS actualizados a `var(--muted-fg)`, `var(--foreground)`, `var(--primary)`, fuente Inter. |
-| Scrollbar | 6px, transparente, thumb en `var(--border)` con hover `var(--muted-fg)`. |
+| Paleta completa reemplazada | Dark theme eliminado. Nueva paleta Mercury light con tokens semánticos. Aliases legacy (`--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`) mantenidos en `:root` para compatibilidad con JS generado. |
+| Tipografía | IBM Plex Mono + IBM Plex Sans → Inter. `--mono` y `--sans` apuntan ambos a Inter. Antialiasing + OpenType features. |
+| Header | Sticky con `backdrop-filter:blur(8px)`, fondo blanco translúcido. |
+| Tabs | Estilo Mercury: pill activo negro con `!important` (necesario para override del estilo base), sin colores por tab, sin emojis. Botón "Importar .xls" como CTA azul primario. |
+| KPI Cards | Sin barra de color superior. Border sutil, shadow-sm, labels `var(--muted-fg)` uppercase, números hero bold. Sin emojis en labels. |
+| Toggle AR/EEUU | Pill con botón activo `var(--foreground)`/blanco. `switchPortfolio()` actualizado. |
+| Tabla Portfolio | Headers muted uppercase, rows border-b sutil, hover `hsl(220,20%,99%)`. Sin zebra. |
+| Chart.js | Tooltip light (fondo blanco). Ejes Inter. |
+| Inline styles JS | Todos los `var(--muted)`, `var(--text)`, `var(--usd)`, `var(--mono)` en HTML generado por JS → `var(--muted-fg)`, `var(--foreground)`, `var(--primary)`, Inter. |
+
+### Fixes UI (v23b)
+
+| Bug | Causa | Fix |
+|---|---|---|
+| Tabs Evolución/Especies/FX no mostraban pill negro activo | El estilo base `.tab` tiene `border:none;background:transparent` que ganaba sin `!important` | Agregado `!important` a las reglas `act-*` |
+| Serie Dep. Netos invisible en Evolución | Color `#ffffff` (dark mode) → reemplazado por `var(--border)` (gris muy claro, invisible en light) | Color → `hsl(220,60%,35%)` (azul marino oscuro) en botón toggle, dataset y summary |
+
+### Novedades Evolución (v24)
+
+| Cambio | Descripción |
+|---|---|
+| Time slider de rango doble | Slider bajo el toolbar con dos thumbs arrastrables (Desde / Hasta). Barra azul del rango seleccionado. Labels de fecha en tiempo real. Coexiste con botones 1M/3M/MAX: slider activo desactiva los botones; click en botón resetea el slider. Se inicializa en `fetchSnapshots()` y `recalcSnapshots()`. Variables: `_evolSliderFrom`, `_evolSliderTo`, `_evolSliderActive`. |
+| Eje Y dinámico | El eje Y ya no arranca siempre en 0. Calcula el mínimo de las series de valor activas en la ventana visible, usa el 80% redondeado a miles como piso (`yFloor`). Si el mínimo es ≤ 1.000 o no hay series activas, pasa `undefined` y Chart.js escala automáticamente. Flujos e Índice no se consideran para el cálculo. |
 
 ---
+
+## Cómo pedir cambios en un chat nuevo
 
 Pegá este documento + el HTML al inicio del chat.
 
@@ -1127,15 +1186,15 @@ Pegá este documento + el HTML al inicio del chat.
 - **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
 - **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
 
-**► UI Y DISEÑO (v23):**
+**► UI Y DISEÑO (v23-v24):**
 - **Paleta: usar SIEMPRE tokens semánticos** — `var(--foreground)`, `var(--muted-fg)`, `var(--border)`, `var(--primary)`, `var(--gain)`, `var(--loss)`, `var(--ar-accent)`, `var(--us-accent)`. Nunca hardcodear hex en CSS nuevo.
-- **`var(--muted)` ≠ `var(--muted-fg)`** — `--muted` es un color de fondo (gris claro), `--muted-fg` es color de texto (gris medio). Todo texto secundario usa `--muted-fg`.
-- **Aliases legacy en `:root` son intocables** — `--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`, `--bg`, `--s2`, `--text` deben existir siempre. El JS genera HTML con estos vars en inline styles.
-- **Tab activo: un solo estilo Mercury** — `background:var(--foreground); color:#fff`. No restaurar colores por tab (verde para portfolio, amarillo para cash, etc.).
-- **KPI Cards sin barra superior** — no restaurar `::before` con colores. El diseño Mercury usa solo border + shadow.
+- **`var(--muted)` ≠ `var(--muted-fg)`** — `--muted` es fondo gris claro, `--muted-fg` es texto gris medio. Todo texto secundario usa `--muted-fg`.
+- **Aliases legacy en `:root` son intocables** — `--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`, `--bg`, `--s2`, `--text` deben existir siempre. El JS genera inline styles con estos vars.
+- **Tab activo necesita `!important`** — las clases `act-*` deben declararse con `background:var(--foreground) !important; color:#fff !important; border:none !important` para ganarle al estilo base del `.tab`.
 - **`switchPortfolio()` usa `var(--foreground)`/`#fff`** — no `var(--ar)`/`var(--us)` para el toggle activo.
-- **Chart.js: tooltip y ejes light** — `backgroundColor:'#ffffff'`, no `'#1e2330'`. Fuente Inter, no IBM Plex.
-- **Diseño de referencia:** ver sección "Sistema de diseño UI — v23" en este documento.
+- **Serie Dep. Netos: color `hsl(220,60%,35%)`** — no usar blanco ni `var(--border)` (invisibles en light mode).
+- **Slider de Evolución: `evolSliderInit()` se llama en `fetchSnapshots()` y `recalcSnapshots()`** — no eliminar esas llamadas.
+- **Eje Y dinámico: no agregar `min:0` hardcodeado** — el cálculo de `yFloor` lo maneja `renderEvolChart()` automáticamente.
 
 **► MISC:**
 - **`fetchLatestPrices()` recalcula cash post-overrides** — no eliminar
