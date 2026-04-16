@@ -89,8 +89,9 @@ header span{font-size:12px;color:var(--muted-fg);}
 .tab.act-evol,
 .tab.act-especies,
 .tab.act-fx{
-  background:var(--foreground);
-  color:hsl(0,0%,100%);
+  background:var(--foreground) !important;
+  color:#fff !important;
+  border:none !important;
 }
 
 .panel{display:none;padding:24px;}
@@ -421,6 +422,52 @@ tbody tr:hover td{background:hsl(220,14%,98%);}
 #nra-pop-clear:hover{color:var(--foreground);border-color:var(--foreground);}
 #nra-pop-cancel{background:var(--background);color:var(--muted-fg);border-color:var(--border);}
 #nra-pop-cancel:hover{color:var(--foreground);}
+
+/* ── EVOL TIME SLIDER ── */
+#evol-slider-wrap{
+  padding:6px 24px 10px;
+  background:var(--background);
+  border-bottom:1px solid var(--border);
+  display:none;
+}
+#evol-slider-wrap.visible{display:block;}
+.evol-slider-labels{
+  display:flex;justify-content:space-between;
+  font-size:11px;color:var(--muted-fg);margin-bottom:6px;
+}
+#evol-slider-label-from,#evol-slider-label-to{
+  font-weight:600;color:var(--foreground);
+}
+.evol-slider-track{
+  position:relative;height:4px;background:var(--muted);
+  border-radius:2px;margin:0 8px;
+}
+.evol-slider-range{
+  position:absolute;height:100%;background:var(--primary);border-radius:2px;
+}
+.evol-slider-input{
+  position:absolute;width:100%;height:4px;
+  -webkit-appearance:none;appearance:none;
+  background:transparent;outline:none;cursor:pointer;
+  top:50%;transform:translateY(-50%);pointer-events:none;
+  margin:0;
+}
+.evol-slider-input::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:14px;height:14px;border-radius:50%;
+  background:var(--primary);
+  border:2px solid #fff;
+  box-shadow:0 1px 4px rgba(0,0,0,.2);
+  pointer-events:all;cursor:grab;
+  transition:transform .1s;
+}
+.evol-slider-input::-webkit-slider-thumb:active{transform:scale(1.2);cursor:grabbing;}
+.evol-slider-input::-moz-range-thumb{
+  width:14px;height:14px;border-radius:50%;
+  background:var(--primary);border:2px solid #fff;
+  box-shadow:0 1px 4px rgba(0,0,0,.2);
+  pointer-events:all;cursor:grab;
+}
 </style>
 </head>
 <body>
@@ -1210,6 +1257,7 @@ async function fetchSnapshots() {
     }
     _snapshots = allRows;
     console.log(`Loaded snapshots: ${_snapshots.length} rows`);
+    evolSliderInit();
     renderEvolChart();
   } catch(e) { console.warn('fetchSnapshots failed:', e); }
 }
@@ -3251,6 +3299,8 @@ async function recalcSnapshots() {
   _snapshots = snapshots;
   if(progressWrap) progressWrap.style.display = 'none';
   if(btn) btn.disabled = false;
+  _evolSliderActive = false; // resetear slider al nuevo rango completo
+  evolSliderInit();
   renderEvolChart();
 }
 
@@ -3259,9 +3309,86 @@ let _evolChart = null;
 let _evolRange = 'MAX';
 let _evolSeries = new Set(['ar','us','total','flujos']);
 
+// ── Time slider state ──
+let _evolSliderFrom = 0;   // índice 0..N-1 en _snapshots ordenados asc
+let _evolSliderTo   = 100; // índice, se actualiza cuando llegan snapshots
+let _evolSliderActive = false; // true cuando el slider está controlando el rango
+
+function evolSliderInit() {
+  // Inicializa o resetea el slider al rango completo de snapshots disponibles
+  const wrap = document.getElementById('evol-slider-wrap');
+  if(!_snapshots.length) { if(wrap) wrap.classList.remove('visible'); return; }
+  if(wrap) wrap.classList.add('visible');
+  const n = _snapshots.length - 1;
+  const fromEl = document.getElementById('evol-slider-from');
+  const toEl   = document.getElementById('evol-slider-to');
+  if(!fromEl || !toEl) return;
+  fromEl.max = n; toEl.max = n;
+  if(!_evolSliderActive) {
+    // Solo resetea si el slider no estaba siendo usado manualmente
+    fromEl.value = 0; toEl.value = n;
+    _evolSliderFrom = 0; _evolSliderTo = n;
+  }
+  evolSliderUpdateUI();
+}
+
+function evolSliderUpdateUI() {
+  const sorted = [..._snapshots].sort((a,b) => a.date.localeCompare(b.date));
+  const n = sorted.length - 1;
+  if(n < 0) return;
+  const fi = Math.min(_evolSliderFrom, n);
+  const ti = Math.min(_evolSliderTo, n);
+  const fmtD = d => d && d.length >= 10 ? `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(2,4)}` : '';
+  const lf = document.getElementById('evol-slider-label-from');
+  const lt = document.getElementById('evol-slider-label-to');
+  if(lf && sorted[fi]) lf.textContent = fmtD(sorted[fi].date);
+  if(lt && sorted[ti]) lt.textContent = fmtD(sorted[ti].date);
+  // Update range bar position
+  const range = document.getElementById('evol-slider-range');
+  if(range) {
+    const pct1 = (fi / n) * 100;
+    const pct2 = (ti / n) * 100;
+    range.style.left  = pct1 + '%';
+    range.style.width = (pct2 - pct1) + '%';
+  }
+}
+
+function onEvolSlider() {
+  const fromEl = document.getElementById('evol-slider-from');
+  const toEl   = document.getElementById('evol-slider-to');
+  if(!fromEl || !toEl) return;
+  let fi = parseInt(fromEl.value), ti = parseInt(toEl.value);
+  // Evitar cruce: mantener mínimo 1 de separación
+  if(fi >= ti) {
+    if(document.activeElement === fromEl) { fi = ti - 1; fromEl.value = fi; }
+    else { ti = fi + 1; toEl.value = ti; }
+  }
+  _evolSliderFrom  = fi;
+  _evolSliderTo    = ti;
+  _evolSliderActive = true;
+  // Z-index: el thumb activo va arriba para poder arrastrarlo aunque estén juntos
+  fromEl.style.zIndex = (document.activeElement === fromEl) ? '3' : '2';
+  toEl.style.zIndex   = (document.activeElement === toEl)   ? '3' : '2';
+  // Desactivar botones de rango rápido
+  _evolRange = null;
+  document.querySelectorAll('.evol-rb').forEach(b => b.classList.remove('act'));
+  evolSliderUpdateUI();
+  renderEvolChart();
+}
+
 function evolSetRange(range) {
   _evolRange = range;
+  _evolSliderActive = false;
   document.querySelectorAll('.evol-rb').forEach(b => b.classList.toggle('act', b.dataset.range === range));
+  // Resetear slider al rango completo
+  const n = _snapshots.length - 1;
+  if(n >= 0) {
+    const fromEl = document.getElementById('evol-slider-from');
+    const toEl   = document.getElementById('evol-slider-to');
+    if(fromEl) { fromEl.value = 0; _evolSliderFrom = 0; }
+    if(toEl)   { toEl.value = n;   _evolSliderTo   = n; }
+    evolSliderUpdateUI();
+  }
   renderEvolChart();
 }
 
@@ -3322,9 +3449,15 @@ function renderEvolChart() {
   canvas.style.display = 'block';
   if(emptyEl) emptyEl.style.display = 'none';
 
-  // Filter by range
+  // Filter by range — slider toma prioridad sobre botones de rango rápido
   let data = [..._snapshots].sort((a,b) => a.date.localeCompare(b.date));
-  if(_evolRange !== 'MAX') {
+  if(_evolSliderActive) {
+    // Slider: filtrar por índices
+    const n = data.length - 1;
+    const fi = Math.max(0, Math.min(_evolSliderFrom, n));
+    const ti = Math.max(fi, Math.min(_evolSliderTo, n));
+    data = data.slice(fi, ti + 1);
+  } else if(_evolRange && _evolRange !== 'MAX') {
     const months = {'1M':1,'3M':3,'6M':6,'1Y':12}[_evolRange] || 12;
     const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
     const cutStr = cutoff.toISOString().slice(0,10);
@@ -3467,7 +3600,7 @@ function renderEvolChart() {
     datasets.push({
       type: 'line', yAxisID: 'y',
       label: '💵 Dep. Netos (USD)', data: depNetoData,
-      borderColor: '#ffffff', backgroundColor: 'transparent',
+      borderColor: 'hsl(220,60%,35%)', backgroundColor: 'transparent',
       borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: false,
       borderDash: [6, 3],
     });
@@ -3547,7 +3680,7 @@ function renderEvolChart() {
           ${_evolSeries.has('gn_us')       ? `<span style="color:#f97316">🇺🇸 G. no real.: ${fmtU(gnUsData[gnUsData.length-1])}</span>` : ''}
           ${_evolSeries.has('gn_total')    ? `<span style="color:#e879f9">∑ G. no real.: ${fmtU(gnTotalData[gnTotalData.length-1])}</span>` : ''}
           ${showIdx && lastIdx !== null    ? `<span style="color:hsl(220,80%,50%)">📈 Índice: ${N(lastIdx,2)}</span>` : ''}
-          ${_evolSeries.has('depNeto')     ? `<span style="color:var(--foreground)">💵 Dep. Netos: ${fmtU(buildDepositSeries(isoLabels)[isoLabels.length-1])}</span>` : ''}
+          ${_evolSeries.has('depNeto')     ? `<span style="color:hsl(220,60%,35%)">💵 Dep. Netos: ${fmtU(buildDepositSeries(isoLabels)[isoLabels.length-1])}</span>` : ''}
           <span style="color:var(--muted-fg);font-size:11px;">FX: ${N(last.fx_rate,2)} ARS/USD</span>
         </div>
       </div>`;
@@ -5208,8 +5341,20 @@ function renderFXTab() {
       <button class="evol-series" data-series="gn_total" onclick="evolToggleSeries('gn_total')" style="border-color:#e879f9;color:#e879f9;">∑ G. No Real.</button>
       <button class="evol-series act" data-series="flujos" onclick="evolToggleSeries('flujos')" style="border-color:hsl(142,71%,38%);color:hsl(142,71%,38%);">Flujos</button>
       <button class="evol-series" data-series="idx" onclick="evolToggleSeries('idx')" style="border-color:hsl(220,80%,50%);color:hsl(220,80%,50%);">Índice</button>
-      <button class="evol-series" data-series="depNeto" onclick="evolToggleSeries('depNeto')" style="border-color:var(--border);color:var(--foreground);">Dep. Netos</button>
+      <button class="evol-series" data-series="depNeto" onclick="evolToggleSeries('depNeto')" style="border-color:hsl(220,60%,35%);color:hsl(220,60%,35%);">Dep. Netos</button>
       <button class="fb" id="evol-recalc-btn" onclick="recalcSnapshots()" style="color:var(--primary);border-color:hsl(220,80%,80%);white-space:nowrap;">⟳ Recalcular</button>
+    </div>
+  </div>
+  <!-- Time slider -->
+  <div id="evol-slider-wrap">
+    <div class="evol-slider-labels">
+      <span>Desde: <span id="evol-slider-label-from">—</span></span>
+      <span>Hasta: <span id="evol-slider-label-to">—</span></span>
+    </div>
+    <div class="evol-slider-track" id="evol-slider-track">
+      <div class="evol-slider-range" id="evol-slider-range"></div>
+      <input class="evol-slider-input" type="range" id="evol-slider-from" min="0" max="100" value="0" step="1" oninput="onEvolSlider()">
+      <input class="evol-slider-input" type="range" id="evol-slider-to"   min="0" max="100" value="100" step="1" oninput="onEvolSlider()">
     </div>
   </div>
   <!-- Progress bar -->
