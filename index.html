@@ -3608,6 +3608,29 @@ function renderEvolChart() {
 
   if(_evolChart) { _evolChart.destroy(); _evolChart = null; }
 
+  // ── Eje Y dinámico: piso = 80% del mínimo de las series de valor visibles ──
+  // Solo considera series de valor (no flujos ni índice, que tienen escala distinta)
+  const ySeriesForMin = [];
+  if(_evolSeries.has('ar_costo'))    ySeriesForMin.push(...arCosto);
+  if(_evolSeries.has('ar'))          ySeriesForMin.push(...arMercado);
+  if(_evolSeries.has('us_costo'))    ySeriesForMin.push(...usCosto);
+  if(_evolSeries.has('us'))          ySeriesForMin.push(...usMercado);
+  if(_evolSeries.has('total_costo')) ySeriesForMin.push(...totalCosto);
+  if(_evolSeries.has('total'))       ySeriesForMin.push(...totalMercado);
+  if(_evolSeries.has('gn_ar'))       ySeriesForMin.push(...gnArData);
+  if(_evolSeries.has('gn_us'))       ySeriesForMin.push(...gnUsData);
+  if(_evolSeries.has('gn_total'))    ySeriesForMin.push(...gnTotalData);
+  const validYValues = ySeriesForMin.filter(v => v != null && isFinite(v));
+  let yFloor = 0;
+  if(validYValues.length) {
+    const rawMin = Math.min(...validYValues);
+    // Si el mínimo es positivo y significativo, usamos el 80% redondeado a miles
+    // Si es negativo o cercano a 0, dejamos que Chart.js lo maneje solo
+    if(rawMin > 1000) {
+      yFloor = Math.floor(rawMin * 0.80 / 1000) * 1000;
+    }
+  }
+
   const ctx = canvas.getContext('2d');
   _evolChart = new Chart(ctx, {
     type: 'bar',
@@ -3644,6 +3667,7 @@ function renderEvolChart() {
         },
         y: {
           position: 'left',
+          min: yFloor > 0 ? yFloor : undefined,
           ticks: { color: 'hsl(220,10%,46%)', font: { family: "'Inter', sans-serif", size: 11 },
             callback: v => 'U$S ' + new Intl.NumberFormat('es-AR',{minimumFractionDigits:0,maximumFractionDigits:0}).format(v) },
           grid: { color: 'hsl(220,13%,93%)' },
