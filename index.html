@@ -13,7 +13,7 @@
   --card:          hsl(0,0%,100%);
   --surface:       hsl(220,20%,98%);
   --muted:         hsl(220,14%,96%);
-  --muted-fg:      hsl(220,10%,46%);
+  --muted-fg:      hsl(220,10%,40%);
   --border:        hsl(220,13%,91%);
   --primary:       hsl(220,80%,50%);
   --primary-fg:    hsl(0,0%,100%);
@@ -44,6 +44,19 @@ body{
   font-family:var(--sans);min-height:100vh;font-size:14px;
   -webkit-font-smoothing:antialiased;
   font-feature-settings:'cv02','cv03','cv04','cv11';
+}
+
+/* Números tabulares — alineación vertical de dígitos en tablas y tarjetas */
+table, .pf-card-main, .pf-card-sub, .pf-card-delta,
+.cash-card-amount, .cash-log-amt, .si value, #evol-summary{
+  font-variant-numeric: tabular-nums;
+}
+
+/* Foco visible para navegación por teclado */
+button:focus-visible, .tab:focus-visible, select:focus-visible,
+input:focus-visible, .ms-btn:focus-visible{
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 /* ── HEADER ── */
@@ -186,6 +199,12 @@ header span{font-size:12px;color:var(--muted-fg);}
 }
 .pf-card-sub{font-size:12px;color:var(--muted-fg);white-space:nowrap;}
 .pf-card-placeholder{font-size:13px;color:var(--muted-fg);}
+/* Hero card — Portfolio Total */
+.pf-card.pf-hero{flex:1 1 100%;padding:24px 28px;}
+.pf-card.pf-hero .pf-card-main{font-size:34px;margin-bottom:6px;}
+.pf-card-delta{font-size:13px;font-weight:600;margin-bottom:4px;}
+.pf-card-delta.up{color:var(--gain);}
+.pf-card-delta.down{color:var(--loss);}
 
 /* ── PORTFOLIO GRID ── */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;}
@@ -475,10 +494,19 @@ tbody tr:hover td{background:hsl(220,14%,98%);}
   <h1>Portfolio Tracker</h1>
   <span id="header-status" style="font-size:12px;color:var(--muted-fg);"></span>
   <div id="session-selector">
+    <button onclick="showModal(true)"
+      style="padding:5px 16px;border-radius:var(--radius);border:1px solid var(--primary);background:var(--primary);color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;margin-right:8px;">
+      ↑ Importar .xls
+    </button>
     <select id="session-select" onchange="switchSession(this.value)" title="Sesión activa"></select>
     <button class="session-btn snew" onclick="newSessionPrompt()" title="Nueva sesión">+ Nueva</button>
-    <button class="session-btn" onclick="renameSessionPrompt()" title="Renombrar sesión">Renombrar</button>
-    <button class="session-btn" onclick="showClearConfirm()" title="Borrar sesión activa" style="color:var(--loss);border-color:hsl(0,72%,88%);">Borrar</button>
+    <div class="ms-wrap">
+      <button class="ms-btn session-btn" id="ms-btn-session" onclick="msDrillToggle('session')" title="Opciones de sesión" style="padding:5px 10px;">⋯</button>
+      <div class="ms-panel" id="ms-panel-session" style="left:auto;right:0;min-width:180px;">
+        <div class="ms-item" onclick="msDrillToggle('session');renameSessionPrompt();">✎ Renombrar sesión</div>
+        <div class="ms-item" onclick="msDrillToggle('session');showClearConfirm();" style="color:var(--loss);">🗑 Borrar sesión</div>
+      </div>
+    </div>
   </div>
 </header>
 <div class="tabs">
@@ -489,12 +517,6 @@ tbody tr:hover td{background:hsl(220,14%,98%);}
   <div class="tab" onclick="switchTab(this,'evol')">Evolución</div>
   <div class="tab" onclick="switchTab(this,'especies')">Especies</div>
   <div class="tab" onclick="switchTab(this,'fx')">Tipo de Cambio</div>
-  <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-    <button onclick="showModal(true)"
-      style="padding:5px 16px;border-radius:var(--radius);border:1px solid var(--primary);background:var(--primary);color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">
-      ↑ Importar .xls
-    </button>
-  </div>
 </div>
 
 <div id="panel-portfolio" class="panel">
@@ -528,9 +550,6 @@ tbody tr:hover td{background:hsl(220,14%,98%);}
         <button class="evol-rb" id="armode-ars" onclick="setARMode('ars')" style="font-size:12px;">Todo ARS</button>
         <button class="evol-rb act" id="armode-usd" onclick="setARMode('usd')" style="font-size:12px;">Todo USD</button>
       </div>
-      <input class="fi" id="fx-input" type="number" step="0.01" placeholder="FX hoy (ARS/USD)" style="width:160px;" oninput="renderPortfolioTable()">
-      <button class="fb" onclick="saveFXRate()" style="color:var(--primary);border-color:hsl(220,80%,80%);">💾 Guardar FX</button>
-      <span id="fx-status" style="font-size:12px;color:var(--muted-fg);"></span>
     </div>
   </div>
 
@@ -1656,6 +1675,30 @@ function buildCauciones(rawTxns) {
   return result;
 }
 
+// ══════ DELTA DESDE SNAPSHOTS ══════
+// Variación del portfolio a mercado vs. el snapshot anterior a `fecha`.
+// SOLO lee de _snapshots (Supabase). Devuelve null si no hay datos suficientes.
+// NOTA: los snapshots reflejan el último ⟳ Recalcular — puede estar desactualizado.
+function getPortfolioDeltaFromSnapshots(fecha, isAr) {
+  if(!_snapshots || !_snapshots.length) return null;
+  const key = isAr ? 'ar_usd_market' : 'us_usd';
+  // _snapshots está ordenado asc por date
+  let i1 = -1;
+  for(let i = _snapshots.length - 1; i >= 0; i--) {
+    if(_snapshots[i].date <= fecha) { i1 = i; break; }
+  }
+  if(i1 <= 0) return null;                    // sin snapshot en fecha, o sin día anterior
+  const s1 = _snapshots[i1], s0 = _snapshots[i1 - 1];
+  const v1 = +s1[key] || 0, v0 = +s0[key] || 0;
+  if(!v0) return null;
+  return {
+    deltaUSD: v1 - v0,
+    pct: ((v1 - v0) / v0) * 100,
+    fromDate: s0.date,   // 'YYYY-MM-DD'
+    toDate:   s1.date,
+  };
+}
+
 // ══════ PORTFOLIO SUMMARY CARDS ══════
 function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPrice) {
   const el = document.getElementById('portfolio-cards');
@@ -1673,6 +1716,26 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
     </div>`;
   const placeholder = (cls, label) => card(cls, label,
     '<span class="pf-card-placeholder">—</span>', '');
+  const heroCard = (cls, label, mainHtml, deltaHtml, subHtml = '') => `
+    <div class="pf-card pf-hero ${cls}">
+      <div class="pf-card-label">${label}</div>
+      <div class="pf-card-main">${mainHtml}</div>
+      ${deltaHtml || ''}
+      ${subHtml ? `<div class="pf-card-sub">${subHtml}</div>` : ''}
+    </div>`;
+
+  // Línea de variación diaria (desde snapshots)
+  const d = getPortfolioDeltaFromSnapshots(fecha, isAr);
+  let deltaHtml = '';
+  if(d) {
+    const showARS = isAr && _arMode === 'ars';
+    const deltaShown = showARS ? d.deltaUSD * fx : d.deltaUSD;
+    const sym  = showARS ? '$ ' : 'U$S ';
+    const up   = d.deltaUSD >= 0;
+    const sign = up ? '+' : '-';
+    const fFrom = `${d.fromDate.slice(8,10)}/${d.fromDate.slice(5,7)}`;
+    deltaHtml = `<div class="pf-card-delta ${up?'up':'down'}">${sign}${sym}${fN2(deltaShown)} (${sign}${N(Math.abs(d.pct),2)}%) <span style="color:var(--muted-fg);font-weight:500;">vs ${fFrom}</span></div>`;
+  }
 
   let html = '';
 
@@ -1680,21 +1743,14 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
     const bARS = historicCash?.['Argentina (ARS)'] ?? 0;
     const bUSD = historicCash?.['Argentina (USD)'] ?? 0;
 
-    // 1. Caja ARS
+    // ── cálculos (idénticos a los actuales, solo agrupados arriba) ──
+    // Caja ARS
     const arsColor = neg(bARS) ? 'color:var(--loss)' : 'color:var(--ar-accent)';
     const arsEquiv = fx > 0 ? `≈ U$S ${fN2(bARS / fx)}` : '';
-    html += card('pc-cash-ars', 'Caja ARS',
-      `<span style="${arsColor}">${neg(bARS)?'-':''}$ ${fN2(bARS)}</span>`,
-      arsEquiv);
-
-    // 2. Caja USD (AR)
+    // Caja USD (AR)
     const usdColor = neg(bUSD) ? 'color:var(--loss)' : 'color:var(--primary)';
     const usdEquiv = fx > 0 ? `≈ $ ${fN2(bUSD * fx)}` : '';
-    html += card('pc-cash-usd', 'Caja USD',
-      `<span style="${usdColor}">${neg(bUSD)?'-':''}U$S ${fN2(bUSD)}</span>`,
-      usdEquiv);
-
-    // 3. Total Caja
+    // Total Caja
     let totalCaja, totalCajaFmt;
     if(_arMode === 'ars') {
       totalCaja = bARS + (fx > 0 ? bUSD * fx : 0);
@@ -1703,30 +1759,27 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
       totalCaja = bUSD + (fx > 0 ? bARS / fx : 0);
       totalCajaFmt = `<span style="${neg(totalCaja)?'color:var(--loss)':'color:var(--gain)'}">${neg(totalCaja)?'-':''}U$S ${fN2(totalCaja)}</span>`;
     }
-    html += card('pc-cash-total', 'Total Caja', totalCajaFmt, `FX ${N(fx,2)}`);
-
-    // 4. Costo + Caja
+    // Costo + Caja
     const costoMasCaja = sumCostoTotal + totalCaja;
     const costoSym = _arMode === 'ars' ? '$ ' : 'U$S ';
-    html += card('pc-costo', 'Costo + Caja',
-      `<span style="color:var(--foreground)">${costoSym}${fN2(costoMasCaja)}</span>`,
-      `Costo: ${costoSym}${fN2(sumCostoTotal)}`);
+    // Portfolio Total
+    const totalCajaUSD = bUSD + (fx > 0 ? bARS / fx : 0);
 
-    // 5. Portfolio Total
+    // ── 1. HERO: Portfolio Total ──
     if(anyPrice) {
-      const totalCajaUSD = bUSD + (fx > 0 ? bARS / fx : 0);
       const portfolioTotalUSD = sumValorTenencia + totalCajaUSD;
       const portfolioTotalFmt = _arMode === 'ars'
         ? `$ ${fN2(portfolioTotalUSD * fx)}`
         : `U$S ${fN2(portfolioTotalUSD)}`;
-      html += card('pc-total', 'Portfolio Total',
+      html += heroCard('pc-total', 'Portfolio Total',
         `<span style="color:var(--foreground)">${portfolioTotalFmt}</span>`,
+        deltaHtml,
         `Tenencias: ${_arMode === 'ars' ? '$ ' + fN2(sumValorTenencia * fx) : 'U$S ' + fN2(sumValorTenencia)}`);
     } else {
-      html += placeholder('pc-total', 'Portfolio Total');
+      html += heroCard('pc-total', 'Portfolio Total', '<span class="pf-card-placeholder">—</span>', deltaHtml);
     }
 
-    // 6. Ganancia
+    // ── 2. Ganancia ──
     if(anyPrice && sumPL !== 0) {
       const plDisplay = _arMode === 'ars' ? sumPL * fx : sumPL;
       const plPct   = sumCostoTotal > 0 ? (sumPL / sumCostoTotal) * 100 : null;
@@ -1741,32 +1794,40 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
       html += placeholder('pc-pl', 'Ganancia');
     }
 
+    // ── 3. Costo + Caja ──
+    html += card('pc-costo', 'Costo + Caja',
+      `<span style="color:var(--foreground)">${costoSym}${fN2(costoMasCaja)}</span>`,
+      `Costo: ${costoSym}${fN2(sumCostoTotal)}`);
+
+    // ── 4. Total Caja ──
+    html += card('pc-cash-total', 'Total Caja', totalCajaFmt, `FX ${N(fx,2)}`);
+
+    // ── 5. Caja ARS ──
+    html += card('pc-cash-ars', 'Caja ARS',
+      `<span style="${arsColor}">${neg(bARS)?'-':''}$ ${fN2(bARS)}</span>`,
+      arsEquiv);
+
+    // ── 6. Caja USD ──
+    html += card('pc-cash-usd', 'Caja USD',
+      `<span style="${usdColor}">${neg(bUSD)?'-':''}U$S ${fN2(bUSD)}</span>`,
+      usdEquiv);
+
   } else {
     // ── EEUU ──
     const bUS = historicCash?.['EEUU (USD)'] ?? 0;
 
-    // 1. Caja USD
-    const usColor = neg(bUS) ? 'color:var(--loss)' : 'color:var(--us-accent)';
-    html += card('pc-cash-usd', 'Caja USD',
-      `<span style="${usColor}">${neg(bUS)?'-':''}U$S ${fN2(bUS)}</span>`);
-
-    // 2. Costo + Caja
-    const costoMasCajaUS = sumCostoTotal + bUS;
-    html += card('pc-costo', 'Costo + Caja',
-      `<span style="color:var(--foreground)">U$S ${fN2(costoMasCajaUS)}</span>`,
-      `Costo: U$S ${fN2(sumCostoTotal)}`);
-
-    // 3. Portfolio Total
+    // ── 1. HERO: Portfolio Total ──
     if(anyPrice) {
       const portfolioTotal = sumValorTenencia + bUS;
-      html += card('pc-total', 'Portfolio Total',
+      html += heroCard('pc-total', 'Portfolio Total',
         `<span style="color:var(--foreground)">U$S ${fN2(portfolioTotal)}</span>`,
+        deltaHtml,
         `Tenencias: U$S ${fN2(sumValorTenencia)}`);
     } else {
-      html += placeholder('pc-total', 'Portfolio Total');
+      html += heroCard('pc-total', 'Portfolio Total', '<span class="pf-card-placeholder">—</span>', deltaHtml);
     }
 
-    // 4. Ganancia
+    // ── 2. Ganancia ──
     if(anyPrice) {
       const plPct   = sumCostoTotal > 0 ? (sumPL / sumCostoTotal) * 100 : null;
       const plColor = sumPL >= 0 ? 'color:var(--gain)' : 'color:var(--loss)';
@@ -1778,6 +1839,17 @@ function renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValor
     } else {
       html += placeholder('pc-pl', 'Ganancia');
     }
+
+    // ── 3. Costo + Caja ──
+    const costoMasCajaUS = sumCostoTotal + bUS;
+    html += card('pc-costo', 'Costo + Caja',
+      `<span style="color:var(--foreground)">U$S ${fN2(costoMasCajaUS)}</span>`,
+      `Costo: U$S ${fN2(sumCostoTotal)}`);
+
+    // ── 4. Caja USD ──
+    const usColor = neg(bUS) ? 'color:var(--loss)' : 'color:var(--us-accent)';
+    html += card('pc-cash-usd', 'Caja USD',
+      `<span style="${usColor}">${neg(bUS)?'-':''}U$S ${fN2(bUS)}</span>`);
   }
 
   el.innerHTML = html;
@@ -5454,6 +5526,9 @@ function renderFXTab() {
     <input class="fi" id="fx-tab-search" type="text" placeholder="Filtrar fecha..." style="width:180px" oninput="renderFXTab()">
     <select class="fi" id="fx-tab-year" onchange="renderFXTab()"><option value="">Todos los años</option></select>
     <button class="fb" onclick="fxTabClear()">✕ Limpiar</button>
+    <input class="fi" id="fx-input" type="number" step="0.01" placeholder="FX hoy (ARS/USD)" style="width:160px;" oninput="renderPortfolioTable()">
+    <button class="fb" onclick="saveFXRate()" style="color:var(--primary);border-color:hsl(220,80%,80%);">💾 Guardar FX</button>
+    <span id="fx-status" style="font-size:12px;color:var(--muted-fg);"></span>
     <span class="a-count" id="fx-tab-count"></span>
   </div>
   <div class="audit-wrap">
