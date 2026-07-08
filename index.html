@@ -2064,7 +2064,7 @@ function renderPortfolioTable() {
         const plUSD = (currentPrice - avgRef) * bal;
         const plPct = ((currentPrice / avgRef) - 1) * 100;
         const cls   = plUSD >= 0 ? 'mp' : 'mn';
-        const sign  = plUSD >= 0 ? '+' : '';
+        const sign  = plUSD >= 0 ? '+' : '-';
         sumPL += plUSD;
         let plAmtStr;
         if(isAr && _arMode === 'ars') {
@@ -2072,8 +2072,8 @@ function renderPortfolioTable() {
         } else {
           plAmtStr = `${sign}U$S ${N(Math.abs(plUSD), 2)}`;
         }
-        plCellAmt = `<td class="num ${cls}">${plAmtStr}</td>`;
-        plCellPct = `<td class="num ${cls}">${sign}${N(plPct, 2)}%</td>`;
+        plCellAmt = `<td class="num"><span class="${cls}">${plAmtStr}</span></td>`;
+        plCellPct = `<td class="num"><span class="${cls}">${sign}${N(Math.abs(plPct), 2)}%</span></td>`;
       }
     }
 
@@ -2133,10 +2133,10 @@ function renderPortfolioTable() {
     ? sym + N(isAr && _arMode === 'ars' ? sumValorTenencia * fx : sumValorTenencia, 2)
     : '—';
   const plTotFmt = anyPriceForTotal && sumPL !== 0
-    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':''}${sym}${N(Math.abs(isAr && _arMode === 'ars' ? sumPL * fx : sumPL),2)}</span>`
+    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':'-'}${sym}${N(Math.abs(isAr && _arMode === 'ars' ? sumPL * fx : sumPL),2)}</span>`
     : '<span style="color:var(--muted-fg)">—</span>';
   const plPctTotFmt = anyPriceForTotal && sumCostoTotal > 0 && sumPL !== 0
-    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':''}${N((sumPL/sumCostoTotal)*100,2)}%</span>`
+    ? `<span class="${sumPL>=0?'mp':'mn'}">${sumPL>=0?'+':'-'}${N(Math.abs((sumPL/sumCostoTotal)*100),2)}%</span>`
     : '<span style="color:var(--muted-fg)">—</span>';
 
   let tfootHtml = `<tr>
