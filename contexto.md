@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 07/07/2026 v25
+## Versión: 08/07/2026 v26
 
 ---
 
@@ -60,7 +60,7 @@ Sin precio (al costo): `ADRO, CO26, TO26`
 - **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
 - **🔍 Especies** — Tab de auditoría por instrumento. Selector dividido en 5 dropdowns por categoría: Acciones · Bonos · Letras · FCI · Otros.
 - **💱 Tipo de Cambio** — Tabla con la serie histórica de FX USD/ARS desde Supabase. Columnas: Fecha · ARS/USD · Var. diaria · Var. 30d. Filtros por año y texto. Orden clickeable por fecha o tasa.
-- **Barra de tabs:** solo los 7 destinos de navegación (v25 — el botón Importar se movió al header).
+- **Navegación por sidebar (v26):** la barra de tabs horizontal fue **eliminada**. La navegación vive en un `<aside id="sidebar">` a la izquierda (200px), con los 7 destinos agrupados en **Vista** (Portfolio, Evolución) · **Auditoría** (Transacciones, Saldo Cash, Ret. NRA, Especies) · **Datos** (Tipo de Cambio). Cada destino es un `<div class="tab">` con ícono SVG inline (Feather, `stroke:currentColor`) + `<span class="sb-label">`. El título "Portfolio Tracker" vive arriba de la sidebar (`#sb-brand`). Botón `Colapsar` al pie (`toggleSidebar()`) reduce la sidebar a 56px solo-íconos; estado persistido en `localStorage('sidebar_collapsed')`; auto-colapso en pantallas ≤900px. Todo el contenido (header + paneles + script + modales) queda dentro de `<div id="main">`.
 - **Header (v25):** botón CTA `↑ Importar .xls` + selector de sesión + `＋ Nueva` + menú `⋯`. El menú `⋯` (`ms-panel-session`) colapsa `✎ Renombrar sesión` y `🗑 Borrar sesión`; reutiliza `msDrillToggle('session')` y el listener global de click-afuera (sin JS nuevo).
 
 ### Tab activo persistente:
@@ -173,6 +173,8 @@ Itera `Object.keys(_ledger)`, para cada ticker busca el último `_snap` en `t.fe
 | Valor Tenencia | `valorTenencia` | `precio × bal` — solo EEUU con precio real |
 | Gan./Pérd. $ | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
 | Gan./Pérd. % | — | En celda separada — solo EEUU con precio real y `!isEstimated` |
+
+**Coloreado y signos de Gan./Pérd. (v26):** las columnas Gan./Pérd. `$` y `%` van **verde** (`.mp`) para positivos y **rojo** (`.mn`) para negativos, con signo explícito `+`/`-` adelante en ambas — tanto en las filas individuales como en la fila de Total posiciones. **CRÍTICO:** el color va en un `<span class="mp/mn">` **dentro** del `<td>`, no como clase del `<td>` — la regla `#portfolio-tbl tbody td{color:var(--foreground)}` (id+elemento, especificidad 1,0,1) le gana a `.mp`/`.mn` (0,1,0) y pisaría el color si estuviera en el `<td>`. El `%` usa `Math.abs()` con el signo puesto aparte (`${sign}${N(Math.abs(plPct),2)}%`) para no duplicar el menos. Solo cambian los strings de display: `sumPL` no se toca, así que tarjetas y Evolución no se ven afectadas.
 
 **CRÍTICO (v14):** La columna "P. Prom. c/comis." fue **eliminada**. `costoTotal` usa `avgNoC_val × bal`, no `avgWithC_val × bal`. Esto garantiza consistencia con `getARValueAtDate` y el tab Evolución. **No restaurar `avgWithC` en la tabla Portfolio.**
 
@@ -863,7 +865,7 @@ Estilo Mercury (neobanco): reduccionismo radical, densidad informativa sin ruido
 --card:        hsl(0,0%,100%)        /* fondo de tarjetas */
 --surface:     hsl(220,20%,98%)      /* fondo secciones alternativas */
 --muted:       hsl(220,14%,96%)      /* fondos inactivos, badges */
---muted-fg:    hsl(220,10%,46%)      /* texto secundario, labels */
+--muted-fg:    hsl(220,10%,40%)      /* texto secundario, labels (v25: oscurecido desde 46%) */
 --border:      hsl(220,13%,91%)      /* bordes, separadores */
 --primary:     hsl(220,80%,50%)      /* CTAs, elementos interactivos */
 --gain:        hsl(142,71%,38%)      /* verde ganancias/positivos */
@@ -897,13 +899,14 @@ Estilo Mercury (neobanco): reduccionismo radical, densidad informativa sin ruido
 - `background: rgba(255,255,255,0.85)` con `backdrop-filter: blur(8px)`
 - Título: `font-size:14px; font-weight:600; letter-spacing:-.01em`
 
-### Tabs
-- Sticky `top:49px` (debajo del header), `z-index:99`
-- Tab inactivo: `color:var(--muted-fg); border-radius:6px; padding:6px 14px`
-- Tab activo: `background:var(--foreground) !important; color:#fff !important; border:none !important`
-- **CRÍTICO:** los `!important` son necesarios — el estilo base del `.tab` tiene `border:none; background:transparent` que puede ganarle en algunos browsers sin `!important`
-- Sin emojis en labels, sin border-bottom coloreado por tab
-- Botón "Importar .xls": `background:var(--primary); color:#fff`
+### Sidebar (navegación) — v26
+- `<aside id="sidebar">`: `width:200px`, sticky `top:0; height:100vh`, `background:var(--surface)`, borde derecho, `z-index:110`, `overflow-y:auto`. Antes del `<script>` y del `<div id="main">` en el DOM.
+- Ítem inactivo (`.tab`): `display:flex; gap:10px; padding:8px 10px; color:var(--muted-fg); border-radius:6px` — layout vertical con ícono SVG + `<span class="sb-label">`.
+- Ítem activo: `background:var(--foreground) !important; color:#fff !important; border:none !important` (los SVG heredan el blanco vía `stroke:currentColor`).
+- **CRÍTICO:** los `!important` son necesarios — el estilo base del `.tab` tiene `border:none; background:transparent` que puede ganarle sin `!important`. **Los ítems llevan solo `class="tab"`** (ver reglas críticas): cualquier clase extra la borra `switchTab`.
+- Grupos `.sb-group` (Vista/Auditoría/Datos): `font-size:10px; uppercase; color:var(--muted-fg)`. Marca `#sb-brand` arriba.
+- Colapsado (`.collapsed`) y `@media (max-width:900px)`: `width:56px`, oculta `.sb-label`/`.sb-group`/`#sb-brand`, centra ítems, chevron de `#sb-collapse` rota 180°.
+- Botón "Importar .xls" (en el header): `background:var(--primary); color:#fff`
 
 ### KPI Cards (`.pf-card`)
 - `background:var(--card); border:1px solid var(--border); border-radius:var(--radius)`
@@ -1129,6 +1132,18 @@ Cambios 100% de presentación + una función nueva de solo lectura. **Ningún n�
 | C1 | Hero "Portfolio Total" | `renderPortfolioCards` reordenada (hero arriba, luego Ganancia, Costo+Caja, cajas). Clases nuevas `pf-hero` / `pf-card-delta`; helper `heroCard`. Función nueva `getPortfolioDeltaFromSnapshots(fecha, isAr)` (solo lectura de `_snapshots`, claves `ar_usd_market`/`us_usd`). El delta refleja el último ⟳ Recalcular. |
 | C2 | FX manual → tab Tipo de Cambio | `fx-input`, botón `💾 Guardar FX` y `fx-status` movidos (idénticos, IDs intactos) al toolbar de `#panel-fx`. `#ar-mode-wrap` en Portfolio conserva **solo** el toggle ARS/USD. Los IDs se leen por `getElementById`, así que funcionan igual en el nuevo lugar del DOM. |
 
+### Sidebar colapsable + coloreado P&L (v26)
+
+Cambios de navegación/layout (Fase B) + coloreado de la tabla Portfolio. **Ningún número del dashboard cambió de valor.**
+
+| # | Cambio | Descripción |
+|---|---|---|
+| B1 | Layout de dos columnas | `body{display:flex}`; wrapper `#main{flex:1;min-width:0}` envuelve header + paneles + script + modales. `min-width:0` es imprescindible: sin eso las tablas anchas con `overflow-x:auto` rompen el flex. |
+| B2 | Sidebar de navegación | `<aside id="sidebar">` (200px) reemplaza la barra de tabs horizontal (eliminada, junto con la regla CSS `.tabs{}` y `header h1{}`). Grupos Vista/Auditoría/Datos (`.sb-group`), 7 destinos con ícono SVG inline (Feather, `stroke:currentColor` → heredan el blanco del pill activo) + `<span class="sb-label">`. Título en `#sb-brand`. La regla `.tab` se re-estilizó para layout vertical; `.tab:hover` y las reglas `act-*` con `!important` quedaron intactas. |
+| B3 | Colapso + persistencia | Botón `#sb-collapse` (`toggleSidebar()`) alterna `.collapsed` (56px solo-íconos, oculta labels/grupos/brand, chevron rota 180°) y guarda en `localStorage('sidebar_collapsed')`. `init()` restaura el estado al cargar. Media query ≤900px fuerza colapso. Único JS nuevo: `toggleSidebar()` + 5 líneas de restauración en `init()`. |
+| B4 | Offsets sticky −44px | Al eliminar la barra de tabs (≈44px): `.atb` `top:93px→49px`; `.audit-wrap` `calc(100vh - 148px)→104px`; chart Evolución `calc(100vh - 160px)→116px`. |
+| D1 | Coloreado + signos Gan./Pérd. | Columnas `$` y `%` de `renderPortfolioTable`: verde/rojo con `+`/`-` explícito en filas individuales **y** total. Color en `<span class="mp/mn">` dentro del `<td>` (no en el `<td>`, ver sección Tab Portfolio). `sumPL` no se toca. |
+
 ---
 
 ## Cómo pedir cambios en un chat nuevo
@@ -1205,10 +1220,15 @@ Pegá este documento + el HTML al inicio del chat.
 - **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
 - **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
 
-**► UI Y DISEÑO (v23-v25):**
+**► UI Y DISEÑO (v23-v26):**
 - **Paleta: usar SIEMPRE tokens semánticos** — `var(--foreground)`, `var(--muted-fg)`, `var(--border)`, `var(--primary)`, `var(--gain)`, `var(--loss)`, `var(--ar-accent)`, `var(--us-accent)`. Nunca hardcodear hex en CSS nuevo.
 - **(v25) `--muted-fg` es `hsl(220,10%,40%)`** — oscurecido desde 46% por contraste. No revertir.
-- **(v25) Barra de tabs = solo 7 tabs de navegación** — el botón Importar y las acciones de sesión viven en el header, no entre los tabs.
+- **(v26) NAVEGACIÓN POR SIDEBAR — la barra de tabs horizontal ya no existe.** Ver reglas duras abajo. El botón Importar y las acciones de sesión siguen en el header.
+- **(v26) Los ítems de navegación de la sidebar llevan EXACTAMENTE `class="tab"`, sin clases adicionales** — `switchTab` hace `t.className='tab'` y borraría cualquier otra clase en el primer click. Los labels viven en `<span class="sb-label">` interno, que `switchTab` no toca.
+- **(v26) La sidebar (`<aside id="sidebar">`) debe permanecer ANTES del `<script>` principal en el DOM** — el IIFE `init()` corre en parse-time y consulta los `.tab`. También va antes que el `<div id="main">` que envuelve todo lo demás.
+- **(v26) `#main` requiere `min-width:0`** — sin eso las tablas anchas con `overflow-x:auto` rompen el layout flex.
+- **(v26) Offsets sticky:** `.atb` `top:49px`; `.audit-wrap` `calc(100vh - 104px)`; chart Evolución `calc(100vh - 116px)`. Si cambia la altura del header (~49px), actualizar los tres juntos.
+- **(v26) Gan./Pérd. $ y % en Portfolio: color en `<span class="mp/mn">` DENTRO del `<td>`, nunca como clase del `<td>`** — `#portfolio-tbl tbody td{color:var(--foreground)}` (especificidad 1,0,1) le gana a `.mp`/`.mn` (0,1,0). Signo `+`/`-` explícito adelante; el `%` usa `Math.abs()` con el signo aparte para no duplicar el menos. No tocar `sumPL`.
 - **(v25) `renderPortfolioCards`: "Portfolio Total" es el hero (`pf-hero`), va primero, con línea `pf-card-delta`** — no reordenar de vuelta ni convertirlo en tarjeta normal. `getPortfolioDeltaFromSnapshots` es solo lectura de `_snapshots`; nunca hacerla recalcular valores.
 - **`var(--muted)` ≠ `var(--muted-fg)`** — `--muted` es fondo gris claro, `--muted-fg` es texto gris medio. Todo texto secundario usa `--muted-fg`.
 - **Aliases legacy en `:root` son intocables** — `--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`, `--bg`, `--s2`, `--text` deben existir siempre. El JS genera inline styles con estos vars.
