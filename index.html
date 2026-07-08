@@ -44,7 +44,9 @@ body{
   font-family:var(--sans);min-height:100vh;font-size:14px;
   -webkit-font-smoothing:antialiased;
   font-feature-settings:'cv02','cv03','cv04','cv11';
+  display:flex;
 }
+#main{flex:1;min-width:0;}
 
 /* Números tabulares — alineación vertical de dígitos en tablas y tarjetas */
 table, .pf-card-main, .pf-card-sub, .pf-card-delta,
@@ -68,29 +70,68 @@ header{
   backdrop-filter:blur(8px);
   position:sticky;top:0;z-index:100;
 }
-header h1{
-  font-size:14px;font-weight:600;
-  color:var(--foreground);letter-spacing:-.01em;
-}
 header span{font-size:12px;color:var(--muted-fg);}
 
-/* ── TABS ── */
-.tabs{
-  display:flex;padding:8px 24px;gap:2px;
-  background:var(--background);
-  border-bottom:1px solid var(--border);
-  position:sticky;top:49px;z-index:99;
+/* ── SIDEBAR ── */
+#sidebar{
+  width:200px;flex-shrink:0;
+  position:sticky;top:0;height:100vh;
+  background:var(--surface);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  padding:14px 10px;
+  transition:width .15s;
+  z-index:110;
+  overflow-y:auto;overflow-x:hidden;
+}
+#sb-brand{
+  font-size:14px;font-weight:600;color:var(--foreground);
+  letter-spacing:-.01em;padding:0 8px 14px;white-space:nowrap;
+}
+#sb-nav{flex:1;display:flex;flex-direction:column;gap:2px;}
+.sb-group{
+  font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--muted-fg);
+  padding:14px 8px 4px;white-space:nowrap;
 }
 .tab{
-  padding:6px 14px;cursor:pointer;
+  display:flex;align-items:center;gap:10px;
+  padding:8px 10px;cursor:pointer;
   font-size:13px;font-weight:500;
   color:var(--muted-fg);
   border-radius:6px;
-  border-bottom:none;
   transition:all .15s;
-  text-transform:none;
-  letter-spacing:normal;
   border:none;background:transparent;
+  white-space:nowrap;
+}
+.tab svg{flex-shrink:0;}
+#sb-collapse{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 10px;cursor:pointer;
+  font-size:12px;font-weight:500;
+  color:var(--muted-fg);
+  border-radius:6px;border:none;background:transparent;
+  transition:all .15s;white-space:nowrap;
+  font-family:var(--sans);
+}
+#sb-collapse:hover{color:var(--foreground);background:var(--muted);}
+#sb-collapse svg{flex-shrink:0;transition:transform .15s;}
+/* Estado colapsado */
+#sidebar.collapsed{width:56px;}
+#sidebar.collapsed .sb-label,
+#sidebar.collapsed .sb-group,
+#sidebar.collapsed #sb-brand{display:none;}
+#sidebar.collapsed .tab,
+#sidebar.collapsed #sb-collapse{justify-content:center;padding:8px 0;}
+#sidebar.collapsed #sb-collapse svg{transform:rotate(180deg);}
+/* Pantallas angostas: siempre colapsada (responsive completo = Fase F) */
+@media (max-width:900px){
+  #sidebar{width:56px;}
+  #sidebar .sb-label,
+  #sidebar .sb-group,
+  #sidebar #sb-brand{display:none;}
+  #sidebar .tab,
+  #sidebar #sb-collapse{justify-content:center;padding:8px 0;}
 }
 .tab:hover{color:var(--foreground);background:var(--muted);}
 
@@ -256,11 +297,11 @@ tbody tr:hover td{background:hsl(220,14%,98%);}
   display:flex;gap:8px;padding:10px 24px;
   background:var(--background);border-bottom:1px solid var(--border);
   flex-wrap:wrap;align-items:center;
-  position:sticky;top:93px;z-index:20;
+  position:sticky;top:49px;z-index:20;
 }
 .atb .fi{width:240px;}
 .a-count{font-size:12px;color:var(--muted-fg);margin-left:auto;white-space:nowrap;}
-.audit-wrap{overflow:auto;height:calc(100vh - 148px);}
+.audit-wrap{overflow:auto;height:calc(100vh - 104px);}
 #audit-tbl{min-width:1150px;}
 #audit-tbl thead th{cursor:pointer;user-select:none;background:var(--surface);padding:8px 12px;font-size:11px;}
 #audit-tbl thead th:hover{color:var(--foreground);}
@@ -490,8 +531,48 @@ tbody tr:hover td{background:hsl(220,14%,98%);}
 </style>
 </head>
 <body>
+<aside id="sidebar">
+  <div id="sb-brand">Portfolio Tracker</div>
+  <nav id="sb-nav">
+    <div class="sb-group">Vista</div>
+    <div class="tab" onclick="switchTab(this,'portfolio')" title="Portfolio">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>
+      <span class="sb-label">Portfolio</span>
+    </div>
+    <div class="tab" onclick="switchTab(this,'evol')" title="Evolución">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
+      <span class="sb-label">Evolución</span>
+    </div>
+    <div class="sb-group">Auditoría</div>
+    <div class="tab" onclick="switchTab(this,'audit')" title="Transacciones">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+      <span class="sb-label">Transacciones</span>
+    </div>
+    <div class="tab" onclick="switchTab(this,'cash')" title="Saldo Cash">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+      <span class="sb-label">Saldo Cash</span>
+    </div>
+    <div class="tab" onclick="switchTab(this,'nra')" title="Ret. NRA">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"></line><circle cx="6.5" cy="6.5" r="2.5"></circle><circle cx="17.5" cy="17.5" r="2.5"></circle></svg>
+      <span class="sb-label">Ret. NRA</span>
+    </div>
+    <div class="tab" onclick="switchTab(this,'especies')" title="Especies">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <span class="sb-label">Especies</span>
+    </div>
+    <div class="sb-group">Datos</div>
+    <div class="tab" onclick="switchTab(this,'fx')" title="Tipo de Cambio">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+      <span class="sb-label">Tipo de Cambio</span>
+    </div>
+  </nav>
+  <button id="sb-collapse" onclick="toggleSidebar()" title="Colapsar / expandir menú">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"></polyline><polyline points="18 17 13 12 18 7"></polyline></svg>
+    <span class="sb-label">Colapsar</span>
+  </button>
+</aside>
+<div id="main">
 <header>
-  <h1>Portfolio Tracker</h1>
   <span id="header-status" style="font-size:12px;color:var(--muted-fg);"></span>
   <div id="session-selector">
     <button onclick="showModal(true)"
@@ -509,16 +590,6 @@ tbody tr:hover td{background:hsl(220,14%,98%);}
     </div>
   </div>
 </header>
-<div class="tabs">
-  <div class="tab" onclick="switchTab(this,'portfolio')">Portfolio</div>
-  <div class="tab" onclick="switchTab(this,'audit')">Transacciones</div>
-  <div class="tab" onclick="switchTab(this,'cash')">Saldo Cash</div>
-  <div class="tab" onclick="switchTab(this,'nra')">Ret. NRA</div>
-  <div class="tab" onclick="switchTab(this,'evol')">Evolución</div>
-  <div class="tab" onclick="switchTab(this,'especies')">Especies</div>
-  <div class="tab" onclick="switchTab(this,'fx')">Tipo de Cambio</div>
-</div>
-
 <div id="panel-portfolio" class="panel">
   <!-- Toolbar Portfolio -->
   <div style="display:flex;align-items:center;gap:10px;padding:0 0 20px;flex-wrap:wrap;">
@@ -1512,6 +1583,14 @@ function getUSCostValueAtDate(fecha, precomputedData) {
   const bUS = balances['EEUU (USD)'] ?? 0;
 
   return tenencias + bUS;
+}
+
+// ══════ SIDEBAR ══════
+function toggleSidebar(){
+  const sb = document.getElementById('sidebar');
+  if(!sb) return;
+  sb.classList.toggle('collapsed');
+  localStorage.setItem('sidebar_collapsed', sb.classList.contains('collapsed') ? '1' : '0');
 }
 
 // ══════ TAB SWITCH ══════
@@ -4155,6 +4234,12 @@ async function clearAllData() {
   fetchFXHistory();
   fetchSnapshots();
 
+  // Restore sidebar collapsed state
+  if(localStorage.getItem('sidebar_collapsed') === '1') {
+    const sb = document.getElementById('sidebar');
+    if(sb) sb.classList.add('collapsed');
+  }
+
   // Restore last active tab (default: portfolio)
   const savedTab = localStorage.getItem('active_tab') || 'portfolio';
   const tabEl = document.querySelector(`.tab[onclick*="'${savedTab}'"]`);
@@ -5461,7 +5546,7 @@ function renderFXTab() {
     </div>
   </div>
   <!-- Chart -->
-  <div style="padding:20px 24px;height:calc(100vh - 160px);display:flex;flex-direction:column;gap:16px;">
+  <div style="padding:20px 24px;height:calc(100vh - 116px);display:flex;flex-direction:column;gap:16px;">
     <div style="flex:1;position:relative;min-height:0;">
       <canvas id="evol-chart"></canvas>
     </div>
@@ -5562,6 +5647,7 @@ function renderFXTab() {
   </div>
 </div>
 
+</div><!-- /#main -->
 <!-- SheetJS CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- Chart.js + zoom plugin -->
