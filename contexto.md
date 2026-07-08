@@ -1,5 +1,5 @@
 # Contexto: Portfolio Dashboard — Balanz / Julian
-## Versión: 16/04/2026 v24
+## Versión: 07/07/2026 v25
 
 ---
 
@@ -60,8 +60,8 @@ Sin precio (al costo): `ADRO, CO26, TO26`
 - **📈 Evolución** — Gráfico de línea con 3 series independientes: 🇦🇷 Argentina (azul `#3d7fff`), 🇺🇸 EEUU (rojo `#ef4444`), ∑ Total (violeta `#a78bfa`). Sin fill. Toggle individual por serie. Zoom, pan, selector de rango 1M/3M/6M/1Y/MAX.
 - **🔍 Especies** — Tab de auditoría por instrumento. Selector dividido en 5 dropdowns por categoría: Acciones · Bonos · Letras · FCI · Otros.
 - **💱 Tipo de Cambio** — Tabla con la serie histórica de FX USD/ARS desde Supabase. Columnas: Fecha · ARS/USD · Var. diaria · Var. 30d. Filtros por año y texto. Orden clickeable por fecha o tasa.
-- **Botones fijos:** `↑ Importar .xls` (en tabs bar)
-- **Header:** selector de sesiones con `＋ Nueva`, `✎ Renombrar`, `🗑 Borrar`
+- **Barra de tabs:** solo los 7 destinos de navegación (v25 — el botón Importar se movió al header).
+- **Header (v25):** botón CTA `↑ Importar .xls` + selector de sesión + `＋ Nueva` + menú `⋯`. El menú `⋯` (`ms-panel-session`) colapsa `✎ Renombrar sesión` y `🗑 Borrar sesión`; reutiliza `msDrillToggle('session')` y el listener global de click-afuera (sin JS nuevo).
 
 ### Tab activo persistente:
 `switchTab()` guarda el tab activo en `localStorage('active_tab')`. El `init()` lo restaura al cargar. `switchTab` es defensivo — hace guard si el panel no existe.
@@ -133,25 +133,29 @@ El modo "Moneda origen" fue **eliminado**. Solo existen:
 ### Tarjetas de resumen — `renderPortfolioCards()`
 Función separada llamada desde `renderPortfolioTable()`. Renderiza en `<div id="portfolio-cards">` ubicado entre la toolbar y la tabla.
 
-**Tab Argentina — 5 tarjetas:**
-| Tarjeta | Clase CSS | Contenido |
-|---|---|---|
-| 💵 Caja ARS | `pc-cash-ars` | `$ X` + sub `≈ U$S Y` |
-| 💵 Caja USD | `pc-cash-usd` | `U$S X` + sub `≈ $ Y` |
-| 🏦 Total Caja | `pc-cash-total` | en modo toggle + sub `FX X` |
-| 📦 Costo + Caja | `pc-costo` | `avgNoC × bal` + caja en toggle + sub `Costo: X` |
-| 🏦 Portfolio Total | `pc-total` | placeholder hasta Fase 2 |
-| 📈 Ganancia | `pc-pl` | placeholder hasta Fase 2 |
+**Orden reordenado en v25 — lo importante primero.** La tarjeta "Portfolio Total" es ahora un **hero card** (clase `pf-hero`, número 34px, fila completa vía `flex:1 1 100%`) que va **arriba de todo**, con una línea de variación diaria (`pf-card-delta`, verde `.up` / roja `.down`). El resto de las tarjetas fluyen debajo.
 
-**Tab EEUU — 4 tarjetas:**
-| Tarjeta | Clase CSS | Contenido |
-|---|---|---|
-| 💵 Caja USD | `pc-cash-usd` | `U$S X` |
-| 📦 Costo + Caja | `pc-costo` | Costo Total + caja + sub `Costo: X` |
-| 🏦 Portfolio Total | `pc-total` | Tenencias a mercado + caja + sub `Tenencias: X` |
-| 📈 Ganancia | `pc-pl` | `sumPL` en USD + sub `%` |
+**Tab Argentina — orden v25 (6 tarjetas):**
+| # | Tarjeta | Clase CSS | Contenido |
+|---|---|---|---|
+| 1 | 🏦 Portfolio Total (hero) | `pc-total` | Tenencias a mercado + caja en toggle + línea delta + sub `Tenencias: X` |
+| 2 | 📈 Ganancia | `pc-pl` | `sumPL` en toggle + sub `%` |
+| 3 | 📦 Costo + Caja | `pc-costo` | `avgNoC × bal` + caja en toggle + sub `Costo: X` |
+| 4 | 🏦 Total Caja | `pc-cash-total` | en modo toggle + sub `FX X` |
+| 5 | 💵 Caja ARS | `pc-cash-ars` | `$ X` + sub `≈ U$S Y` |
+| 6 | 💵 Caja USD | `pc-cash-usd` | `U$S X` + sub `≈ $ Y` |
 
-**Firma:** `renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPrice)`
+**Tab EEUU — orden v25 (4 tarjetas):**
+| # | Tarjeta | Clase CSS | Contenido |
+|---|---|---|---|
+| 1 | 🏦 Portfolio Total (hero) | `pc-total` | Tenencias a mercado + caja + línea delta + sub `Tenencias: X` |
+| 2 | 📈 Ganancia | `pc-pl` | `sumPL` en USD + sub `%` |
+| 3 | 📦 Costo + Caja | `pc-costo` | Costo Total + caja + sub `Costo: X` |
+| 4 | 💵 Caja USD | `pc-cash-usd` | `U$S X` |
+
+**Firma (sin cambios):** `renderPortfolioCards(isAr, fecha, historicCash, sumCostoTotal, sumValorTenencia, sumPL, anyPrice)`. En v25 se agrupan todos los cálculos al inicio de cada branch y luego se concatena el html en el orden nuevo; **ninguna fórmula de valuación cambió**. Se agregó el helper `heroCard(cls, label, mainHtml, deltaHtml, subHtml)` junto al `card` existente.
+
+**Línea de variación diaria — `getPortfolioDeltaFromSnapshots(fecha, isAr)` (v25):** función nueva de **solo lectura** que devuelve `{deltaUSD, pct, fromDate, toDate}` comparando el snapshot en `fecha` contra el inmediatamente anterior. Lee **exclusivamente** de `_snapshots` (Supabase), clave `ar_usd_market` (AR) o `us_usd` (EEUU). No llama funciones canónicas ni recalcula nada. Devuelve `null` si no hay dos snapshots suficientes → la línea no se muestra. En modo AR `ars` la variación se muestra en `$` (× fx); si no, en `U$S`. **El delta refleja el último ⟳ Recalcular** — si se ve desactualizado, presionar ⟳ Recalcular en Evolución.
 
 **CRÍTICO:** Las filas de caja ya **NO aparecen en el tbody** de la tabla — la info de caja vive únicamente en las tarjetas.
 
@@ -1111,6 +1115,20 @@ if(rawMin > 1000) {
 | Time slider de rango doble | Slider bajo el toolbar con dos thumbs arrastrables (Desde / Hasta). Barra azul del rango seleccionado. Labels de fecha en tiempo real. Coexiste con botones 1M/3M/MAX: slider activo desactiva los botones; click en botón resetea el slider. Se inicializa en `fetchSnapshots()` y `recalcSnapshots()`. Variables: `_evolSliderFrom`, `_evolSliderTo`, `_evolSliderActive`. |
 | Eje Y dinámico | El eje Y ya no arranca siempre en 0. Calcula el mínimo de las series de valor activas en la ventana visible, usa el 80% redondeado a miles como piso (`yFloor`). Si el mínimo es ≤ 1.000 o no hay series activas, pasa `undefined` y Chart.js escala automáticamente. Flujos e Índice no se consideran para el cálculo. |
 
+### Quick wins + jerarquía Portfolio (v25)
+
+Cambios 100% de presentación + una función nueva de solo lectura. **Ningún número del dashboard cambió de valor** — solo dónde y cómo se muestra, más la línea de variación nueva del hero.
+
+| # | Cambio | Descripción |
+|---|---|---|
+| A1 | Números tabulares | Regla nueva `font-variant-numeric: tabular-nums` (justo después de `body{}`) para `table, .pf-card-main, .pf-card-sub, .pf-card-delta, .cash-card-amount, .cash-log-amt, .si value, #evol-summary`. Alinea dígitos en columnas de tablas/tarjetas. |
+| A2 | Foco visible | `:focus-visible` con `outline:2px solid var(--primary)` en `button, .tab, select, input, .ms-btn`. Anillo azul solo en navegación por teclado. |
+| A3 | Contraste secundario | `--muted-fg` oscurecido `hsl(220,10%,46%)` → `hsl(220,10%,40%)`. Global y deliberado. **No tocar `--muted`** (es fondo). |
+| A4 | Importar → header | El botón `↑ Importar .xls` salió de la barra de tabs (ahora solo 7 tabs) y es el **primer hijo** de `#session-selector`. Abre el mismo `showModal(true)`. |
+| A5 | Menú `⋯` de sesión | `✎ Renombrar` y `🗑 Borrar` colapsados en `ms-panel-session` (patrón `ms-wrap`/`ms-panel` reutilizado; **sin JS nuevo** — `msDrillToggle('session')` + listener global). Panel con `left:auto;right:0` por estar pegado al borde derecho. `＋ Nueva` queda visible. |
+| C1 | Hero "Portfolio Total" | `renderPortfolioCards` reordenada (hero arriba, luego Ganancia, Costo+Caja, cajas). Clases nuevas `pf-hero` / `pf-card-delta`; helper `heroCard`. Función nueva `getPortfolioDeltaFromSnapshots(fecha, isAr)` (solo lectura de `_snapshots`, claves `ar_usd_market`/`us_usd`). El delta refleja el último ⟳ Recalcular. |
+| C2 | FX manual → tab Tipo de Cambio | `fx-input`, botón `💾 Guardar FX` y `fx-status` movidos (idénticos, IDs intactos) al toolbar de `#panel-fx`. `#ar-mode-wrap` en Portfolio conserva **solo** el toggle ARS/USD. Los IDs se leen por `getElementById`, así que funcionan igual en el nuevo lugar del DOM. |
+
 ---
 
 ## Cómo pedir cambios en un chat nuevo
@@ -1174,6 +1192,7 @@ Pegá este documento + el HTML al inicio del chat.
 
 **► FX Y PRECIOS:**
 - **FX siempre desde `_fxHistory`/`_fxLatest`** — no agregar inputs manuales de FX
+- **(v25) El FX manual (`fx-input`, `💾 Guardar FX`, `fx-status`) vive en el tab Tipo de Cambio (`#panel-fx`)** — NO devolverlo a la toolbar de Portfolio. `#ar-mode-wrap` en Portfolio conserva solo el toggle ARS/USD. Los tres elementos se leen por `getElementById` (`fetchFXHistory`, `saveFXRate`, `getCurrentFX`), así que funcionan sin importar dónde estén en el DOM.
 - **`renderPortfolioTable()` usa `getFXForDate(fecha)`** — nunca `getCurrentFX()` para cálculos de conversión
 - **`recalcSnapshots()` usa `getFXForDate(date)`** — no `getCurrentFX()`
 - **`fetchFXHistory` reconstruye `_ledger` + portfolio + dropdown + `renderPortfolioTable` al resolverse** — no eliminar
@@ -1186,8 +1205,11 @@ Pegá este documento + el HTML al inicio del chat.
 - **`fetchFXHistory`, `fetchSnapshots` y `fetchPricesHistory` paginan de a 1000** — loop con `Range: from-(from+999)`, break cuando `rows.length < 1000`
 - **`recalcSnapshots()` hace DELETE de todos los snapshots antes del upsert** — evita fechas huérfanas; requiere política RLS DELETE en `portfolio_snapshots`
 
-**► UI Y DISEÑO (v23-v24):**
+**► UI Y DISEÑO (v23-v25):**
 - **Paleta: usar SIEMPRE tokens semánticos** — `var(--foreground)`, `var(--muted-fg)`, `var(--border)`, `var(--primary)`, `var(--gain)`, `var(--loss)`, `var(--ar-accent)`, `var(--us-accent)`. Nunca hardcodear hex en CSS nuevo.
+- **(v25) `--muted-fg` es `hsl(220,10%,40%)`** — oscurecido desde 46% por contraste. No revertir.
+- **(v25) Barra de tabs = solo 7 tabs de navegación** — el botón Importar y las acciones de sesión viven en el header, no entre los tabs.
+- **(v25) `renderPortfolioCards`: "Portfolio Total" es el hero (`pf-hero`), va primero, con línea `pf-card-delta`** — no reordenar de vuelta ni convertirlo en tarjeta normal. `getPortfolioDeltaFromSnapshots` es solo lectura de `_snapshots`; nunca hacerla recalcular valores.
 - **`var(--muted)` ≠ `var(--muted-fg)`** — `--muted` es fondo gris claro, `--muted-fg` es texto gris medio. Todo texto secundario usa `--muted-fg`.
 - **Aliases legacy en `:root` son intocables** — `--green`, `--red`, `--ar`, `--us`, `--usd`, `--purple`, `--bg`, `--s2`, `--text` deben existir siempre. El JS genera inline styles con estos vars.
 - **Tab activo necesita `!important`** — las clases `act-*` deben declararse con `background:var(--foreground) !important; color:#fff !important; border:none !important` para ganarle al estilo base del `.tab`.
